@@ -34,7 +34,10 @@ def get_best_baseline_path(dataset_name):
     fname = fname.replace('/results.json', '')
     return fname
 
-def train_epoch(model, model_tell, loader, device, optimizer, num_classes, train_full=True, conv_reg=0.001, fc_reg=0.01):
+def train_epoch(model, model_tell, loader, device, optimizer, num_classes, train_full=True, conv_reg=0.001, fc_reg=0.01,
+                extra_loss=None):
+    """One epoch of distillation + task loss. ``extra_loss(model_tell) -> tensor`` is added
+    to every batch's loss (sparsify_proto.py passes its Hoyer penalty here)."""
     model.train()
     model_tell.train()
     
@@ -80,7 +83,9 @@ def train_epoch(model, model_tell, loader, device, optimizer, num_classes, train
                 loss += F.binary_cross_entropy(out.reshape(-1), torch.nn.functional.one_hot(y, num_classes=num_classes).float().reshape(-1)) + F.nll_loss(F.log_softmax(out, dim=-1), y.long())
                
             loss += fc_reg*(model_tell.fc.reg_loss + model_tell.fc.phi_in.entropy)
-            
+            if extra_loss is not None:
+                loss = loss + extra_loss(model_tell)
+
             loss.backward()
             zero_nan_gradients(model_tell)
             torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
