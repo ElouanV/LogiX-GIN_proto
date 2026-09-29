@@ -64,7 +64,11 @@ class GIN(torch.nn.Module):
                     torch.nn.Linear(hidden_dim, hidden_dim),
                     torch.nn.ReLU() if nogumbel else torch.nn.Identity()
                 ),
-                init_eps=1
+                # PyG's GINConv takes `eps`, not `init_eps` (DGL's name), and forwards
+                # unknown kwargs to MessagePassing, which rejects them - this raised
+                # TypeError on every PyG version. Removing it is a no-op for the weights:
+                # `eps` is a registered buffer restored by load_state_dict (= 0.0 in the
+                # existing MUTAG checkpoint) whatever the constructor set.
             )
             self.convs.append(conv)
         self.fc1 = torch.nn.Linear(num_layers*3*hidden_dim, hidden_dim)
