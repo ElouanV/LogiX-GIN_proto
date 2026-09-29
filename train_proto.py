@@ -16,9 +16,12 @@ Extra knobs over train_logic.py:
                                       soft AND over few cared bits (models_proto/proto.py);
                                       --mask_reg penalises the fraction of cared bits and the
                                       temperature is annealed from --mask_temp_start (default
-                                      d/4) to --mask_temp_end over the epochs. Off by default;
-                                      the three mask options only enter the results path
-                                      when it is on.
+                                      d/4) to --mask_temp_end over the first --mask_anneal_frac
+                                      of the epochs, then held. --mask_ckpt_temp keeps a
+                                      checkpoint only once T <= that value, so the kept model
+                                      reads as ANDs (above it a prototype is an m-of-n rule).
+                                      Off by default; the mask options only enter the results
+                                      path when it is on, the last two only when set.
 
 Results go to results_proto/ so they never collide with results_logic/.
 """
@@ -38,6 +41,7 @@ import glob
 import traceback
 import pandas as pd
 import argparse
+import hashlib
 import pickle
 import json
 from models_proto.model import GIN
@@ -56,11 +60,17 @@ def create_folder_proto(dataset_name, args, baseline_args, seed=None):
     configurations never write into the same directory.
     """
     args_s = '|'.join([f"{k}={args[k]}" for k in sorted(args.keys())])
+    full_args_s = args_s
+    if len(args_s.encode()) > 255:        # filesystem limit on one path component
+        args_s = f"{args['proto_level']}-{hashlib.sha1(args_s.encode()).hexdigest()[:12]}"
     baseline_args_s = '|'.join([f"{k}={baseline_args[k]}" for k in sorted(baseline_args.keys())])
     path = f'results_proto/{dataset_name}/{args_s}/{baseline_args_s}'
     if seed is not None:
         path = f"{path}/{seed}"
     os.makedirs(path, exist_ok=True)
+    if args_s != full_args_s:             # the hashed name's configuration, for lookup
+        with open(f'results_proto/{dataset_name}/{args_s}/config.txt', 'w') as f:
+            f.write(full_args_s + '\n')
     return path
 
 
@@ -215,10 +225,11 @@ def build_proto_model(args, baseline_args, num_features, num_classes, device):
 
 
 def mask_temperature(args, epoch, d):
-    """Geometric annealing of the masked-prototype temperature over the epochs."""
+    """Geometric annealing of the masked-prototype temperature over the first
+    ``mask_anneal_frac`` of the epochs (all of them by default), then held at the end value."""
     t0 = args.get('mask_temp_start') or d / 4
     t1 = args.get('mask_temp_end', 1.0)
-    f = min(1.0, epoch / max(1, args['epochs'] - 1))
+    f = min(1.0, epoch / max(1, args.get('mask_anneal_frac', 1.0) * args['epochs'] - 1))
     return t0 * (t1 / t0) ** f
 
 
@@ -324,7 +335,10 @@ def _train_seed(dataset_name, baseline_path, args, seed, device):
 
         if epoch > args['warmup_epochs']:
             scheduler.step(val_acc)
-        if epoch>args['warmup_epochs'] and val_acc >= best_val_acc:
+        # masked prototypes are only ANDs once T is low: keep no checkpoint before that
+        ckpt_open = args.get('mask_ckpt_temp') is None or \
+            all(p.mask_temp <= args['mask_ckpt_temp'] + 1e-9 for p in model_proto.proto_layers)
+        if epoch>args['warmup_epochs'] and ckpt_open and val_acc >= best_val_acc:
             torch.save(model_proto, os.path.join(path, 'best.pt'))
             best_val_acc = val_acc
             best_test_acc = test_acc
@@ -511,6 +525,8 @@ if __name__ == '__main__':
     parser.add_argument('--mask_reg',       default=0.5,        type=float, help='Weight of the cared-bit fraction penalty (with --proto_mask)')
     parser.add_argument('--mask_temp_start', default=None,      type=float, help='Initial mask temperature (default d/4, with --proto_mask)')
     parser.add_argument('--mask_temp_end',  default=1.0,        type=float, help='Final mask temperature (with --proto_mask)')
+    parser.add_argument('--mask_anneal_frac', default=None,     type=float, help='Fraction of the epochs over which T is annealed, then held (default 1, with --proto_mask)')
+    parser.add_argument('--mask_ckpt_temp', default=None,       type=float, help='Keep checkpoints only once T <= this (default: always, with --proto_mask)')
     parser.add_argument('--only_eval',     action='store_true',             help='Only evaluate')
     parser.add_argument('--seed',           default=None,       type=int,   help='Single seed to run')
 
@@ -518,6 +534,11 @@ if __name__ == '__main__':
     if not args['proto_mask']:            # keep the results paths of unmasked configurations unchanged
         for k in ('proto_mask', 'mask_reg', 'mask_temp_start', 'mask_temp_end'):
             args.pop(k)
+    for k in ('mask_anneal_frac', 'mask_ckpt_temp'):      # nor those of earlier masked ones
+        if args[k] is None or not args.get('proto_mask'):
+            args.pop(k)
+    if args.get('mask_ckpt_temp') is not None and args['mask_ckpt_temp'] < args['mask_temp_end']:
+        parser.error('--mask_ckpt_temp below --mask_temp_end would never keep a checkpoint')
 
     dataset_name = args.pop('dataset')
     baseline_path = args.pop('baseline_path')

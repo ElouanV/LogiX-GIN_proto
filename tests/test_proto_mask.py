@@ -84,5 +84,22 @@ class TestMaskedPrototype(unittest.TestCase):
         self.assertEqual(tuple(layer.similarity(x).shape), (3, 2))
 
 
+class TestMaskTemperature(unittest.TestCase):
+    def test_default_anneals_over_all_epochs(self):
+        from train_proto import mask_temperature
+        a = {'epochs': 101, 'mask_temp_end': 1.0}
+        self.assertAlmostEqual(mask_temperature(a, 0, 64), 16.0)
+        self.assertAlmostEqual(mask_temperature(a, 50, 64), 4.0)
+        self.assertAlmostEqual(mask_temperature(a, 100, 64), 1.0)
+
+    def test_anneal_frac_reaches_the_end_early_then_holds(self):
+        from train_proto import mask_temperature
+        a = {'epochs': 101, 'mask_temp_end': 1.0, 'mask_anneal_frac': 0.5}
+        self.assertAlmostEqual(mask_temperature(a, 0, 64), 16.0)
+        self.assertAlmostEqual(mask_temperature(a, 49.5 / 2, 64), 4.0)
+        self.assertAlmostEqual(mask_temperature(a, 50, 64), 1.0, places=1)
+        self.assertEqual(mask_temperature(a, 80, 64), 1.0)
+
+
 if __name__ == '__main__':
     unittest.main()
