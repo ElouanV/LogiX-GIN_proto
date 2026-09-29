@@ -5,7 +5,7 @@ from torch_geometric.datasets import TUDataset
 import torch_geometric.transforms as T
 from torch_geometric.loader import DataLoader
 from torch_geometric.nn import GINConv
-from tell import LogicalLayer
+from models.tell import LogicalLayer
 from torch import Tensor
 
 
