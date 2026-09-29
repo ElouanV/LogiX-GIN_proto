@@ -391,11 +391,14 @@ def extract(model, acts, ds_name, max_show=15, simplify_tol=0.0, all_rules=False
     if proto:
         informative = {l: (lambda r: (r > 0) & (r < 1))(acts[l]['y_bin'].numpy().mean(0)) for l in range(L)}
         P = model.proto.prototypes.detach().cpu().numpy() > 0.5          # [K, L*h]
+        care = model.proto.care.detach().cpu().numpy() > 0.5              # all True without a mask
         h = model.hidden_dim
         for k in sorted(used_protos):
-            on = [(j // h, j % h) for j in np.flatnonzero(P[k]) if informative[j // h][j % h]]
-            off = [(j // h, j % h) for j in np.flatnonzero(~P[k]) if informative[j // h][j % h]]
-            out['prototypes'][k] = {'on': on, 'off': off}
+            on = [(j // h, j % h) for j in np.flatnonzero(P[k] & care[k]) if informative[j // h][j % h]]
+            off = [(j // h, j % h) for j in np.flatnonzero(~P[k] & care[k]) if informative[j // h][j % h]]
+            out['prototypes'][k] = {'on': on, 'off': off, 'cared_bits': int(care[k].sum())}
+            if model.proto.masked:          # sim = exp(-mismatches / T): a threshold on sim is one on mismatches
+                out['prototypes'][k]['temperature'] = float(model.proto.mask_temp)
             need_neg |= set(off)
 
     # conv layers top-down; a negated unit is expanded only where something above reads it
@@ -620,10 +623,18 @@ def to_markdown(ex, title, meta, classes):
                'Similarity = fraction of the concepts on which a node agrees with the prototype. '
                'Listed: the informative concepts (units that fire on some nodes but not all) the prototype '
                'requires ON / OFF.', '']
+        if any('temperature' in p for p in ex['prototypes'].values()):
+            md += ['Masked prototypes: sim(n, P) = exp(-m / T), m = number of cared concepts on which node n '
+                   'disagrees with P, so sim = 1 iff n satisfies the whole conjunction below and '
+                   'sim >= x iff m <= -T ln x.', '']
         for k, p in sorted(ex['prototypes'].items()):
             on = ', '.join(f'L{l}u{u}' for l, u in p['on']) or '-'
             off = ', '.join(f'L{l}u{u}' for l, u in p['off']) or '-'
-            md += [f'**P{k}** ON: {on}', '', f'OFF: {off}', '']
+            if 'temperature' in p:
+                conj = ' AND '.join([f'L{l}u{u}' for l, u in p['on']] + [f'NOT L{l}u{u}' for l, u in p['off']]) or 'TRUE'
+                md += [f'**P{k}** ({p["cared_bits"]} cared bits, T = {p["temperature"]:.3g}): {conj}', '']
+            else:
+                md += [f'**P{k}** ON: {on}', '', f'OFF: {off}', '']
         sec += 1
     for l in reversed(range(L)):
         layer = ex['layers'][l]

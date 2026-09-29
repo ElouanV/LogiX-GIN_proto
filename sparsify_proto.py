@@ -145,7 +145,7 @@ def prune(model, prune_eps, max_fanin=None, fc_fanin=None):
 
 
 def task_epoch(teacher, model, loader, device, optimizer, num_classes, train_full=True, conv_reg=0.001, fc_reg=0.01,
-               proto_div_reg=0.0, proto_ent_reg=0.0, extra_loss=None):
+               proto_div_reg=0.0, proto_ent_reg=0.0, mask_reg=0.0, extra_loss=None):
     """One epoch on the class loss only (same form as the task terms of train_logic.py:
     BCE on one-hot + NLL), end to end, with the model's own regularisers. ``teacher`` is
     ignored; the signature matches train_epoch so the phases can swap it in."""
@@ -167,6 +167,8 @@ def task_epoch(teacher, model, loader, device, optimizer, num_classes, train_ful
         loss = loss + fc_reg * (model.fc.reg_loss + model.fc.phi_in.entropy)
         for p in getattr(model, 'proto_layers', []):
             loss = loss + proto_div_reg * p.reg_loss + proto_ent_reg * p.proto_entropy
+            if mask_reg and p.masked:
+                loss = loss + mask_reg * p.mask_size
         if extra_loss is not None:
             loss = loss + extra_loss(model)
         loss.backward()
@@ -280,7 +282,8 @@ def main():
 
         common = dict(train_full=True, conv_reg=run_args['conv_reg'], fc_reg=run_args['fc_reg'])
         if stage == 'proto':
-            common.update(proto_div_reg=run_args['proto_div_reg'], proto_ent_reg=run_args['proto_ent_reg'])
+            common.update(proto_div_reg=run_args['proto_div_reg'], proto_ent_reg=run_args['proto_ent_reg'],
+                          mask_reg=run_args.get('mask_reg', 0.0))
         train_epoch = task_epoch if a.task_only else train_epoch_proto if stage == 'proto' else train_epoch_logic
         if a.task_only and stage != 'proto':
             common.pop('proto_div_reg', None)

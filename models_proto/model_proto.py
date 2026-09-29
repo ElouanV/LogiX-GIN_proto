@@ -32,8 +32,10 @@ POOLS = {'mean': global_mean_pool, 'max': global_max_pool, 'sum': global_add_poo
 class GINTELLProtoBase(nn.Module):
     """Shared trunk and head. Subclasses define the prototype readout."""
 
-    def __init__(self, num_features, num_classes, num_layers=3, hidden_dim=64, dropout=0.1, task='classification'):
+    def __init__(self, num_features, num_classes, num_layers=3, hidden_dim=64, dropout=0.1, task='classification',
+                 proto_mask=False):
         super().__init__()
+        self.proto_kwargs = {'mask': proto_mask}          # see PrototypeLayer
         self.num_features, self.num_classes = num_features, num_classes
         self.num_layers, self.hidden_dim = num_layers, hidden_dim
         self.task = task
@@ -150,13 +152,13 @@ class GINTELLProtoNode(GINTELLProtoBase):
     """
 
     def __init__(self, num_features, num_classes, num_layers=3, hidden_dim=64, dropout=0.1,
-                 task='classification', num_prototypes=16, pool_ops=('mean', 'max')):
+                 task='classification', num_prototypes=16, pool_ops=('mean', 'max'), proto_mask=False):
         self.num_prototypes = num_prototypes
         self.pool_ops = tuple(pool_ops)
-        super().__init__(num_features, num_classes, num_layers, hidden_dim, dropout, task)
+        super().__init__(num_features, num_classes, num_layers, hidden_dim, dropout, task, proto_mask)
 
     def _build_readout(self):
-        self.proto = PrototypeLayer(self.num_layers * self.hidden_dim, self.num_prototypes)
+        self.proto = PrototypeLayer(self.num_layers * self.hidden_dim, self.num_prototypes, **self.proto_kwargs)
 
     @property
     def readout_dim(self):
@@ -183,13 +185,14 @@ class GINTELLProtoGraph(GINTELLProtoBase):
     """
 
     def __init__(self, num_features, num_classes, num_layers=3, hidden_dim=64, dropout=0.1,
-                 task='classification', num_prototypes=16, pool_ops=('mean', 'max')):
+                 task='classification', num_prototypes=16, pool_ops=('mean', 'max'), proto_mask=False):
         self.num_prototypes = num_prototypes
         self.pool_ops = tuple(pool_ops)
-        super().__init__(num_features, num_classes, num_layers, hidden_dim, dropout, task)
+        super().__init__(num_features, num_classes, num_layers, hidden_dim, dropout, task, proto_mask)
 
     def _build_readout(self):
-        self.proto = PrototypeLayer(len(self.pool_ops) * self.num_layers * self.hidden_dim, self.num_prototypes)
+        self.proto = PrototypeLayer(len(self.pool_ops) * self.num_layers * self.hidden_dim, self.num_prototypes,
+                                    **self.proto_kwargs)
 
     @property
     def readout_dim(self):
@@ -212,16 +215,16 @@ class GINTELLProtoBoth(GINTELLProtoBase):
 
     def __init__(self, num_features, num_classes, num_layers=3, hidden_dim=64, dropout=0.1,
                  task='classification', num_prototypes=16, num_graph_prototypes=None,
-                 node_pool_ops=('mean', 'max'), graph_pool_ops=('mean', 'max')):
+                 node_pool_ops=('mean', 'max'), graph_pool_ops=('mean', 'max'), proto_mask=False):
         self.num_prototypes = num_prototypes
         self.num_graph_prototypes = num_graph_prototypes or num_prototypes
         self.node_pool_ops, self.graph_pool_ops = tuple(node_pool_ops), tuple(graph_pool_ops)
-        super().__init__(num_features, num_classes, num_layers, hidden_dim, dropout, task)
+        super().__init__(num_features, num_classes, num_layers, hidden_dim, dropout, task, proto_mask)
 
     def _build_readout(self):
-        self.proto_node = PrototypeLayer(self.num_layers * self.hidden_dim, self.num_prototypes)
+        self.proto_node = PrototypeLayer(self.num_layers * self.hidden_dim, self.num_prototypes, **self.proto_kwargs)
         self.proto_graph = PrototypeLayer(len(self.graph_pool_ops) * self.num_layers * self.hidden_dim,
-                                          self.num_graph_prototypes)
+                                          self.num_graph_prototypes, **self.proto_kwargs)
 
     @property
     def readout_dim(self):

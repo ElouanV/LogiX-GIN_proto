@@ -12,6 +12,13 @@ Extra knobs over train_logic.py:
     --num_prototypes K
     --proto_div_reg / --proto_ent_reg weights of the two prototype regularisers
     --push_every                      ProtoPNet push period (0 = never)
+    --proto_mask                      binary care mask per prototype: similarity becomes a
+                                      soft AND over few cared bits (models_proto/proto.py);
+                                      --mask_reg penalises the fraction of cared bits and the
+                                      temperature is annealed from --mask_temp_start (default
+                                      d/4) to --mask_temp_end over the epochs. Off by default;
+                                      the three mask options only enter the results path
+                                      when it is on.
 
 Results go to results_proto/ so they never collide with results_logic/.
 """
@@ -72,7 +79,7 @@ def get_best_baseline_path(dataset_name):
 
 def train_epoch(model, model_proto, loader, device, optimizer, num_classes, train_full=True,
                 conv_reg=0.001, fc_reg=0.01, proto_div_reg=0.0, proto_ent_reg=0.0,
-                extra_loss=None):
+                extra_loss=None, mask_reg=0.0):
     """One epoch of distillation + task loss.
 
     ``extra_loss(model_proto) -> tensor`` is added to every batch's loss; the
@@ -146,6 +153,8 @@ def train_epoch(model, model_proto, loader, device, optimizer, num_classes, trai
             # prototypes stay soft and redundant, which is what the variant exists to avoid.
             for p in model_proto.proto_layers:
                 loss = loss + proto_div_reg * p.reg_loss + proto_ent_reg * p.proto_entropy
+                if mask_reg and p.masked:
+                    loss = loss + mask_reg * p.mask_size
 
             if extra_loss is not None:
                 loss = loss + extra_loss(model_proto)
@@ -201,7 +210,16 @@ def build_proto_model(args, baseline_args, num_features, num_classes, device):
         hidden_dim=baseline_args['hidden_dim'],
         num_layers=baseline_args['num_layers'],
         num_prototypes=args['num_prototypes'],
+        proto_mask=args.get('proto_mask', False),
     ).to(device)
+
+
+def mask_temperature(args, epoch, d):
+    """Geometric annealing of the masked-prototype temperature over the epochs."""
+    t0 = args.get('mask_temp_start') or d / 4
+    t1 = args.get('mask_temp_end', 1.0)
+    f = min(1.0, epoch / max(1, args['epochs'] - 1))
+    return t0 * (t1 / t0) ** f
 
 
 def train_seed(dataset_name, baseline_path, args, seed, device):
@@ -285,9 +303,13 @@ def _train_seed(dataset_name, baseline_path, args, seed, device):
     test_accs = []
     push_log = []
     for epoch in range(args['epochs']):
+        if args.get('proto_mask'):
+            for p in model_proto.proto_layers:
+                p.mask_temp = mask_temperature(args, epoch, p.in_features)
         train_loss, train_acc = train_epoch(model, model_proto, train_loader, device, optimizer, num_classes,
                                             train_full=epoch>args['warmup_epochs'], conv_reg=args['conv_reg'], fc_reg=args['fc_reg'],
-                                            proto_div_reg=args['proto_div_reg'], proto_ent_reg=args['proto_ent_reg'])
+                                            proto_div_reg=args['proto_div_reg'], proto_ent_reg=args['proto_ent_reg'],
+                                            mask_reg=args.get('mask_reg', 0.0))
 
         # ProtoPNet push: snap every prototype onto the closest real training example,
         # so each one *is* an observed pattern and the extracted rules stay readable.
@@ -485,10 +507,17 @@ if __name__ == '__main__':
     parser.add_argument('--proto_div_reg',  default=0.01,       type=float, help='Weight of the prototype diversity penalty')
     parser.add_argument('--proto_ent_reg',  default=0.01,       type=float, help='Weight of the prototype entropy penalty')
     parser.add_argument('--push_every',     default=0,          type=int,   help='Push prototypes onto real examples every N epochs after warmup (0 = never)')
+    parser.add_argument('--proto_mask',     action='store_true',             help='Learn a binary care mask per prototype (soft AND over cared bits)')
+    parser.add_argument('--mask_reg',       default=0.5,        type=float, help='Weight of the cared-bit fraction penalty (with --proto_mask)')
+    parser.add_argument('--mask_temp_start', default=None,      type=float, help='Initial mask temperature (default d/4, with --proto_mask)')
+    parser.add_argument('--mask_temp_end',  default=1.0,        type=float, help='Final mask temperature (with --proto_mask)')
     parser.add_argument('--only_eval',     action='store_true',             help='Only evaluate')
     parser.add_argument('--seed',           default=None,       type=int,   help='Single seed to run')
 
     args = parser.parse_args().__dict__
+    if not args['proto_mask']:            # keep the results paths of unmasked configurations unchanged
+        for k in ('proto_mask', 'mask_reg', 'mask_temp_start', 'mask_temp_end'):
+            args.pop(k)
 
     dataset_name = args.pop('dataset')
     baseline_path = args.pop('baseline_path')

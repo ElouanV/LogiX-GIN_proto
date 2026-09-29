@@ -10,6 +10,18 @@ l ∈ [0,1]^d. The similarity is the normalised Hamming agreement
     s_k = (1/d) · Σ_j  p_kj·l_j + (1 − p_kj)·(1 − l_j)     ∈ [0, 1]
 
 i.e. the fraction of literals on which l and p_k agree.
+
+Optional binary mask (``mask=True``): each prototype also learns which bits it cares
+about, c_k ∈ {0,1}^d (straight-through like p_k), and the similarity becomes a soft
+conjunction over the cared bits only
+
+    s_k = exp(−(1/T) · Σ_j  c_kj · [l_j ≠ p_kj])        (mismatches on cared bits)
+
+A node matching every cared bit scores 1, each mismatch multiplies the score by e^{-1/T}.
+At T = 1 a prototype reads as a short rule "L0u3 ∧ ¬L1u12 ∧ L2u5". The trainer anneals
+T (``mask_temp``) from ~d/4, where the score behaves like the Hamming agreement and
+every prototype gets gradient, down to 1, and penalises ``mask_size`` (fraction of
+cared bits) to keep few bits per prototype.
 """
 import torch
 from torch import nn
@@ -35,15 +47,30 @@ class PrototypeLayer(nn.Module):
                        them decisive
     """
 
-    def __init__(self, in_features, num_prototypes):
+    def __init__(self, in_features, num_prototypes, mask=False, mask_init=2.0):
         super().__init__()
         self.in_features = in_features
         self.num_prototypes = num_prototypes
         self.proto_logits = nn.Parameter(torch.Tensor(num_prototypes, in_features))
+        self.mask = mask
+        self.mask_temp = 1.0
+        if mask:                                  # starts with every bit cared
+            self.mask_logits = nn.Parameter(torch.full((num_prototypes, in_features), float(mask_init)))
         self.reset_parameters()
 
     def reset_parameters(self):
         nn.init.uniform_(self.proto_logits, -1.0, 1.0)
+
+    @property
+    def masked(self):
+        return getattr(self, 'mask', False)       # models pickled before the option existed
+
+    @property
+    def care(self):
+        """Binary care mask {0,1}^{K×d} (all ones without the option), straight-through."""
+        if not self.masked:
+            return torch.ones_like(self.proto_logits)
+        return hard_sigmoid(self.mask_logits)
 
     @property
     def prototypes_soft(self):
@@ -57,6 +84,10 @@ class PrototypeLayer(nn.Module):
     def similarity(self, x):
         """x: [n × d] in [0,1]. Returns [n × K] normalised agreement in [0,1]."""
         p = self.prototypes
+        if self.masked:
+            c = self.care
+            mismatch = x @ (c * (1 - p)).t() + (1 - x) @ (c * p).t()
+            return torch.exp(-mismatch / self.mask_temp)
         agree = x @ p.t() + (1 - x) @ (1 - p).t()
         return agree / self.in_features
 
@@ -68,6 +99,7 @@ class PrototypeLayer(nn.Module):
         off = ~torch.eye(self.num_prototypes, dtype=torch.bool, device=pair.device)
         self.reg_loss = pair[off].mean() if self.num_prototypes > 1 else pair.new_zeros(())
         self.proto_entropy = binary_entropy(ps).mean()
+        self.mask_size = self.care.mean() if self.masked else ps.new_ones(())
         return s
 
     @torch.no_grad()
@@ -83,4 +115,4 @@ class PrototypeLayer(nn.Module):
         return idx
 
     def extra_repr(self):
-        return f'in_features={self.in_features}, num_prototypes={self.num_prototypes}'
+        return f'in_features={self.in_features}, num_prototypes={self.num_prototypes}, mask={self.masked}'
