@@ -37,6 +37,32 @@ def create_folder_logic(dataset_name, args, baseline_args, seed=None):
     os.makedirs(path, exist_ok=True)
     return path
 
+BBBP_ELEMENTS = ['C', 'N', 'O', 'S', 'F', 'Cl', 'Br', 'I', 'P', 'H', 'Na', 'B', 'Ca']
+BBBP_FEATURES = BBBP_ELEMENTS + ['aromatic', 'in_ring']
+_BBBP_Z = {6: 0, 7: 1, 8: 2, 16: 3, 9: 4, 17: 5, 35: 6, 53: 7, 15: 8, 1: 9, 11: 10, 5: 11, 20: 12}
+
+
+class MolOneHot:
+    """MoleculeNet atoms -> binary literals the logic layers can read.
+
+    MoleculeNet's 9 atom columns are integer codes (atomic number, degree, charge,
+    ...), which break the [x, 1-x] negation of LogicalLayer. Kept: one-hot element
+    (every element present in BBBP), is_aromatic, is_in_ring. The graph label becomes
+    a long class index.
+    """
+    def __call__(self, data):
+        z = data.x[:, 0].long().tolist()
+        oh = torch.zeros(len(z), len(BBBP_ELEMENTS))
+        for i, a in enumerate(z):
+            oh[i, _BBBP_Z[a]] = 1.0
+        data.x = torch.cat([oh, data.x[:, 7:9].float()], 1)
+        data.y = data.y.view(-1).long()
+        return data
+
+    def __repr__(self):
+        return 'MolOneHot()'
+
+
 def get_dataset(dataset_name):
     if dataset_name == 'Ba2Motifs':
         return  SynGraphDataset(root='data/ba_2motifs', name='ba_2motifs')
@@ -57,7 +83,14 @@ def get_dataset(dataset_name):
     elif dataset_name == 'OGB_MAG':
         return OGB_MAG(root=f'data/{dataset_name}')
     elif dataset_name == 'BBBP':
-        return MoleculeNet(name=dataset_name, root=f'data/{dataset_name}')
+        # binary atom literals (see MolOneHot); cached separately from the raw version
+        return MoleculeNet(name='BBBP', root='data/BBBP_onehot', pre_transform=MolOneHot())
+    elif dataset_name == 'BBBP_raw':
+        return MoleculeNet(name='BBBP', root='data/BBBP')
+    elif dataset_name == 'AIDS':
+        # use_node_attr=True would prepend 4 continuous columns (chem, charge, x, y
+        # coordinates) to the 38 one-hot atom labels; the logic layers need [0,1] literals
+        return TUDataset(root='data/AIDS', name='AIDS', use_node_attr=False)
     elif dataset_name == 'BaMultiShapes':
         return BAMultiShapesDataset(root=f'data/{dataset_name}')
     return TUDataset(root=f'data/{dataset_name}', name=dataset_name, use_node_attr=True)
