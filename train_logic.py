@@ -17,6 +17,8 @@ import pickle
 import json
 from models.model import GIN, GINTELL
 from torch.optim.lr_scheduler import ReduceLROnPlateau
+from utils import tracking
+from utils.evaluation import evaluate
 
 SEEDS = 10
 
@@ -109,6 +111,19 @@ def test_epoch(model, loader, device):
     return val_acc
 
 def train_seed(dataset_name, baseline_path, args, seed, device):
+    """One seed, logged as one MLflow run of experiment logic/<dataset> (utils/tracking.py)."""
+    baseline_args = json.load(open(os.path.join(baseline_path, 'args.json'), 'r'))
+    cfg = os.path.relpath(os.path.dirname(create_folder_logic(dataset_name, args, baseline_args, seed=seed)),
+                          f'results_logic/{dataset_name}')
+    params = {**args, **{f'teacher/{k}': v for k, v in baseline_args.items()},
+              'seed': seed, 'dataset': dataset_name, 'teacher_path': baseline_path}
+    with tracking.run(f'logic/{dataset_name}', run_name=f"h{baseline_args['hidden_dim']}/seed{seed}", params=params,
+                      tags={'config': cfg, 'seed': seed, 'kind': 'seed', 'dataset': dataset_name,
+                            'hidden_dim': baseline_args['hidden_dim']}):
+        return _train_seed(dataset_name, baseline_path, args, seed, device)
+
+
+def _train_seed(dataset_name, baseline_path, args, seed, device):
     set_seed(seed)
 
         
@@ -181,6 +196,15 @@ def train_seed(dataset_name, baseline_path, args, seed, device):
             torch.save(model_tell, os.path.join(path, 'best.pt'))
             best_val_acc = val_acc
             best_test_acc = test_acc
+
+        # train_loss / train_acc: one entry per conv layer (distillation), then the head
+        tracking.log_metrics({'val_acc': val_acc, 'test_acc': test_acc, 'best_val_acc': best_val_acc,
+                              'best_test_acc': best_test_acc, 'train_loss': train_loss[-1],
+                              'train_acc': train_acc[-1], 'lr': optimizer.param_groups[0]['lr'],
+                              'phase_full': float(epoch > args['warmup_epochs']),
+                              **{f'distill/L{i}_loss': l for i, l in enumerate(train_loss[:-1])},
+                              **{f'distill/L{i}_acc': c for i, c in enumerate(train_acc[:-1])}},
+                             step=epoch)
         
         if epoch % 10 == 0:
             print(f'Epoch: {epoch+1}, Train Loss: {train_loss}, Train Acc: {train_acc}, Val Acc: {val_acc:.4f}, Test Acc: {test_acc:.4f}')
@@ -201,6 +225,19 @@ def train_seed(dataset_name, baseline_path, args, seed, device):
         'val_acc': val_acc,
         'test_acc': test_acc,
     }
+
+    # final evaluation of the kept checkpoint (imbalance-aware metrics, rule statistics), registration
+    if tracking.enabled():
+        from rule_eval import rule_metrics, rule_stats
+        final = {**evaluate(model_tell, val_loader, device, prefix='final/val_'),
+                 **evaluate(model_tell, test_loader, device, prefix='final/test_')}
+        stats = rule_stats(model_tell, val_loader, device)
+        tracking.log_metrics({**final, **rule_metrics(stats, prefix='final/rules/')})
+        tracking.log_dict({'metrics': final, 'rules': stats}, 'final_evaluation.json')
+        tracking.log_artifact(os.path.join(path, 'args.json'))
+        tracking.log_model(model_tell, f'logix-gin-{dataset_name}', code_dirs=('models',),
+                           tags={'seed': seed, 'hidden_dim': baseline_args['hidden_dim'],
+                                 'val_acc': val_acc, 'test_acc': test_acc, 'path': path})
 
     return results
 
@@ -292,6 +329,16 @@ def train_eval(dataset_name, baseline_path, args):
 
     with open(os.path.join(path, 'results.json'), 'w') as f:
         json.dump(ret, f)
+
+    # parallel single-seed processes each re-evaluate every seed; only a full or
+    # --only_eval pass writes the summary run
+    if only_eval or seed_todo is None:
+        with tracking.run(f'logic/{dataset_name}', run_name=f"h{baseline_args['hidden_dim']}/summary",
+                          params={**args, 'n_seeds': len(df)},
+                          tags={'config': os.path.relpath(path, f'results_logic/{dataset_name}'), 'kind': 'summary',
+                                'dataset': dataset_name, 'hidden_dim': baseline_args['hidden_dim']}):
+            tracking.log_metrics(ret)
+            tracking.log_artifact(os.path.join(path, 'total_results.csv'))
 
     return ret
     

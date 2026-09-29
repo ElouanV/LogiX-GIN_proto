@@ -17,6 +17,8 @@ import pickle
 import json
 from models.model import GIN
 from torch.optim.lr_scheduler import ReduceLROnPlateau
+from utils import tracking
+from utils.evaluation import evaluate
 SEEDS = 10
 
 def train_epoch(model, loader, device, optimizer, num_classes):
@@ -64,6 +66,15 @@ def test_epoch(model, loader, device):
     return val_acc
 
 def train_seed(dataset_name, args, seed, device):
+    """One seed, logged as one MLflow run of experiment baseline/<dataset> (utils/tracking.py)."""
+    cfg = os.path.relpath(os.path.dirname(create_folder(dataset_name, args, seed=seed)), f'results/{dataset_name}')
+    with tracking.run(f'baseline/{dataset_name}', run_name=f'seed{seed}',
+                      params={**args, 'seed': seed, 'dataset': dataset_name},
+                      tags={'config': cfg, 'seed': seed, 'kind': 'seed', 'dataset': dataset_name}):
+        return _train_seed(dataset_name, args, seed, device)
+
+
+def _train_seed(dataset_name, args, seed, device):
     set_seed(seed)
 
     path = create_folder(dataset_name, args, seed=seed)
@@ -134,7 +145,12 @@ def train_seed(dataset_name, args, seed, device):
             best_val_acc = val_acc
             best_test_acc = test_acc
         elif epoch > args['epochs']//2: patience += 1
-        
+
+        tracking.log_metrics({'train_loss': train_loss, 'train_acc': train_acc, 'val_acc': val_acc,
+                              'test_acc': test_acc, 'best_val_acc': best_val_acc,
+                              'best_test_acc': best_test_acc, 'lr': optimizer.param_groups[0]['lr']},
+                             step=epoch)
+
         print(f'Epoch: {epoch+1}, Train Loss: {train_loss:.4f}, Train Acc: {train_acc:.4f}, Val Acc: {val_acc:.4f}, Test Acc: {test_acc:.4f}')
         print(f'\t\t Best Val Acc: {best_val_acc:.4f}, Best Test Acc: {best_test_acc:.4f}')
 
@@ -155,6 +171,14 @@ def train_seed(dataset_name, args, seed, device):
         'val_acc': val_acc,
         'test_acc': test_acc,
     }
+
+    if tracking.enabled():
+        tracking.log_metrics({**evaluate(model, val_loader, device, prefix='final/val_'),
+                              **evaluate(model, test_loader, device, prefix='final/test_'),
+                              'stopped_epoch': epoch})
+        tracking.log_artifact(os.path.join(path, 'args.json'))
+        tracking.log_model(model, f'gin-teacher-{dataset_name}', code_dirs=('models',),
+                           tags={'seed': seed, 'val_acc': val_acc, 'test_acc': test_acc, 'path': path})
 
     return results
 
@@ -268,8 +292,18 @@ def train_eval(dataset_name,  args):
     with open(os.path.join(path, 'results.json'), 'w') as f:
         json.dump(ret, f)
 
+    # only a full or --only_eval pass writes the summary run (parallel single-seed
+    # processes would each write one otherwise)
+    if only_eval or seed_todo is None:
+        with tracking.run(f'baseline/{dataset_name}', run_name='summary',
+                          params={**args, 'n_seeds': len(df)},
+                          tags={'config': os.path.relpath(path, f'results/{dataset_name}'),
+                                'kind': 'summary', 'dataset': dataset_name}):
+            tracking.log_metrics(ret)
+            tracking.log_artifact(os.path.join(path, 'total_results.csv'))
+
     return ret
-    
+
 
 if __name__ == '__main__':
 
