@@ -70,6 +70,31 @@ class TestPrune(unittest.TestCase):
         for o, n in zip(old, new):
             torch.testing.assert_close(n, torch.where(o > eps, o, torch.zeros_like(o)))
 
+    def test_max_fanin_keeps_the_k_largest_per_unit(self):
+        torch.manual_seed(3)
+        m = Tiny()
+        old = [ll.weight.detach().clone() for ll in [c.nn[0] for c in m.convs] + [m.fc]]
+        prune(m, 0.0, max_fanin=3)
+        for o, ll in zip(old, [c.nn[0] for c in m.convs] + [m.fc]):
+            w = ll.weight.detach()
+            self.assertTrue(((w > 0).sum(1) <= 3).all())
+            top = o.topk(3, dim=1).values
+            torch.testing.assert_close(w.sort(1, descending=True).values[:, :3], top)
+
+    def test_schedule_steps_nest_and_head_has_its_own_cap(self):
+        torch.manual_seed(4)
+        m = Tiny()
+        prev = None
+        for k in (6, 4, 2):
+            prune(m, 0.0, max_fanin=k, fc_fanin=max(k, 5))
+            for c in m.convs:
+                self.assertTrue(((c.nn[0].weight > 0).sum(1) <= k).all())
+            self.assertTrue(((m.fc.weight > 0).sum(1) <= max(k, 5)).all())
+            alive = [ll.weight.detach() > 0 for ll in [c.nn[0] for c in m.convs] + [m.fc]]
+            if prev is not None:                               # a later cut never revives a weight
+                self.assertTrue(all((a <= p).all() for a, p in zip(alive, prev)))
+            prev = alive
+
     def test_pruned_weights_stay_zero_under_training(self):
         torch.manual_seed(2)
         m = Tiny()

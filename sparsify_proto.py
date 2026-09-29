@@ -20,9 +20,20 @@ Three phases, starting from ``<run_path>/best.pt``:
    notebook version (nbs/LayerWiseRules.ipynb cell 11) normalises by the total number
    of entries instead of the row length and only penalises the head.
 2. Pruning. Every weight ``<= prune_eps`` is fixed to 0 through LogicalLayer's prune
-   mask (``weight = sigmoid(ws) * exp(we) * prune``), so the sparsity is exact.
+   mask (``weight = sigmoid(ws) * exp(we) * prune``), so the sparsity is exact. With
+   ``--max_fanin k`` only the k largest weights of each unit survive as well: a rule
+   uses only a unit's nonzero weights, so no rule can then exceed k literals.
+   With ``--fanin_schedule 12,8,6,4`` the fan-in is instead capped gradually: each step
+   keeps the k largest weights of every unit, then trains ``--step_epochs`` epochs
+   (masks frozen) so the remaining weights take over before the next cut. A unit with k
+   inputs has at most C(k, k/2) minimal rules (they form an antichain), each of at most
+   k literals, and reads at most k lower units. ``--fc_fanin`` sets a different final
+   cap for the head.
 3. Recovery. Same objective without the Hoyer term, masks frozen; the epoch with the
    best validation accuracy is kept.
+
+``--run_path`` may itself be a sparse run (``.../sparse/<cfg>``); with ``--epochs 0``
+the schedule then starts from its already Hoyer-sparsified weights.
 
 Output: ``<run_path>/sparse/<config>/`` with ``best.pt``, ``args.json``, a link to the
 run's ``data.pkl``, and ``sparsity.json`` (metrics and rule statistics before and
@@ -72,11 +83,18 @@ def hoyer_penalty(model, hoyer_reg, hoyer_fc):
 
 
 @torch.no_grad()
-def prune(model, prune_eps):
-    """Fix every weight <= prune_eps to 0 via the prune mask. Returns the fraction pruned."""
+def prune(model, prune_eps, max_fanin=None, fc_fanin=None):
+    """Fix every weight <= prune_eps to 0 via the prune mask, and with ``max_fanin`` every
+    weight outside the unit's ``max_fanin`` largest (``fc_fanin`` for the head, default
+    ``max_fanin``). Returns the fraction pruned."""
     pruned, total = 0, 0
-    for ll in logical_layers(model):
+    lls = logical_layers(model)
+    for li, ll in enumerate(lls):
+        k = (fc_fanin or max_fanin) if li == len(lls) - 1 else max_fanin
         keep = (ll.weight > prune_eps).float()
+        if k is not None and k < ll.weight.shape[1]:
+            top = torch.zeros_like(keep).scatter_(1, ll.weight.topk(k, dim=1).indices, 1.0)
+            keep = keep * top
         ll.set_prune(ll.prune * keep)
         pruned += int((keep == 0).sum())
         total += keep.numel()
@@ -114,6 +132,13 @@ def main():
     ap.add_argument('--hoyer_fc', type=float, default=1.0, help='Hoyer weight on the head')
     ap.add_argument('--epochs', type=int, default=300, help='Hoyer fine-tuning epochs')
     ap.add_argument('--prune_eps', type=float, default=1e-2, help='weights <= this are pruned to 0')
+    ap.add_argument('--max_fanin', type=int, default=None,
+                    help='keep at most this many weights per unit (caps every rule at this many literals)')
+    ap.add_argument('--fanin_schedule', default=None,
+                    help='comma-separated decreasing fan-in caps applied one after the other, e.g. 12,8,6,4')
+    ap.add_argument('--step_epochs', type=int, default=50, help='training epochs after each schedule step')
+    ap.add_argument('--fc_fanin', type=int, default=None,
+                    help='final fan-in cap of the head (default: same schedule as the conv layers)')
     ap.add_argument('--recover_epochs', type=int, default=100, help='fine-tuning after pruning')
     ap.add_argument('--lr', type=float, default=None, help='default: the run\'s lr')
     ap.add_argument('--batch_size', type=int, default=None, help='default: the run\'s batch size')
@@ -145,7 +170,12 @@ def main():
         return
 
     sp_args = {k: v for k, v in vars(a).items() if k not in ('stats_only', 'out_dir', 'run_path', 'dataset')}
-    keys = ('epochs', 'hoyer_fc', 'hoyer_reg', 'prune_eps', 'recover_epochs')
+    schedule = [int(k) for k in a.fanin_schedule.split(',')] if a.fanin_schedule else []
+    if a.fanin_schedule:
+        sp_args['fanin_schedule'] = '-'.join(map(str, schedule))
+    keys = ('epochs', 'hoyer_fc', 'hoyer_reg') + (('max_fanin',) if a.max_fanin else ()) \
+        + (('fanin_schedule', 'step_epochs') if schedule else ()) + (('fc_fanin',) if a.fc_fanin else ()) \
+        + ('prune_eps', 'recover_epochs')
     cfg = '|'.join(f'{k}={sp_args[k]}' for k in keys)
     out_dir = a.out_dir or os.path.join(a.run_path, 'sparse', cfg)
     os.makedirs(out_dir, exist_ok=True)
@@ -191,13 +221,33 @@ def main():
                 print(f'hoyer epoch {epoch:4d}  val {v:.4f}  mean Hoyer per layer '
                       f'{np.round(h, 3).tolist()}  ({time.time() - t0:.0f}s)', flush=True)
 
-        # 2. pruning
-        frac = prune(model_proto, a.prune_eps)
+        # 2. pruning, in one cut or along the fan-in schedule
+        frac = prune(model_proto, a.prune_eps, a.max_fanin, a.fc_fanin if not schedule else None)
         after_prune = test_epoch(model_proto, val_loader, device)
         tracking.log_metrics({'pruned_fraction': frac, 'val_acc_after_prune': after_prune})
         print(f'\npruned {frac:.1%} of the weights at eps {a.prune_eps}: val {after_prune:.4f}')
+        step = a.epochs
+        for si, k in enumerate(schedule):
+            fc_k = max(k, a.fc_fanin) if a.fc_fanin else None
+            frac = prune(model_proto, a.prune_eps, k, fc_k)
+            cut = test_epoch(model_proto, val_loader, device)
+            last = si == len(schedule) - 1
+            opt = torch.optim.AdamW(model_proto.parameters(), lr=lr, weight_decay=run_args['l2'])
+            for epoch in range(0 if last else a.step_epochs):      # the last step trains in phase 3
+                loss, _ = train_epoch(teacher, model_proto, train_loader, device, opt, num_classes, **common)
+                v = test_epoch(model_proto, val_loader, device)
+                tracking.log_metrics({'schedule_phase/val_acc': v, 'schedule_phase/fanin': k,
+                                      'schedule_phase/train_loss': loss[-1]}, step=step)
+                step += 1
+            print(f'fan-in {k:3d}: pruned {frac:.1%}, val right after the cut {cut:.4f}'
+                  + ('' if last else f', after {a.step_epochs} epochs {v:.4f}'), flush=True)
+            tracking.log_metrics({f'schedule/k{k}_val_after_cut': cut})
+        if schedule:
+            after_prune = test_epoch(model_proto, val_loader, device)
+            tracking.log_metrics({'pruned_fraction': frac, 'val_acc_after_prune': after_prune})
 
         # 3. recovery, masks frozen, keep the best validation epoch
+        step = max(step, a.epochs)
         opt = torch.optim.AdamW(model_proto.parameters(), lr=lr, weight_decay=run_args['l2'])
         best = after_prune
         torch.save(model_proto, os.path.join(out_dir, 'best.pt'))
@@ -208,7 +258,7 @@ def main():
                 best = v
                 torch.save(model_proto, os.path.join(out_dir, 'best.pt'))
             tracking.log_metrics({'recover_phase/val_acc': v, 'recover_phase/best_val_acc': best,
-                                  'recover_phase/train_loss': loss[-1]}, step=a.epochs + epoch)
+                                  'recover_phase/train_loss': loss[-1]}, step=step + epoch)
             if epoch % 25 == 0 or epoch == a.recover_epochs - 1:
                 print(f'recover epoch {epoch:4d}  val {v:.4f}  best {best:.4f}', flush=True)
 
