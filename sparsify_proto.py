@@ -38,6 +38,12 @@ Three phases, starting from ``<run_path>/best.pt``:
 3. Recovery. Same objective without the Hoyer term, masks frozen; the epoch with the
    best validation accuracy is kept.
 
+``--task_only`` replaces that objective, in every phase, by the class loss of the
+model's own end-to-end forward pass (plus its regularisers and the penalties): no
+layer is asked to reproduce the teacher's node states any more, so the units can
+reorganise around the task once the sparsity constraints no longer let them imitate
+a dense teacher.
+
 ``--run_path`` may itself be a sparse run (``.../sparse/<cfg>``); with ``--epochs 0``
 the schedule then starts from its already Hoyer-sparsified weights.
 
@@ -59,6 +65,7 @@ import time
 
 import numpy as np
 import torch
+import torch.nn.functional as F
 from torch_geometric.loader import DataLoader
 
 from models_proto.model import GIN
@@ -137,6 +144,39 @@ def prune(model, prune_eps, max_fanin=None, fc_fanin=None):
     return pruned / total
 
 
+def task_epoch(teacher, model, loader, device, optimizer, num_classes, train_full=True, conv_reg=0.001, fc_reg=0.01,
+               proto_div_reg=0.0, proto_ent_reg=0.0, extra_loss=None):
+    """One epoch on the class loss only (same form as the task terms of train_logic.py:
+    BCE on one-hot + NLL), end to end, with the model's own regularisers. ``teacher`` is
+    ignored; the signature matches train_epoch so the phases can swap it in."""
+    model.train()
+    for ll in logical_layers(model):
+        ll.phi_in.tau = 10
+    total, correct, n = 0.0, 0, 0
+    for data in loader:
+        if data.y.numel() == 0 or data.x.isnan().any() or data.y.isnan().any():
+            continue
+        data = data.to(device)
+        y = data.y.reshape(-1).long()
+        optimizer.zero_grad()
+        out = model(data.x.float(), data.edge_index, data.batch)
+        loss = F.binary_cross_entropy(out.reshape(-1), F.one_hot(y, num_classes=num_classes).float().reshape(-1)) \
+            + F.nll_loss(F.log_softmax(out, dim=-1), y)
+        for c in model.convs:
+            loss = loss + conv_reg * (c.nn[0].reg_loss + c.nn[0].phi_in.entropy)
+        loss = loss + fc_reg * (model.fc.reg_loss + model.fc.phi_in.entropy)
+        for p in getattr(model, 'proto_layers', []):
+            loss = loss + proto_div_reg * p.reg_loss + proto_ent_reg * p.proto_entropy
+        if extra_loss is not None:
+            loss = loss + extra_loss(model)
+        loss.backward()
+        optimizer.step()
+        total += loss.item() * data.num_graphs
+        correct += int((out.argmax(-1) == y).sum())
+        n += data.num_graphs
+    return [total / max(n, 1)], [correct / max(n, 1)]
+
+
 def split_run_path(run_path):
     """results_{proto,logic}/<ds>/<cfg>/<baseline cfg>/<seed> -> (stage, ds, cfg, baseline cfg, seed)."""
     parts = os.path.normpath(run_path).split(os.sep)
@@ -177,6 +217,8 @@ def main():
                     help='final fan-in cap of the head (default: same schedule as the conv layers)')
     ap.add_argument('--unit_hoyer', type=float, default=0.0,
                     help='penalty leaving lower units unused (Hoyer phase and schedule steps)')
+    ap.add_argument('--task_only', action='store_true',
+                    help='train on the class loss only, without layer-wise distillation from the teacher')
     ap.add_argument('--recover_epochs', type=int, default=100, help='fine-tuning after pruning')
     ap.add_argument('--lr', type=float, default=None, help='default: the run\'s lr')
     ap.add_argument('--batch_size', type=int, default=None, help='default: the run\'s batch size')
@@ -212,7 +254,7 @@ def main():
     if a.fanin_schedule:
         sp_args['fanin_schedule'] = '-'.join(map(str, schedule))
     keys = ('epochs', 'hoyer_fc', 'hoyer_reg') + (('max_fanin',) if a.max_fanin else ()) \
-        + (('fanin_schedule', 'step_epochs') if schedule else ()) + (('fc_fanin',) if a.fc_fanin else ()) + (('unit_hoyer',) if a.unit_hoyer else ()) \
+        + (('fanin_schedule', 'step_epochs') if schedule else ()) + (('fc_fanin',) if a.fc_fanin else ()) + (('unit_hoyer',) if a.unit_hoyer else ()) + (('task_only',) if a.task_only else ()) \
         + ('prune_eps', 'recover_epochs')
     cfg = '|'.join(f'{k}={sp_args[k]}' for k in keys)
     out_dir = a.out_dir or os.path.join(a.run_path, 'sparse', cfg)
@@ -239,7 +281,9 @@ def main():
         common = dict(train_full=True, conv_reg=run_args['conv_reg'], fc_reg=run_args['fc_reg'])
         if stage == 'proto':
             common.update(proto_div_reg=run_args['proto_div_reg'], proto_ent_reg=run_args['proto_ent_reg'])
-        train_epoch = train_epoch_proto if stage == 'proto' else train_epoch_logic
+        train_epoch = task_epoch if a.task_only else train_epoch_proto if stage == 'proto' else train_epoch_logic
+        if a.task_only and stage != 'proto':
+            common.pop('proto_div_reg', None)
         lr = a.lr or run_args['lr']
 
         # 1. Hoyer fine-tuning
