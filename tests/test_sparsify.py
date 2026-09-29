@@ -13,7 +13,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 try:
     from models_proto.tell import LogicalLayer
-    from sparsify_proto import hoyer, hoyer_penalty, prune
+    from sparsify_proto import hoyer, hoyer_penalty, prune, unit_hoyer_penalty, used_units
 except Exception as e:                                   # torch_geometric missing etc.
     raise unittest.SkipTest(f'sparsify_proto not importable: {e}')
 
@@ -54,6 +54,32 @@ class TestHoyer(unittest.TestCase):
         after = [hoyer(c.nn[0].weight).mean().item() for c in m.convs]
         for b, a in zip(before, after):
             self.assertGreater(a, b + 0.1)            # plateaus once pushed weights saturate the sigmoid
+
+
+class TestUnitPenalty(unittest.TestCase):
+
+    def test_leaves_lower_units_unused(self):
+        torch.manual_seed(0)
+        m = Tiny()
+        f = unit_hoyer_penalty(m, 1.0)
+        before = used_units(m, 0.05)
+        opt = torch.optim.Adam(m.parameters(), lr=0.05)
+        for _ in range(300):
+            opt.zero_grad()
+            f(m).backward()
+            opt.step()
+        after = used_units(m, 0.05)
+        self.assertTrue(all(a < b for a, b in zip(after, before)), (before, after))
+
+    def test_scale_invariant(self):
+        torch.manual_seed(1)
+        m = Tiny()
+        f = unit_hoyer_penalty(m, 1.0)
+        p = float(f(m))
+        with torch.no_grad():
+            for ll in [c.nn[0] for c in m.convs] + [m.fc]:
+                ll.weight_exp += 1.0                          # every weight x e
+        self.assertAlmostEqual(float(f(m)), p, places=5)
 
 
 class TestPrune(unittest.TestCase):

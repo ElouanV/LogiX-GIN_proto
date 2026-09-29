@@ -5,7 +5,8 @@
 #
 #   WIDTHS="32 64" SEEDS="0 1 2" JOBS=4 scripts/run_fanin.sh
 #
-# VARIANTS: "<schedule>:<head cap or ->" items; the head follows the conv schedule when "-".
+# VARIANTS: "<schedule>:<head cap or ->[:<unit_hoyer>]" items; the head follows the conv
+# schedule when "-"; unit_hoyer (default 0) leaves lower units unused (sparsify_proto.py).
 # Logs: logs/<dataset>/fanin_h<H>_<schedule>_fc<cap>_seed<k>.log
 set -uo pipefail
 REPO="$(cd "$(dirname "$0")/.." && pwd)"
@@ -27,18 +28,19 @@ export PY DATASET STEP_EPOCHS RECOVER LOGIC_CFG HOYER_CFG
 
 job() {
     h=$1 k=$2 v=$3
-    IFS=: read -r sched fc <<< "$v"
+    IFS=: read -r sched fc unit <<< "$v"; unit=${unit:-0}
     base="results_logic/$DATASET/$LOGIC_CFG/batch_size=128|dropout=0.15|epochs=500|hidden_dim=$h|l2=1e-05|lr=0.001|nogumbel=False|num_layers=3/$k/sparse/$HOYER_CFG"
     fcarg=() fccfg=""
     [ "$fc" != "-" ] && fcarg=(--fc_fanin "$fc") && fccfg="|fc_fanin=$fc"
+    [ "$unit" != "0" ] && fcarg+=(--unit_hoyer "$unit") && fccfg+="|unit_hoyer=$unit.0"
     out="$base/sparse/epochs=0|hoyer_fc=1.0|hoyer_reg=1.0|fanin_schedule=${sched//,/-}|step_epochs=$STEP_EPOCHS$fccfg|prune_eps=0.01|recover_epochs=$RECOVER"
-    log="logs/$DATASET/fanin_h${h}_${sched//,/-}_fc${fc}_seed$k.log"
+    log="logs/$DATASET/fanin_h${h}_${sched//,/-}_fc${fc}_u${unit}_seed$k.log"
     {
         [ -f "$out/best.pt" ] || $PY sparsify_proto.py --run_path "$base" --epochs 0 --fanin_schedule "$sched" \
             --step_epochs "$STEP_EPOCHS" --recover_epochs "$RECOVER" --prune_eps 0.01 "${fcarg[@]}" || exit 1
         [ -f "$out/rules/rules.json" ] || $PY unpack_rules.py --run_path "$out" || exit 1
     } > "$log" 2>&1
-    echo "[$(date +%T)] h$h ${sched} fc$fc seed $k: $(grep -E '^formula size' "$log")"
+    echo "[$(date +%T)] h$h ${sched} fc$fc unit$unit seed $k: $(grep -E '^formula size' "$log")"
 }
 export -f job
 

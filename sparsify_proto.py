@@ -29,6 +29,12 @@ Three phases, starting from ``<run_path>/best.pt``:
    inputs has at most C(k, k/2) minimal rules (they form an antichain), each of at most
    k literals, and reads at most k lower units. ``--fc_fanin`` sets a different final
    cap for the head.
+   ``--unit_hoyer`` adds, during the Hoyer phase and the schedule steps, a penalty that
+   leaves many lower units unused, so the class rules reach fewer units: per layer above
+   L0 (and the head), the norm of the weights reading each lower unit (both polarities,
+   and every pooling op for the head) is taken, and ``1 - Hoyer`` of that vector is
+   penalised. Like the row penalty it is scale-invariant, so shrinking every weight of a
+   unit together with its threshold does not satisfy it.
 3. Recovery. Same objective without the Hoyer term, masks frozen; the epoch with the
    best validation accuracy is kept.
 
@@ -80,6 +86,36 @@ def hoyer_penalty(model, hoyer_reg, hoyer_fc):
             loss = loss + hoyer_fc * (1 - hoyer(m.fc.weight)).mean()
         return loss
     return f
+
+
+def unit_groups(model):
+    """(LogicalLayer, lower-unit index of every input column) for the layers above L0."""
+    L, h = len(model.convs), model.convs[0].nn[0].out_features
+    out = []
+    for c in model.convs[1:]:
+        n = c.nn[0].in_features // 2
+        out.append((c.nn[0], torch.arange(2 * n) % n))
+    n = model.fc.in_features // 2
+    out.append((model.fc, (torch.arange(2 * n) % n) % (L * h)))
+    return out
+
+
+def unit_hoyer_penalty(model, unit_hoyer):
+    """unit_hoyer * sum over layers of (1 - Hoyer) of the per-lower-unit weight norms."""
+    groups = [(ll, g, int(g.max()) + 1) for ll, g in unit_groups(model)]
+    def f(m):
+        loss = 0
+        for ll, g, n in groups:
+            sq = torch.zeros(n, device=ll.weight.device).index_add_(0, g.to(ll.weight.device), (ll.weight ** 2).sum(0))
+            loss = loss + (1 - hoyer(torch.sqrt(sq + 1e-12)[None]))[0]
+        return unit_hoyer * loss
+    return f
+
+
+def used_units(model, eps=0.0):
+    """Per layer above L0 (and head): how many lower units are read by some nonzero weight."""
+    return [int(torch.zeros(int(g.max()) + 1).index_add_(0, g, (ll.weight.detach().cpu() > eps).float().sum(0)).gt(0).sum())
+            for ll, g in unit_groups(model)]
 
 
 @torch.no_grad()
@@ -139,6 +175,8 @@ def main():
     ap.add_argument('--step_epochs', type=int, default=50, help='training epochs after each schedule step')
     ap.add_argument('--fc_fanin', type=int, default=None,
                     help='final fan-in cap of the head (default: same schedule as the conv layers)')
+    ap.add_argument('--unit_hoyer', type=float, default=0.0,
+                    help='penalty leaving lower units unused (Hoyer phase and schedule steps)')
     ap.add_argument('--recover_epochs', type=int, default=100, help='fine-tuning after pruning')
     ap.add_argument('--lr', type=float, default=None, help='default: the run\'s lr')
     ap.add_argument('--batch_size', type=int, default=None, help='default: the run\'s batch size')
@@ -174,7 +212,7 @@ def main():
     if a.fanin_schedule:
         sp_args['fanin_schedule'] = '-'.join(map(str, schedule))
     keys = ('epochs', 'hoyer_fc', 'hoyer_reg') + (('max_fanin',) if a.max_fanin else ()) \
-        + (('fanin_schedule', 'step_epochs') if schedule else ()) + (('fc_fanin',) if a.fc_fanin else ()) \
+        + (('fanin_schedule', 'step_epochs') if schedule else ()) + (('fc_fanin',) if a.fc_fanin else ()) + (('unit_hoyer',) if a.unit_hoyer else ()) \
         + ('prune_eps', 'recover_epochs')
     cfg = '|'.join(f'{k}={sp_args[k]}' for k in keys)
     out_dir = a.out_dir or os.path.join(a.run_path, 'sparse', cfg)
@@ -206,7 +244,9 @@ def main():
 
         # 1. Hoyer fine-tuning
         opt = torch.optim.AdamW(model_proto.parameters(), lr=lr, weight_decay=run_args['l2'])
-        penalty = hoyer_penalty(model_proto, a.hoyer_reg, a.hoyer_fc)
+        row_pen = hoyer_penalty(model_proto, a.hoyer_reg, a.hoyer_fc)
+        unit_pen = unit_hoyer_penalty(model_proto, a.unit_hoyer) if a.unit_hoyer else None
+        penalty = (lambda m: row_pen(m) + unit_pen(m)) if unit_pen else row_pen
         t0 = time.time()
         for epoch in range(a.epochs):
             loss, _ = train_epoch(teacher, model_proto, train_loader, device, opt, num_classes,
@@ -234,13 +274,15 @@ def main():
             last = si == len(schedule) - 1
             opt = torch.optim.AdamW(model_proto.parameters(), lr=lr, weight_decay=run_args['l2'])
             for epoch in range(0 if last else a.step_epochs):      # the last step trains in phase 3
-                loss, _ = train_epoch(teacher, model_proto, train_loader, device, opt, num_classes, **common)
+                loss, _ = train_epoch(teacher, model_proto, train_loader, device, opt, num_classes,
+                                      extra_loss=unit_pen, **common)
                 v = test_epoch(model_proto, val_loader, device)
                 tracking.log_metrics({'schedule_phase/val_acc': v, 'schedule_phase/fanin': k,
                                       'schedule_phase/train_loss': loss[-1]}, step=step)
                 step += 1
             print(f'fan-in {k:3d}: pruned {frac:.1%}, val right after the cut {cut:.4f}'
-                  + ('' if last else f', after {a.step_epochs} epochs {v:.4f}'), flush=True)
+                  + ('' if last else f', after {a.step_epochs} epochs {v:.4f}')
+                  + f', lower units used {used_units(model_proto)}', flush=True)
             tracking.log_metrics({f'schedule/k{k}_val_after_cut': cut})
         if schedule:
             after_prune = test_epoch(model_proto, val_loader, device)
@@ -268,6 +310,8 @@ def main():
                  'pruned_fraction': frac, 'val_after_prune_before_recovery': after_prune}
         print_stats('before', before['metrics'], before['rules'])
         print_stats('after', after['metrics'], after['rules'])
+        after['used_units'] = used_units(model_proto)
+        print(f'lower units read by L1.., head: {after["used_units"]}')
 
         with open(os.path.join(out_dir, 'args.json'), 'w') as f:
             json.dump({**run_args, 'sparsify': sp_args}, f)
