@@ -1,0 +1,158 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1240 450" width="1240" height="450" font-family="Helvetica, Arial, 'Liberation Sans', 'Nimbus Sans', sans-serif" font-size="11" fill="#111">
+  <defs>
+    <marker id="ah" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#111"/></marker>
+    <marker id="ahg" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#777"/></marker>
+    <marker id="aht" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#0F7C86"/></marker>
+  </defs>
+  <rect width="1240" height="450" fill="#fff"/>
+
+  <!-- ================= (a) LogiX-GIN ================= -->
+  <text x="14" y="22" font-size="13" font-weight="bold">(a)  LogiX-GIN forward pass</text>
+
+  <!-- input graph -->
+  <rect x="14" y="62" width="118" height="112" rx="3" fill="#fff" stroke="#111" stroke-width="1.2"/>
+  <g stroke="#111" stroke-width="1">
+    <line x1="47" y1="92" x2="73" y2="84"/><line x1="73" y1="84" x2="99" y2="96"/><line x1="47" y1="92" x2="59" y2="116"/><line x1="73" y1="84" x2="59" y2="116"/><line x1="59" y1="116" x2="87" y2="118"/><line x1="99" y1="96" x2="87" y2="118"/>
+  </g>
+  <g fill="#fff" stroke="#111" stroke-width="1.2">
+    <circle cx="47" cy="92" r="5"/><circle cx="73" cy="84" r="5"/><circle cx="99" cy="96" r="5"/><circle cx="59" cy="116" r="5"/><circle cx="87" cy="118" r="5"/>
+  </g>
+  <text x="73" y="138" text-anchor="middle">G = (X, A)</text>
+  <text x="73" y="153" text-anchor="middle" font-size="10" fill="#555">X ∈ {0,1}<tspan dy="-4" font-size="7.5">N×F</tspan></text>
+  <text x="73" y="167" text-anchor="middle" font-size="10" fill="#555">A ∈ {0,1}<tspan dy="-4" font-size="7.5">N×N</tspan></text>
+
+  <path d="M132,118 L164,118" stroke="#111" stroke-width="1.2" fill="none" marker-end="url(#ah)"/>
+  <text x="148" y="108" text-anchor="middle" font-size="9.5" fill="#555">N×F</text>
+
+  <!-- repeated layer bracket -->
+  <rect x="166" y="44" width="464" height="166" rx="4" fill="none" stroke="#777" stroke-width="1" stroke-dasharray="5 4"/>
+  <text x="174" y="58" font-size="10" fill="#555">message-passing layer l = 1 … L      (d = F for l = 1,  d = h for l &gt; 1)</text>
+
+  <!-- negation -->
+  <rect x="180" y="88" width="76" height="60" rx="3" fill="#fff" stroke="#111" stroke-width="1.2"/>
+  <text x="218" y="110" text-anchor="middle" font-weight="bold">negation</text>
+  <text x="218" y="127" text-anchor="middle">[H, 1−H]</text>
+  <text x="218" y="141" text-anchor="middle" font-size="9.5" fill="#555">no parameters</text>
+
+  <path d="M256,118 L300,118" stroke="#111" stroke-width="1.2" fill="none" marker-end="url(#ah)"/>
+  <text x="278" y="108" text-anchor="middle" font-size="9.5" fill="#555">N×2d</text>
+
+  <!-- sum aggregation -->
+  <rect x="302" y="88" width="118" height="60" rx="3" fill="#fff" stroke="#111" stroke-width="1.2"/>
+  <text x="361" y="110" text-anchor="middle" font-weight="bold">sum aggregation</text>
+  <text x="361" y="127" text-anchor="middle">a<tspan dy="3" font-size="8">i</tspan><tspan dy="-3" font-size="11"> = x</tspan><tspan dy="3" font-size="8">i</tspan><tspan dy="-3" font-size="11"> + Σ</tspan><tspan dy="3" font-size="8">j∈N(i)</tspan><tspan dy="-3" font-size="11"> x</tspan><tspan dy="3" font-size="8">j</tspan></text>
+  <text x="361" y="141" text-anchor="middle" font-size="9.5" fill="#555">literal counts (GIN, ε = 0)</text>
+
+  <path d="M420,118 L464,118" stroke="#111" stroke-width="1.2" fill="none" marker-end="url(#ah)"/>
+  <text x="442" y="108" text-anchor="middle" font-size="9.5" fill="#555">ℕ<tspan dy="-3" font-size="7">N×2d</tspan></text>
+
+  <!-- logical layer -->
+  <rect x="466" y="88" width="118" height="60" rx="3" fill="#D8EEF0" stroke="#0F7C86" stroke-width="1.4"/>
+  <text x="525" y="110" text-anchor="middle" font-weight="bold" fill="#0B5A61">logical layer</text>
+  <text x="525" y="127" text-anchor="middle">2d → h   (see b)</text>
+  <text x="525" y="141" text-anchor="middle" font-size="9.5" fill="#555">thresholds + monotone vote</text>
+
+  <!-- output H^l -->
+  <path d="M584,118 L616,118" stroke="#111" stroke-width="1.2" fill="none"/>
+  <circle cx="616" cy="118" r="2.5" fill="#111"/>
+  <text x="600" y="108" text-anchor="middle" font-size="9.5" fill="#555">H<tspan dy="-3" font-size="7">l</tspan></text>
+
+  <!-- feedback to next layer -->
+  <path d="M616,118 L616,190 L218,190 L218,150" stroke="#777" stroke-width="1" fill="none" stroke-dasharray="4 3" marker-end="url(#ahg)"/>
+  <text x="417" y="203" text-anchor="middle" font-size="9.5" fill="#555">H<tspan dy="-3" font-size="7">l</tspan><tspan dy="3" font-size="9.5"> ∈ [0,1]</tspan><tspan dy="-3" font-size="7">N×h</tspan><tspan dy="3" font-size="9.5"> (≈ binary) is the input of layer l+1, with dropout</tspan></text>
+
+  <!-- skip connections to concat -->
+  <path d="M616,118 L664,118" stroke="#111" stroke-width="1.2" fill="none" marker-end="url(#ah)"/>
+  <text x="648" y="108" text-anchor="middle" font-size="9.5" fill="#555">∀ l</text>
+
+  <!-- concat -->
+  <rect x="666" y="88" width="88" height="60" rx="3" fill="#fff" stroke="#111" stroke-width="1.2"/>
+  <text x="710" y="110" text-anchor="middle" font-weight="bold">concat</text>
+  <text x="710" y="127" text-anchor="middle">[H<tspan dy="-3" font-size="8">1</tspan><tspan dy="3" font-size="11"> ‖ … ‖ H</tspan><tspan dy="-3" font-size="8">L</tspan><tspan dy="3" font-size="11">]</tspan></text>
+  <text x="710" y="141" text-anchor="middle" font-size="9.5" fill="#555">jumping knowledge</text>
+
+  <path d="M754,118 L798,118" stroke="#111" stroke-width="1.2" fill="none" marker-end="url(#ah)"/>
+  <text x="776" y="108" text-anchor="middle" font-size="9.5" fill="#555">N×Lh</text>
+
+  <!-- readout -->
+  <rect x="800" y="88" width="118" height="60" rx="3" fill="#fff" stroke="#111" stroke-width="1.2"/>
+  <text x="859" y="110" text-anchor="middle" font-weight="bold">readout</text>
+  <text x="859" y="127" text-anchor="middle">mean ‖ max ‖ sum</text>
+  <text x="859" y="141" text-anchor="middle" font-size="9.5" fill="#555">over the nodes of a graph</text>
+
+  <path d="M918,118 L962,118" stroke="#111" stroke-width="1.2" fill="none" marker-end="url(#ah)"/>
+  <text x="940" y="108" text-anchor="middle" font-size="9.5" fill="#555">ℝ<tspan dy="-3" font-size="7">3Lh</tspan></text>
+
+  <!-- negation 2 -->
+  <rect x="964" y="88" width="76" height="60" rx="3" fill="#fff" stroke="#111" stroke-width="1.2"/>
+  <text x="1002" y="110" text-anchor="middle" font-weight="bold">negation</text>
+  <text x="1002" y="127" text-anchor="middle">[Z, 1−Z]</text>
+
+  <path d="M1040,118 L1084,118" stroke="#111" stroke-width="1.2" fill="none" marker-end="url(#ah)"/>
+  <text x="1062" y="108" text-anchor="middle" font-size="9.5" fill="#555">ℝ<tspan dy="-3" font-size="7">6Lh</tspan></text>
+
+  <!-- logical head -->
+  <rect x="1086" y="88" width="104" height="60" rx="3" fill="#D8EEF0" stroke="#0F7C86" stroke-width="1.4"/>
+  <text x="1138" y="110" text-anchor="middle" font-weight="bold" fill="#0B5A61">logical layer</text>
+  <text x="1138" y="127" text-anchor="middle">6Lh → C</text>
+  <text x="1138" y="141" text-anchor="middle" font-size="9.5" fill="#555">one unit per class</text>
+
+  <path d="M1190,118 L1226,118" stroke="#111" stroke-width="1.2" fill="none" marker-end="url(#ah)"/>
+  <text x="1208" y="106" text-anchor="middle" font-size="10">Ŷ</text>
+  <text x="1232" y="140" text-anchor="end" font-size="9.5" fill="#555">Ŷ ∈ [0,1]<tspan dy="-3" font-size="7">C</tspan></text>
+  <text x="1232" y="154" text-anchor="end" font-size="9.5" fill="#555">class = argmax Ŷ</text>
+
+  <!-- ================= (b) logical layer ================= -->
+  <line x1="14" y1="230" x2="1226" y2="230" stroke="#ccc" stroke-width="1"/>
+  <text x="14" y="254" font-size="13" font-weight="bold">(b)  Logical layer  n → m</text>
+  <text x="330" y="254" font-size="10" fill="#555">each real input is thresholded into a literal; each output unit is a positively weighted vote over the literals</text>
+
+  <!-- input -->
+  <text x="64" y="332" text-anchor="middle">a ∈ ℝ<tspan dy="-4" font-size="8">n</tspan></text>
+  <text x="64" y="348" text-anchor="middle" font-size="9.5" fill="#555">counts (conv layer)</text>
+  <text x="64" y="360" text-anchor="middle" font-size="9.5" fill="#555">pooled stats (head)</text>
+  <path d="M116,328 L160,328" stroke="#111" stroke-width="1.2" fill="none" marker-end="url(#ah)"/>
+
+  <!-- threshold -->
+  <rect x="162" y="290" width="196" height="76" rx="3" fill="#fff" stroke="#0F7C86" stroke-width="1.4"/>
+  <text x="260" y="310" text-anchor="middle" font-weight="bold" fill="#0B5A61">threshold  φ</text>
+  <text x="260" y="329" text-anchor="middle">ℓ<tspan dy="3" font-size="8">k</tspan><tspan dy="-3" font-size="11"> = 𝟙[ a</tspan><tspan dy="3" font-size="8">k</tspan><tspan dy="-3" font-size="11"> &gt; t</tspan><tspan dy="3" font-size="8">k</tspan><tspan dy="-3" font-size="11"> ]</tspan></text>
+  <text x="260" y="346" text-anchor="middle" font-size="9.5" fill="#555">learned t<tspan dy="3" font-size="7">k</tspan><tspan dy="-3" font-size="9.5"> = −b</tspan><tspan dy="3" font-size="7">k</tspan><tspan dy="-3" font-size="9.5"> / w</tspan><tspan dy="3" font-size="7">k</tspan><tspan dy="-3" font-size="9.5">,  w</tspan><tspan dy="3" font-size="7">k</tspan><tspan dy="-3" font-size="9.5"> &gt; 0</tspan></text>
+  <text x="260" y="359" text-anchor="middle" font-size="9.5" fill="#555">relaxed to a smooth step during training</text>
+
+  <path d="M358,328 L404,328" stroke="#111" stroke-width="1.2" fill="none" marker-end="url(#ah)"/>
+  <text x="381" y="318" text-anchor="middle" font-size="9.5" fill="#555">ℓ ∈ {0,1}<tspan dy="-3" font-size="7">n</tspan></text>
+
+  <!-- weighted vote -->
+  <rect x="406" y="290" width="206" height="76" rx="3" fill="#fff" stroke="#0F7C86" stroke-width="1.4"/>
+  <text x="509" y="310" text-anchor="middle" font-weight="bold" fill="#0B5A61">monotone weighted vote</text>
+  <text x="509" y="329" text-anchor="middle">s = W ℓ + b,     W ∈ ℝ<tspan dy="-4" font-size="8">m×n</tspan><tspan dy="4" font-size="11">, W ≥ 0</tspan></text>
+  <text x="509" y="352" text-anchor="middle" font-size="9.5" fill="#555">W = σ(W<tspan dy="3" font-size="7">σ</tspan><tspan dy="-3" font-size="9.5">) · exp(w</tspan><tspan dy="3" font-size="7">e</tspan><tspan dy="-3" font-size="9.5">) · prune mask</tspan></text>
+
+  <path d="M612,328 L658,328" stroke="#111" stroke-width="1.2" fill="none" marker-end="url(#ah)"/>
+  <text x="635" y="318" text-anchor="middle" font-size="9.5" fill="#555">ℝ<tspan dy="-3" font-size="7">m</tspan></text>
+
+  <!-- activation -->
+  <rect x="660" y="290" width="118" height="76" rx="3" fill="#fff" stroke="#111" stroke-width="1.2"/>
+  <text x="719" y="310" text-anchor="middle" font-weight="bold">steep sigmoid</text>
+  <text x="719" y="329" text-anchor="middle">o = σ(τ s),  τ = 10</text>
+  <text x="719" y="352" text-anchor="middle" font-size="9.5" fill="#555">𝟙[s &gt; 0] at inference</text>
+
+  <path d="M778,328 L824,328" stroke="#111" stroke-width="1.2" fill="none" marker-end="url(#ah)"/>
+  <text x="801" y="318" text-anchor="middle" font-size="9.5" fill="#555">o ∈ [0,1]<tspan dy="-3" font-size="7">m</tspan></text>
+
+  <!-- rule reading -->
+  <rect x="826" y="284" width="400" height="88" rx="3" fill="#F6F6F6" stroke="#999" stroke-width="1"/>
+  <text x="842" y="303" font-weight="bold">the same parameters, read as rules</text>
+  <text x="842" y="322">o<tspan dy="3" font-size="8">i</tspan><tspan dy="-3" font-size="11"> = 1   ⟺   Σ</tspan><tspan dy="3" font-size="8">k</tspan><tspan dy="-3" font-size="11"> W</tspan><tspan dy="3" font-size="8">ik</tspan><tspan dy="-3" font-size="11"> ℓ</tspan><tspan dy="3" font-size="8">k</tspan><tspan dy="-3" font-size="11">  ≥  −b</tspan><tspan dy="3" font-size="8">i</tspan></text>
+  <text x="842" y="341">o<tspan dy="3" font-size="8">i</tspan><tspan dy="-3" font-size="11">  ⇐  ⋁</tspan><tspan dy="3" font-size="8">S</tspan><tspan dy="-3" font-size="11"> ⋀</tspan><tspan dy="3" font-size="8">k∈S</tspan><tspan dy="-3" font-size="11"> ( a</tspan><tspan dy="3" font-size="8">k</tspan><tspan dy="-3" font-size="11"> &gt; t</tspan><tspan dy="3" font-size="8">k</tspan><tspan dy="-3" font-size="11"> ),   S minimal with Σ</tspan><tspan dy="3" font-size="8">k∈S</tspan><tspan dy="-3" font-size="11"> W</tspan><tspan dy="3" font-size="8">ik</tspan><tspan dy="-3" font-size="11"> ≥ −b</tspan><tspan dy="3" font-size="8">i</tspan></text>
+  <text x="842" y="362" font-size="9.5" fill="#555">W ≥ 0 ⇒ monotone threshold unit ⇒ rules found by subset enumeration</text>
+
+  <!-- training note -->
+  <text x="162" y="402" font-size="9.5" fill="#555">Training: each logical layer first learns to reproduce the binary output of the matching layer of a Gumbel-binarised GIN teacher (layer-wise distillation),</text>
+  <text x="162" y="416" font-size="9.5" fill="#555">then the whole model is fine-tuned end-to-end on the labels.  Regularisers: L1 on the gates σ(W<tspan dy="3" font-size="7">σ</tspan><tspan dy="-3" font-size="9.5">) (short rules), entropy on ℓ and o (binary activations).</tspan></text>
+
+  <!-- link from (a) logical layer to (b) -->
+  <path d="M525,148 L525,220 L300,220 L300,288" stroke="#0F7C86" stroke-width="1" fill="none" stroke-dasharray="4 3" marker-end="url(#aht)"/>
+</svg>
