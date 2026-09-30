@@ -20,8 +20,11 @@ Extra knobs over train_logic.py:
                                       of the epochs, then held. --mask_ckpt_temp keeps a
                                       checkpoint only once T <= that value, so the kept model
                                       reads as ANDs (above it a prototype is an m-of-n rule).
+                                      --mask_layer_cost c0,c1,.. weights the cared-bit penalty
+                                      by the conv layer a bit reads (e.g. 0.25,1,1 makes L0 bits,
+                                      the only ones that decode to short rules, cheaper).
                                       Off by default; the mask options only enter the results
-                                      path when it is on, the last two only when set.
+                                      path when it is on, the last three only when set.
 
 Results go to results_proto/ so they never collide with results_logic/.
 """
@@ -301,6 +304,8 @@ def _train_seed(dataset_name, baseline_path, args, seed, device):
         p.requires_grad_ = False
     print('Baseline Acc:', test_epoch(model, test_loader, device))
     model_proto = build_proto_model(args, baseline_args, num_features, num_classes, device)
+    if args.get('mask_layer_cost'):
+        model_proto.set_mask_layer_cost([float(c) for c in args['mask_layer_cost'].split(',')])
 
     optimizer = torch.optim.AdamW(model_proto.parameters(), lr=args['lr'], weight_decay=args['l2'])
 
@@ -526,6 +531,7 @@ if __name__ == '__main__':
     parser.add_argument('--mask_temp_start', default=None,      type=float, help='Initial mask temperature (default d/4, with --proto_mask)')
     parser.add_argument('--mask_temp_end',  default=1.0,        type=float, help='Final mask temperature (with --proto_mask)')
     parser.add_argument('--mask_anneal_frac', default=None,     type=float, help='Fraction of the epochs over which T is annealed, then held (default 1, with --proto_mask)')
+    parser.add_argument('--mask_layer_cost', default=None,      type=str,   help='Comma-separated cared-bit cost per conv layer, e.g. 0.25,1,1 (default: 1 each, with --proto_mask)')
     parser.add_argument('--mask_ckpt_temp', default=None,       type=float, help='Keep checkpoints only once T <= this (default: always, with --proto_mask)')
     parser.add_argument('--only_eval',     action='store_true',             help='Only evaluate')
     parser.add_argument('--seed',           default=None,       type=int,   help='Single seed to run')
@@ -534,7 +540,7 @@ if __name__ == '__main__':
     if not args['proto_mask']:            # keep the results paths of unmasked configurations unchanged
         for k in ('proto_mask', 'mask_reg', 'mask_temp_start', 'mask_temp_end'):
             args.pop(k)
-    for k in ('mask_anneal_frac', 'mask_ckpt_temp'):      # nor those of earlier masked ones
+    for k in ('mask_anneal_frac', 'mask_ckpt_temp', 'mask_layer_cost'):      # nor those of earlier masked ones
         if args[k] is None or not args.get('proto_mask'):
             args.pop(k)
     if args.get('mask_ckpt_temp') is not None and args['mask_ckpt_temp'] < args['mask_temp_end']:

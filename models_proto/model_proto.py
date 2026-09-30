@@ -74,6 +74,11 @@ class GINTELLProtoBase(nn.Module):
         """Tensors each prototype layer is compared against, in proto_layers order."""
         raise NotImplementedError
 
+    def prototype_bit_layers(self):
+        """Per prototype layer, the conv layer every input bit is read from [d]."""
+        raise NotImplementedError
+
+
     def readout(self, xs, batch):
         """xs: per-layer node states [N × h]; returns s ∈ [0,1]^{G × readout_dim}."""
         raise NotImplementedError
@@ -82,6 +87,20 @@ class GINTELLProtoBase(nn.Module):
     @staticmethod
     def _pool(x, batch, ops):
         return torch.hstack([POOLS[op](x, batch) for op in ops])
+
+    def _bit_layers(self, n_ops=None):
+        """Conv layer of each bit of hstack(xs) (n_ops=None) or of its n_ops pooled copies."""
+        layers = torch.arange(self.num_layers * self.hidden_dim) // self.hidden_dim
+        return layers if n_ops is None else layers.repeat(n_ops)
+
+    def set_mask_layer_cost(self, cost):
+        """Weight the cared-bit penalty of every prototype layer by the conv layer each bit
+        reads: cost[l] for bits from layer l (see PrototypeLayer.set_bit_cost)."""
+        cost = torch.as_tensor(cost, dtype=torch.float)
+        if len(cost) != self.num_layers:
+            raise ValueError(f'one cost per conv layer ({self.num_layers}), got {len(cost)}')
+        for p, bl in zip(self.proto_layers, self.prototype_bit_layers()):
+            p.set_bit_cost(cost[bl])
 
     def head(self, s, discrete_output=False):
         if self.task == 'classification':
@@ -171,6 +190,10 @@ class GINTELLProtoNode(GINTELLProtoBase):
     def prototype_inputs(self, xs, batch):
         return [torch.hstack(xs)]
 
+    def prototype_bit_layers(self):
+        return [self._bit_layers()]
+
+
     def readout(self, xs, batch):
         h = torch.hstack(xs)                              # [N × L·h]
         s_node = self.proto(h)                            # [N × K]
@@ -205,6 +228,10 @@ class GINTELLProtoGraph(GINTELLProtoBase):
     def prototype_inputs(self, xs, batch):
         return [self._pool(torch.hstack(xs), batch, self.pool_ops)]
 
+    def prototype_bit_layers(self):
+        return [self._bit_layers(len(self.pool_ops))]
+
+
     def readout(self, xs, batch):
         z = self._pool(torch.hstack(xs), batch, self.pool_ops)   # [G × 2·L·h]
         return self.proto(z)                                     # [G × K]
@@ -237,6 +264,10 @@ class GINTELLProtoBoth(GINTELLProtoBase):
     def prototype_inputs(self, xs, batch):
         h = torch.hstack(xs)
         return [h, self._pool(h, batch, self.graph_pool_ops)]
+
+    def prototype_bit_layers(self):
+        return [self._bit_layers(), self._bit_layers(len(self.graph_pool_ops))]
+
 
     def readout(self, xs, batch):
         h = torch.hstack(xs)

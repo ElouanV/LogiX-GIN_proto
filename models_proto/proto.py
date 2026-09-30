@@ -21,7 +21,8 @@ A node matching every cared bit scores 1, each mismatch multiplies the score by 
 At T = 1 a prototype reads as a short rule "L0u3 ∧ ¬L1u12 ∧ L2u5". The trainer anneals
 T (``mask_temp``) from ~d/4, where the score behaves like the Hamming agreement and
 every prototype gets gradient, down to 1, and penalises ``mask_size`` (fraction of
-cared bits) to keep few bits per prototype.
+cared bits) to keep few bits per prototype. ``set_bit_cost`` weights that penalty per input bit, e.g. to
+make bits read from conv layer 0 (whose units decode to short rules) cheaper to care about.
 """
 import torch
 from torch import nn
@@ -99,8 +100,16 @@ class PrototypeLayer(nn.Module):
         off = ~torch.eye(self.num_prototypes, dtype=torch.bool, device=pair.device)
         self.reg_loss = pair[off].mean() if self.num_prototypes > 1 else pair.new_zeros(())
         self.proto_entropy = binary_entropy(ps).mean()
-        self.mask_size = self.care.mean() if self.masked else ps.new_ones(())
+        if self.masked:
+            cost = getattr(self, 'bit_cost', None)          # pickles from before set_bit_cost
+            self.mask_size = (self.care * cost).mean() if cost is not None else self.care.mean()
+        else:
+            self.mask_size = ps.new_ones(())
         return s
+
+    def set_bit_cost(self, cost):
+        """Per-input-bit weight [d] of the cared-bit penalty mask_size (default 1 everywhere)."""
+        self.register_buffer('bit_cost', torch.as_tensor(cost, dtype=torch.float, device=self.proto_logits.device))
 
     @torch.no_grad()
     def project(self, x, magnitude=3.0):

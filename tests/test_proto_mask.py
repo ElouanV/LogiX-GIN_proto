@@ -101,5 +101,45 @@ class TestMaskTemperature(unittest.TestCase):
         self.assertEqual(mask_temperature(a, 80, 64), 1.0)
 
 
+class TestMaskLayerCost(unittest.TestCase):
+    def test_bit_layers_follow_the_prototype_inputs(self):
+        L, h = 3, 4
+        for level in ('node', 'graph', 'both'):
+            m = get_model(level, num_features=5, num_classes=2, num_layers=L, hidden_dim=h,
+                          num_prototypes=2, proto_mask=True)
+            for p, bl in zip(m.proto_layers, m.prototype_bit_layers()):
+                self.assertEqual(len(bl), p.in_features)
+                self.assertEqual(bl[:L * h].tolist(), [l for l in range(L) for _ in range(h)])
+                if len(bl) > L * h:                          # pooled copies repeat the layout
+                    self.assertTrue(torch.equal(bl[L * h:2 * L * h], bl[:L * h]))
+
+    def test_cost_weights_the_penalty_per_layer(self):
+        m = get_model('node', num_features=5, num_classes=2, num_layers=3, hidden_dim=4,
+                      num_prototypes=2, proto_mask=True)
+        x, e, b = torch.rand(6, 5), torch.tensor([[0, 1], [1, 0]]), torch.zeros(6, dtype=torch.long)
+        m(x, e, b)
+        self.assertAlmostEqual(float(m.proto.mask_size), 1.0, places=5)     # every bit cared at init
+        m.set_mask_layer_cost([0.0, 1.0, 2.0])
+        m(x, e, b)
+        self.assertAlmostEqual(float(m.proto.mask_size), 1.0, places=5)     # mean of 0, 1, 2
+        with torch.no_grad():
+            m.proto.mask_logits[:, 4:] = -5                                 # care only about L0
+        m(x, e, b)
+        self.assertAlmostEqual(float(m.proto.mask_size), 0.0, places=5)
+        with self.assertRaises(ValueError):
+            m.set_mask_layer_cost([1.0, 1.0])
+
+    def test_cost_survives_pickling(self):
+        import io
+        m = get_model('graph', num_features=5, num_classes=2, num_layers=2, hidden_dim=4,
+                      num_prototypes=2, proto_mask=True)
+        m.set_mask_layer_cost([0.5, 1.0])
+        buf = io.BytesIO()
+        torch.save(m, buf)
+        buf.seek(0)
+        m2 = torch.load(buf, weights_only=False)
+        self.assertTrue(torch.equal(m2.proto.bit_cost, m.proto.bit_cost))
+
+
 if __name__ == '__main__':
     unittest.main()
