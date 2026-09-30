@@ -78,6 +78,9 @@ class GINTELLProtoBase(nn.Module):
         """Per prototype layer, the conv layer every input bit is read from [d]."""
         raise NotImplementedError
 
+    def readout_groups(self):
+        """Prototype (numbered across proto_layers) behind every readout column [readout_dim]."""
+        raise NotImplementedError
 
     def readout(self, xs, batch):
         """xs: per-layer node states [N × h]; returns s ∈ [0,1]^{G × readout_dim}."""
@@ -193,6 +196,8 @@ class GINTELLProtoNode(GINTELLProtoBase):
     def prototype_bit_layers(self):
         return [self._bit_layers()]
 
+    def readout_groups(self):
+        return torch.arange(self.readout_dim) % self.num_prototypes
 
     def readout(self, xs, batch):
         h = torch.hstack(xs)                              # [N × L·h]
@@ -231,6 +236,8 @@ class GINTELLProtoGraph(GINTELLProtoBase):
     def prototype_bit_layers(self):
         return [self._bit_layers(len(self.pool_ops))]
 
+    def readout_groups(self):
+        return torch.arange(self.num_prototypes)
 
     def readout(self, xs, batch):
         z = self._pool(torch.hstack(xs), batch, self.pool_ops)   # [G × 2·L·h]
@@ -268,6 +275,9 @@ class GINTELLProtoBoth(GINTELLProtoBase):
     def prototype_bit_layers(self):
         return [self._bit_layers(), self._bit_layers(len(self.graph_pool_ops))]
 
+    def readout_groups(self):
+        node = torch.arange(len(self.node_pool_ops) * self.num_prototypes) % self.num_prototypes
+        return torch.cat([node, self.num_prototypes + torch.arange(self.num_graph_prototypes)])
 
     def readout(self, xs, batch):
         h = torch.hstack(xs)

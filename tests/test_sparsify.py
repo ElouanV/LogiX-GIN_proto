@@ -13,7 +13,8 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 try:
     from models_proto.tell import LogicalLayer
-    from sparsify_proto import hoyer, hoyer_penalty, prune, unit_hoyer_penalty, used_units
+    from models_proto.model_proto import get_model
+    from sparsify_proto import hoyer, hoyer_penalty, prune, unit_groups, unit_hoyer_penalty, used_units
 except Exception as e:                                   # torch_geometric missing etc.
     raise unittest.SkipTest(f'sparsify_proto not importable: {e}')
 
@@ -80,6 +81,29 @@ class TestUnitPenalty(unittest.TestCase):
             for ll in [c.nn[0] for c in m.convs] + [m.fc]:
                 ll.weight_exp += 1.0                          # every weight x e
         self.assertAlmostEqual(float(f(m)), p, places=5)
+
+
+class TestUnitGroups(unittest.TestCase):
+
+    def test_base_head_groups_conv_units_over_pooling_and_polarity(self):
+        m = Tiny()                                       # head reads 5 inputs = [s, 1-s]
+        m.convs[0].nn[0] = LogicalLayer(8, 5)
+        groups = unit_groups(m)
+        n = m.fc.in_features // 2
+        L, h = 2, 5
+        self.assertTrue(torch.equal(groups[-1][1], (torch.arange(2 * n) % n) % (L * h)))
+
+    def test_prototype_head_groups_by_prototype(self):
+        K, Kg = 3, 2
+        for level, expect in (('node', [0, 1, 2, 0, 1, 2]), ('graph', [0, 1, 2]),
+                              ('both', [0, 1, 2, 0, 1, 2, 3, 4])):
+            m = get_model(level, num_features=4, num_classes=2, num_layers=2, hidden_dim=5,
+                          num_prototypes=K, **({'num_graph_prototypes': Kg} if level == 'both' else {}))
+            ll, g = unit_groups(m)[-1]
+            self.assertIs(ll, m.fc)
+            self.assertEqual(g.tolist(), expect + expect)          # [s, 1-s]
+            self.assertEqual(len(g), m.fc.in_features)
+            self.assertEqual(len(used_units(m)), 2)                # L1 and the head
 
 
 class TestPrune(unittest.TestCase):

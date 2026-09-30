@@ -32,9 +32,10 @@ Three phases, starting from ``<run_path>/best.pt``:
    ``--unit_hoyer`` adds, during the Hoyer phase and the schedule steps, a penalty that
    leaves many lower units unused, so the class rules reach fewer units: per layer above
    L0 (and the head), the norm of the weights reading each lower unit (both polarities,
-   and every pooling op for the head) is taken, and ``1 - Hoyer`` of that vector is
-   penalised. Like the row penalty it is scale-invariant, so shrinking every weight of a
-   unit together with its threshold does not satisfy it.
+   and every pooling op for the head; for a prototype head the lower units are the
+   prototypes) is taken, and ``1 - Hoyer`` of that vector is penalised. Like the row
+   penalty it is scale-invariant, so shrinking every weight of a unit together with its
+   threshold does not satisfy it.
 3. Recovery. Same objective without the Hoyer term, masks frozen; the epoch with the
    best validation accuracy is kept.
 
@@ -96,14 +97,21 @@ def hoyer_penalty(model, hoyer_reg, hoyer_fc):
 
 
 def unit_groups(model):
-    """(LogicalLayer, lower-unit index of every input column) for the layers above L0."""
+    """(LogicalLayer, lower-unit index of every input column) for the layers above L0.
+
+    The lower units of a conv layer are the previous layer's units (both polarities). The
+    head of a base run reads conv units through mean|max|sum pooling; the head of a
+    prototype run reads prototypes, one group per prototype over its pooling ops
+    (``readout_groups``), not conv units.
+    """
     L, h = len(model.convs), model.convs[0].nn[0].out_features
     out = []
     for c in model.convs[1:]:
         n = c.nn[0].in_features // 2
         out.append((c.nn[0], torch.arange(2 * n) % n))
     n = model.fc.in_features // 2
-    out.append((model.fc, (torch.arange(2 * n) % n) % (L * h)))
+    head = model.readout_groups() if hasattr(model, 'readout_groups') else torch.arange(n) % (L * h)
+    out.append((model.fc, head.repeat(2)))
     return out
 
 
