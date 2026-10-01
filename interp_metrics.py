@@ -265,10 +265,10 @@ def _subgraph_edges(edge_index, nodes):
     return edge_index[:, keep] - lo
 
 
-def run(run_path, split, ckpt, device):
+def run(run_path, split, ckpt, device, dataset=None):
     model = torch.load(os.path.join(run_path, ckpt), map_location=device, weights_only=False)
     data = pickle.load(open(os.path.join(run_path, 'data.pkl'), 'rb'))
-    res = interp_metrics(model, data[f'{split}_dataset'], device, dataset_from_path(run_path))
+    res = interp_metrics(model, data[f'{split}_dataset'], device, dataset or dataset_from_path(run_path))
     with open(os.path.join(run_path, f'interp_{split}.json'), 'w') as f:
         json.dump(res, f, indent=1)
     return res
@@ -279,12 +279,13 @@ def main():
     ap.add_argument('--run_path', nargs='+', required=True, help='seed directories holding best.pt and data.pkl')
     ap.add_argument('--split', default='test', choices=['train', 'val', 'test'])
     ap.add_argument('--ckpt', default='best.pt')
+    ap.add_argument('--dataset', default=None, help='default: read from the run path')
     ap.add_argument('--out', default=None, help='also write the table as CSV here')
     a = ap.parse_args()
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     rows = []
     for p in a.run_path:
-        rows.append({'run_path': p, **run(p, a.split, a.ckpt, device)})
+        rows.append({'run_path': p, **run(p, a.split, a.ckpt, device, a.dataset)})
     df = pd.DataFrame(rows)
     cols = ['acc', 'auc', 'logic_acc', 'logic_fidelity', 'head_fidelity', 'trunk_bit_agreement', 'rule_backed', 'expl_literals_median',
             'expl_bits_median', 'protos_cited', 'bits_per_proto_median', 'units_cited', 'units_cited_L0',
