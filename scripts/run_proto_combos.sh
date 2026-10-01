@@ -6,7 +6,8 @@
 # Score them afterwards with interp_metrics.py.
 #
 # MASK_LAYER_COST (e.g. 0.25,1,1) weights the cared-bit penalty by conv layer
-# (train_proto.py --mask_layer_cost) and is appended to the log name.
+# (train_proto.py --mask_layer_cost) and VOCAB_REG adds the shared-vocabulary penalty
+# (--vocab_reg); both are appended to the log name.
 #
 #   COMBOS="node_push graph_mask" SEEDS="0 1 2" JOBS=5 scripts/run_proto_combos.sh
 #   COMBOS=node_mask_push MASK_LAYER_COST=0.25,1,1 scripts/run_proto_combos.sh
@@ -16,7 +17,7 @@
 # missing teacher seed is trained first (train_baseline.py, as in run_hidden_dim.sh);
 # the student is distilled layer by layer, so it always has its teacher's trunk.
 #
-# Logs: logs/<dataset>/combo_<combo>[_lc<cost>][_h<H>L<L>]_seed<k>.log (trunk tag only
+# Logs: logs/<dataset>/combo_<combo>[_lc<cost>][_voc<reg>][_h<H>L<L>]_seed<k>.log (trunk tag only
 #       when not 64x3); teachers: logs/<dataset>/teacher_h<H>L<L>_seed<k>.log
 set -uo pipefail
 REPO="$(cd "$(dirname "$0")/.." && pwd)"
@@ -31,10 +32,11 @@ PUSH_EVERY="${PUSH_EVERY:-200}"
 MASK_REG="${MASK_REG:-0.5}"
 MASK_ANNEAL_FRAC="${MASK_ANNEAL_FRAC:-0.8}"
 MASK_LAYER_COST="${MASK_LAYER_COST:-}"
+VOCAB_REG="${VOCAB_REG:-}"
 export MLFLOW_TRACKING_URI="${MLFLOW_TRACKING_URI:-http://127.0.0.1:5055}"
 export MLFLOW_DISABLE_AGENT_HINT=1 PYTHONUNBUFFERED=1 PYTHONDONTWRITEBYTECODE=1
 mkdir -p "logs/$DATASET"
-export PY DATASET PUSH_EVERY MASK_REG MASK_ANNEAL_FRAC MASK_LAYER_COST
+export PY DATASET PUSH_EVERY MASK_REG MASK_ANNEAL_FRAC MASK_LAYER_COST VOCAB_REG
 
 job() {
     combo=$1 trunk=$2 k=$3
@@ -55,6 +57,10 @@ job() {
     if [[ $combo == *mask* && -n $MASK_LAYER_COST ]]; then
         flags+=(--mask_layer_cost "$MASK_LAYER_COST")
         name+="_lc${MASK_LAYER_COST//,/-}"
+    fi
+    if [[ $combo == *mask* && -n $VOCAB_REG ]]; then
+        flags+=(--vocab_reg "$VOCAB_REG")
+        name+="_voc$VOCAB_REG"
     fi
     [ "$trunk" != 64x3 ] && name+="_h${hidden}L$layers"
     log="logs/$DATASET/combo_${name}_seed$k.log"
