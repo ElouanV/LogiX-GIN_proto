@@ -96,6 +96,23 @@ class GINTELLProtoBase(nn.Module):
         layers = torch.arange(self.num_layers * self.hidden_dim) // self.hidden_dim
         return layers if n_ops is None else layers.repeat(n_ops)
 
+    def _unit_care(self):
+        """Per trunk unit (hstack(xs) layout), the care bits of every prototype and pooled
+        copy reading it: [n_units × (prototypes · copies)], straight-through."""
+        n = self.num_layers * self.hidden_dim
+        return torch.cat([p.care.view(p.num_prototypes, -1, n).flatten(0, 1) for p in self.proto_layers]).t()
+
+    def vocab_size(self):
+        """Fraction of trunk units that at least one prototype cares about (1 unmasked)."""
+        return (self._unit_care() > 0.5).any(1).float().mean()
+
+    def vocab_penalty(self):
+        """Group-sparsity surrogate of vocab_size: mean over units of sqrt(share of the
+        prototype bits reading the unit that care about it). Its gradient exists from the
+        all-cared start (the exact count has none there) and is smaller for a unit that is
+        already widely cared about, so prototypes are pushed to share few units."""
+        return torch.sqrt(self._unit_care().mean(1) + 1e-8).mean()
+
     def set_hard(self, hard=True):
         """Compute exactly the rules: every literal binarised, every conv unit binarised
         (straight-through gradients). The head keeps a graded output so its argmax is the

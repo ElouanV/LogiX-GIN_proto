@@ -141,5 +141,53 @@ class TestMaskLayerCost(unittest.TestCase):
         self.assertTrue(torch.equal(m2.proto.bit_cost, m.proto.bit_cost))
 
 
+class TestVocabSize(unittest.TestCase):
+    def _model(self, level):
+        return get_model(level, num_features=5, num_classes=2, num_layers=2, hidden_dim=4,
+                         num_prototypes=3, proto_mask=True)
+
+    def test_value_is_the_fraction_of_units_cared_about(self):
+        for level in ('node', 'graph', 'both'):
+            m = self._model(level)
+            self.assertAlmostEqual(float(m.vocab_size()), 1.0, places=5)       # all cared at init
+            with torch.no_grad():
+                for p in m.proto_layers:
+                    p.mask_logits.fill_(-5)
+                    p.mask_logits[0, 1] = 5                    # unit 1 (first pooled copy at graph level)
+                m.proto_layers[-1].mask_logits[1, 2] = 5       # unit 2, another prototype
+            self.assertAlmostEqual(float(m.vocab_size()), 2 / 8, places=5)
+
+    def test_pooled_copies_count_as_one_unit(self):
+        m = self._model('graph')                               # bits = [mean block | max block]
+        with torch.no_grad():
+            m.proto.mask_logits.fill_(-5)
+            m.proto.mask_logits[0, 3] = 5
+            m.proto.mask_logits[1, 8 + 3] = 5                  # same unit, max copy
+        self.assertAlmostEqual(float(m.vocab_size()), 1 / 8, places=5)
+
+    def test_sharing_a_unit_is_cheaper_than_a_new_one(self):
+        m = self._model('node')
+        with torch.no_grad():
+            m.proto.mask_logits.fill_(-5)
+            m.proto.mask_logits[0, 1] = 5
+            m.proto.mask_logits[2, 1] = 5
+        m.vocab_penalty().backward()
+        g = m.proto.mask_logits.grad
+        self.assertGreater(float(g[1, 1]), 0.0)
+        self.assertLess(float(g[1, 1]), float(g[1, 2]))       # unit 1 already shared by two prototypes
+
+    def test_penalty_has_gradient_from_the_all_cared_start_and_shrinks_the_vocabulary(self):
+        torch.manual_seed(0)
+        m = self._model('node')
+        m.vocab_penalty().backward()
+        self.assertTrue((m.proto.mask_logits.grad > 0).all())
+        opt = torch.optim.Adam([m.proto.mask_logits], lr=0.1)
+        for _ in range(200):
+            opt.zero_grad()
+            m.vocab_penalty().backward()
+            opt.step()
+        self.assertLess(float(m.vocab_size()), 0.5)
+
+
 if __name__ == '__main__':
     unittest.main()

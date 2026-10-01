@@ -23,8 +23,10 @@ Extra knobs over train_logic.py:
                                       --mask_layer_cost c0,c1,.. weights the cared-bit penalty
                                       by the conv layer a bit reads (e.g. 0.25,1,1 makes L0 bits,
                                       the only ones that decode to short rules, cheaper).
+                                      --vocab_reg weights a group-sparsity penalty on the trunk units
+                                      the prototypes care about (vocab_penalty), so they share few.
                                       Off by default; the mask options only enter the results
-                                      path when it is on, the last three only when set.
+                                      path when it is on, the last four only when set.
 
 Results go to results_proto/ so they never collide with results_logic/.
 """
@@ -92,7 +94,7 @@ def get_best_baseline_path(dataset_name):
 
 def train_epoch(model, model_proto, loader, device, optimizer, num_classes, train_full=True,
                 conv_reg=0.001, fc_reg=0.01, proto_div_reg=0.0, proto_ent_reg=0.0,
-                extra_loss=None, mask_reg=0.0):
+                extra_loss=None, mask_reg=0.0, vocab_reg=0.0):
     """One epoch of distillation + task loss.
 
     ``extra_loss(model_proto) -> tensor`` is added to every batch's loss; the
@@ -168,6 +170,8 @@ def train_epoch(model, model_proto, loader, device, optimizer, num_classes, trai
                 loss = loss + proto_div_reg * p.reg_loss + proto_ent_reg * p.proto_entropy
                 if mask_reg and p.masked:
                     loss = loss + mask_reg * p.mask_size
+            if vocab_reg:
+                loss = loss + vocab_reg * model_proto.vocab_penalty()
 
             if extra_loss is not None:
                 loss = loss + extra_loss(model_proto)
@@ -325,7 +329,7 @@ def _train_seed(dataset_name, baseline_path, args, seed, device):
         train_loss, train_acc = train_epoch(model, model_proto, train_loader, device, optimizer, num_classes,
                                             train_full=epoch>args['warmup_epochs'], conv_reg=args['conv_reg'], fc_reg=args['fc_reg'],
                                             proto_div_reg=args['proto_div_reg'], proto_ent_reg=args['proto_ent_reg'],
-                                            mask_reg=args.get('mask_reg', 0.0))
+                                            mask_reg=args.get('mask_reg', 0.0), vocab_reg=args.get('vocab_reg', 0.0))
 
         # ProtoPNet push: snap every prototype onto the closest real training example,
         # so each one *is* an observed pattern and the extracted rules stay readable.
@@ -532,6 +536,7 @@ if __name__ == '__main__':
     parser.add_argument('--mask_temp_end',  default=1.0,        type=float, help='Final mask temperature (with --proto_mask)')
     parser.add_argument('--mask_anneal_frac', default=None,     type=float, help='Fraction of the epochs over which T is annealed, then held (default 1, with --proto_mask)')
     parser.add_argument('--mask_layer_cost', default=None,      type=str,   help='Comma-separated cared-bit cost per conv layer, e.g. 0.25,1,1 (default: 1 each, with --proto_mask)')
+    parser.add_argument('--vocab_reg',      default=None,       type=float, help='Weight of the shared-vocabulary penalty: fraction of trunk units any prototype cares about (with --proto_mask)')
     parser.add_argument('--mask_ckpt_temp', default=None,       type=float, help='Keep checkpoints only once T <= this (default: always, with --proto_mask)')
     parser.add_argument('--only_eval',     action='store_true',             help='Only evaluate')
     parser.add_argument('--seed',           default=None,       type=int,   help='Single seed to run')
@@ -540,7 +545,7 @@ if __name__ == '__main__':
     if not args['proto_mask']:            # keep the results paths of unmasked configurations unchanged
         for k in ('proto_mask', 'mask_reg', 'mask_temp_start', 'mask_temp_end'):
             args.pop(k)
-    for k in ('mask_anneal_frac', 'mask_ckpt_temp', 'mask_layer_cost'):      # nor those of earlier masked ones
+    for k in ('mask_anneal_frac', 'mask_ckpt_temp', 'mask_layer_cost', 'vocab_reg'):      # nor those of earlier masked ones
         if args[k] is None or not args.get('proto_mask'):
             args.pop(k)
     if args.get('mask_ckpt_temp') is not None and args['mask_ckpt_temp'] < args['mask_temp_end']:
