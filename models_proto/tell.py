@@ -226,6 +226,11 @@ class LogicalLayer(nn.Module):
     def forward(self, x, discrete_output=False):
         # x = self.phi_in(torch.hstack([x, 1-x]))
         x = self.phi_in(x)
+        # hard_in / hard_out (set by GINTELLProtoBase.set_hard): binarise the literals / the
+        # output at 0.5 in the forward pass, straight-through in the backward pass, so the
+        # layer computes exactly its rules (pickles from before have neither attribute)
+        if getattr(self, 'hard_in', False):
+            x = x + ((x >= 0.5).float() - x).detach()
         self.max_in, _ = x.max(0)
         reg_loss = 0
         entropy_loss = 0
@@ -240,7 +245,7 @@ class LogicalLayer(nn.Module):
         
         w = self.weight
         o = sigmoid(x @ w.t() + self.b)
-        if discrete_output:
+        if discrete_output or getattr(self, 'hard_out', False):
             o = hard_sigmoid(x @ w.t() + self.b)
         
         self.entropy_loss = entropy_loss + -(o*torch.log(o+1e-8) + (1-o)*torch.log(1-o + 1e-8)).mean()

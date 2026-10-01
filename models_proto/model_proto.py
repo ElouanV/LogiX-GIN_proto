@@ -96,6 +96,14 @@ class GINTELLProtoBase(nn.Module):
         layers = torch.arange(self.num_layers * self.hidden_dim) // self.hidden_dim
         return layers if n_ops is None else layers.repeat(n_ops)
 
+    def set_hard(self, hard=True):
+        """Compute exactly the rules: every literal binarised, every conv unit binarised
+        (straight-through gradients). The head keeps a graded output so its argmax is the
+        argmax of the rule margins W.lit + b, which is how the rules predict."""
+        for c in self.convs:
+            c.nn[0].hard_in = c.nn[0].hard_out = hard
+        self.fc.hard_in = hard
+
     def set_mask_layer_cost(self, cost):
         """Weight the cared-bit penalty of every prototype layer by the conv layer each bit
         reads: cost[l] for bits from layer l (see PrototypeLayer.set_bit_cost)."""

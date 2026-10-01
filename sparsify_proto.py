@@ -45,6 +45,12 @@ layer is asked to reproduce the teacher's node states any more, so the units can
 reorganise around the task once the sparsity constraints no longer let them imitate
 a dense teacher.
 
+``--hard`` fine-tunes the model in hard mode (models_proto GINTELLProtoBase.set_hard):
+every literal and conv unit is binarised in the forward pass with straight-through
+gradients, so the network computes exactly its extracted rules and the saved model keeps
+doing so. Requires ``--task_only`` (distilling binary outputs with BCE saturates).
+With ``--hoyer_reg 0 --hoyer_fc 0 --prune_eps 0`` it is a plain hard fine-tune.
+
 ``--run_path`` may itself be a sparse run (``.../sparse/<cfg>``); with ``--epochs 0``
 the schedule then starts from its already Hoyer-sparsified weights.
 
@@ -229,6 +235,8 @@ def main():
                     help='penalty leaving lower units unused (Hoyer phase and schedule steps)')
     ap.add_argument('--task_only', action='store_true',
                     help='train on the class loss only, without layer-wise distillation from the teacher')
+    ap.add_argument('--hard', action='store_true',
+                    help='fine-tune and save in hard mode: the network computes exactly its rules (prototype runs)')
     ap.add_argument('--recover_epochs', type=int, default=100, help='fine-tuning after pruning')
     ap.add_argument('--lr', type=float, default=None, help='default: the run\'s lr')
     ap.add_argument('--batch_size', type=int, default=None, help='default: the run\'s batch size')
@@ -236,6 +244,8 @@ def main():
     ap.add_argument('--out_dir', default=None, help='default: <run_path>/sparse/<config>')
     ap.add_argument('--stats_only', action='store_true', help='print the run\'s rule statistics and exit')
     a = ap.parse_args()
+    if a.hard and not a.task_only:
+        ap.error('--hard needs --task_only')
 
     set_seed(a.seed)
     device = torch.device('cuda') if torch.cuda.is_available() else torch.device('cpu')
@@ -258,13 +268,17 @@ def main():
     print_stats('before', before['metrics'], before['rules'])
     if a.stats_only:
         return
+    if a.hard:
+        if not hasattr(model_proto, 'set_hard'):
+            ap.error('--hard needs a prototype run (models_proto)')
+        model_proto.set_hard(True)
 
     sp_args = {k: v for k, v in vars(a).items() if k not in ('stats_only', 'out_dir', 'run_path', 'dataset')}
     schedule = [int(k) for k in a.fanin_schedule.split(',')] if a.fanin_schedule else []
     if a.fanin_schedule:
         sp_args['fanin_schedule'] = '-'.join(map(str, schedule))
     keys = ('epochs', 'hoyer_fc', 'hoyer_reg') + (('max_fanin',) if a.max_fanin else ()) \
-        + (('fanin_schedule', 'step_epochs') if schedule else ()) + (('fc_fanin',) if a.fc_fanin else ()) + (('unit_hoyer',) if a.unit_hoyer else ()) + (('task_only',) if a.task_only else ()) \
+        + (('fanin_schedule', 'step_epochs') if schedule else ()) + (('fc_fanin',) if a.fc_fanin else ()) + (('unit_hoyer',) if a.unit_hoyer else ()) + (('task_only',) if a.task_only else ()) + (('hard',) if a.hard else ()) \
         + ('prune_eps', 'recover_epochs')
     cfg = '|'.join(f'{k}={sp_args[k]}' for k in keys)
     out_dir = a.out_dir or os.path.join(a.run_path, 'sparse', cfg)

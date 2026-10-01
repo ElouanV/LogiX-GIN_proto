@@ -99,5 +99,21 @@ class TestSymbolicForward(unittest.TestCase):
             self.assertTrue(((n[far] >= 0.5).float() == s[far]).all())
 
 
+    def test_hard_mode_computes_exactly_the_rules(self):
+        """set_hard: the network's trunk states are the symbolic ones, and its prediction is
+        the argmax of the rule margins."""
+        torch.manual_seed(1)
+        for level, cls in MODELS.items():
+            for mask in (False, True):
+                m = cls(len(ATOMS), 2, num_layers=2, hidden_dim=8, num_prototypes=4, proto_mask=mask).eval()
+                m.set_hard(True)
+                net = trunk_states(m, self.x, self.e, symbolic=False)
+                sym = trunk_states(m, self.x, self.e)
+                for n, s in zip(net, sym):
+                    self.assertTrue(torch.equal(n, s))
+                margin = symbolic_head(m, sym, self.batch)[0]
+                out = m(self.x, self.e, self.batch)
+                torch.testing.assert_close(out, torch.sigmoid(10 * margin))
+
 if __name__ == '__main__':
     unittest.main()
