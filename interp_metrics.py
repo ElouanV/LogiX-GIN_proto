@@ -1,5 +1,11 @@
 """Interpretability metrics of a prototype LogiX-GIN checkpoint, next to its accuracy and AUC.
 
+Works on prototype runs (results_proto/) and on classic LogiX-GIN runs (results_logic/,
+models/model.py GINTELL), whose head reads the mean / max / sum pooled trunk units
+directly: there a head literal is one condition on one trunk unit, so expl_bits counts the
+explanation's literals, protos_cited is None, and the NO2/NH2 evidence of a literal is the
+set of nodes where its unit holds.
+
 Every metric is read off the *symbolic* model: the same weights, with every truth value
 binarised the way the rules read it (conv literals phi_in(neighbourhood sum) >= 0.5, conv
 units W.lit + b >= 0, head literals phi_in([s, 1-s]) >= 0.5). The prototype step is kept
@@ -51,6 +57,7 @@ import numpy as np
 import pandas as pd
 import torch
 from torch_geometric.loader import DataLoader
+from torch_geometric.nn import global_add_pool, global_max_pool, global_mean_pool
 
 from explain_proto import proto_dim_map, readout_columns
 from latent_logic import ATOMS
@@ -63,7 +70,11 @@ MUTAGEN = 0                       # Mutagenicity label 0 = mutagen (latent_logic
 
 
 def level_of(model):
-    return LEVELS[type(model).__name__]
+    """'node' | 'graph' | 'both' for prototype models, 'base' for classic LogiX-GIN (GINTELL)."""
+    return LEVELS.get(type(model).__name__, 'base' if not hasattr(model, 'proto_layers') else None)
+
+
+BASE_POOLS = ('mean', 'max', 'sum')              # models/model.py GINTELL readout order
 
 
 def aggregate(conv, x, edge_index):
@@ -90,15 +101,29 @@ def trunk_states(model, x, edge_index, symbolic=True):
 
 @torch.no_grad()
 def symbolic_head(model, xs, batch):
-    """Prototype readout of node states xs, then the binarised head.
+    """Readout of node states xs, then the binarised head.
 
     Returns the head margins W.lit + b per class [G × C], the head literals [G × 2R],
     and the node-prototype similarities [N × K] (None without node prototypes).
     """
+    s, s_node = readout_values(model, xs, batch)
+    head_lit = model.fc.phi_in(torch.hstack([s, 1 - s])) >= 0.5
+    margin = head_lit.float() @ model.fc.weight.t() + model.fc.b
+    return margin, head_lit, s_node
+
+
+@torch.no_grad()
+def readout_values(model, xs, batch):
+    """The head's positive inputs s [G × R] (the model feeds it [s, 1 - s]), and the
+    node-prototype similarities [N × K] or None."""
     level = level_of(model)
     h = torch.hstack(xs)
     s_node = None
-    if level == 'node':
+    if level == 'base':
+        # classic LogiX-GIN: the head reads the pooled trunk units directly, with the same
+        # 1 - x negation the model applies (also to the unbounded sum, as upstream does)
+        s = torch.hstack([global_mean_pool(h, batch), global_max_pool(h, batch), global_add_pool(h, batch)])
+    elif level == 'node':
         s_node = model.proto.similarity(h)
         s = model._pool(s_node, batch, model.pool_ops)
     elif level == 'graph':
@@ -107,9 +132,7 @@ def symbolic_head(model, xs, batch):
         s_node = model.proto_node.similarity(h)
         s = torch.hstack([model._pool(s_node, batch, model.node_pool_ops),
                           model.proto_graph.similarity(model._pool(h, batch, model.graph_pool_ops))])
-    head_lit = model.fc.phi_in(torch.hstack([s, 1 - s])) >= 0.5
-    margin = head_lit.float() @ model.fc.weight.t() + model.fc.b
-    return margin, head_lit, s_node
+    return s, s_node
 
 
 def shortest_explanation(w, threshold, true_lits):
@@ -151,6 +174,22 @@ def prototype_table(model):
             for li, p in enumerate(model.proto_layers)]
 
 
+def trunk_shape(model):
+    """(num_layers, hidden_dim) of the trunk, for prototype and classic models alike."""
+    return len(model.convs), model.convs[0].nn[0].out_features
+
+
+def base_literal_map(model):
+    """Classic LogiX-GIN head literal i -> (trunk unit, pool op, positive?).
+
+    The head reads hstack([p, 1 - p]) with p = [mean | max | sum] of the L·h trunk units.
+    """
+    L, h = trunk_shape(model)
+    n = L * h
+    R = len(BASE_POOLS) * n
+    return [((i % R) % n, BASE_POOLS[(i % R) // n], i < R) for i in range(2 * R)]
+
+
 def head_literal_map(model):
     """Head literal i -> (prototype layer, prototype k, pool op, positive?)."""
     level = level_of(model)
@@ -174,9 +213,10 @@ def interp_metrics(model, dataset, device, ds_name=None):
 
     W = model.fc.weight.detach().cpu().numpy()
     S = (-model.fc.b).detach().cpu().numpy()
-    lit_map = head_literal_map(model)
-    protos = prototype_table(model)
-    gt = ds_name == 'Mutagenicity' and level_of(model) in ('node', 'both')
+    base = level_of(model) == 'base'
+    lit_map = base_literal_map(model) if base else head_literal_map(model)
+    protos = None if base else prototype_table(model)
+    gt = ds_name == 'Mutagenicity' and level_of(model) in ('node', 'both', 'base')
 
     margins, lits, head_pred, bit_agree, n_nodes = [], [], [], [], []
     gt_hits, gt_chance = [], []
@@ -203,11 +243,17 @@ def interp_metrics(model, dataset, device, ds_name=None):
             if not region.any():
                 continue
             for i in e:
-                li, k, op, pos = lit_map[i]
-                if not pos or li != 0:                # node prototypes, "some node matches"
-                    continue
-                sim = s_node[nodes, k].cpu()
-                best = sim >= sim.max() - 1e-6
+                if base:                              # evidence: the nodes where the unit holds
+                    u, op, pos = lit_map[i]
+                    best = (torch.hstack(xs)[nodes, u] >= 0.5).cpu()
+                    if not pos or not best.any():
+                        continue
+                else:                                 # node prototypes, "some node matches"
+                    li, k, op, pos = lit_map[i]
+                    if not pos or li != 0:
+                        continue
+                    sim = s_node[nodes, k].cpu()
+                    best = sim >= sim.max() - 1e-6
                 gt_hits.append(float(region[best].float().mean()))
                 gt_chance.append(float(region.float().mean()))
         margins.append(margin)
@@ -219,19 +265,24 @@ def interp_metrics(model, dataset, device, ds_name=None):
 
     backed = [e for e in expl if e is not None]
     cites = Counter(int(i) for e in backed for i in e)
-    cited_protos = {(lit_map[i][0], lit_map[i][1]) for i in cites}
-
-    def bits(li, k):
-        return int(protos[li]['care'][k].sum())
-
-    expl_bits = [sum(bits(*pk) for pk in {(lit_map[i][0], lit_map[i][1]) for i in e}) for e in backed]
-    units = {int(u) for li, k in cited_protos for u in protos[li]['unit_of_bit'][protos[li]['care'][k]]}
-    unit_layers = [u // model.hidden_dim for u in units]
+    if base:
+        # every head literal is one condition on one pooled trunk unit
+        cited_protos = set()
+        expl_bits = [len(e) for e in backed]
+        units = {int(lit_map[i][0]) for i in cites}
+    else:
+        cited_protos = {(lit_map[i][0], lit_map[i][1]) for i in cites}
+        expl_bits = [sum(bits(*pk) for pk in {(lit_map[i][0], lit_map[i][1]) for i in e}) for e in backed]
+        units = {int(u) for li, k in cited_protos for u in protos[li]['unit_of_bit'][protos[li]['care'][k]]}
+    unit_layers = [u // trunk_shape(model)[1] for u in units]
 
     purity = []
     for i, n in cites.items():
         holds = head_lit[:, i]
         purity += [float(np.bincount(y[holds], minlength=W.shape[0]).max() / holds.sum())] * n
+
+    def bits(li, k):
+        return int(protos[li]['care'][k].sum())
 
     def stat(v, name):
         return {f'{name}_mean': float(np.mean(v)) if len(v) else None,
@@ -245,12 +296,12 @@ def interp_metrics(model, dataset, device, ds_name=None):
            'rule_backed': float(len(backed) / len(expl)),
            **stat([len(e) for e in backed], 'expl_literals'),
            **stat(expl_bits, 'expl_bits'),
-           'protos_cited': len(cited_protos),
+           'protos_cited': None if base else len(cited_protos),
            'bits_per_proto_median': float(np.median([bits(*pk) for pk in cited_protos])) if cited_protos else None,
            'units_cited': len(units),
            'units_cited_L0': float(np.mean([l == 0 for l in unit_layers])) if units else None,
            'literal_purity': float(np.mean(purity)) if purity else None,
-           'mask_temp': float(model.proto_layers[0].mask_temp) if model.proto_layers[0].masked else None}
+           'mask_temp': None if base or not model.proto_layers[0].masked else float(model.proto_layers[0].mask_temp)}
     if gt:
         res.update({'gt_precision': float(np.mean(gt_hits)) if gt_hits else None,
                     'gt_chance': float(np.mean(gt_chance)) if gt_chance else None,
