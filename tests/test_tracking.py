@@ -74,6 +74,23 @@ class TestTracking(unittest.TestCase):
         self.assertTrue(c.get_experiment_by_name('test/exp').artifact_location.startswith(
             'file://' + os.path.join(self.tmp.name, 'art')))
 
+    def test_step_metrics_are_batched_then_flushed(self):
+        os.environ['LOGIX_MLFLOW_FLUSH_STEPS'] = '2'
+        try:
+            with tracking.run('test/exp', 'batched') as r:
+                rid = r.info.run_id
+                tracking.log_metrics({'a': 1.0}, step=0)
+                self.assertEqual(self.client().get_metric_history(rid, 'a'), [])     # buffered
+                tracking.log_metrics({'a': 2.0}, step=1)                             # 2 steps: sent
+                self.assertEqual(len(self.client().get_metric_history(rid, 'a')), 2)
+                tracking.log_metrics({'a': 3.0}, step=2)
+                tracking.log_metrics({'final': 9.0})                                  # flushes first
+                self.assertEqual(len(self.client().get_metric_history(rid, 'a')), 3)
+        finally:
+            os.environ.pop('LOGIX_MLFLOW_FLUSH_STEPS')
+        hist = self.client().get_metric_history(rid, 'a')
+        self.assertEqual([(m.step, m.value) for m in hist], [(0, 1.0), (1, 2.0), (2, 3.0)])
+
     def test_exception_marks_run_failed_and_propagates(self):
         with self.assertRaises(ValueError):
             with tracking.run('test/exp', 'boom') as r:

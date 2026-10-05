@@ -20,10 +20,17 @@ How runs are organised
     registry     every seed's best checkpoint becomes a new version of a registered
                  model (``gin-teacher-<ds>``, ``logix-proto-<ds>-<level>``,
                  ``logix-proto-sparse-<ds>-<level>``) tagged with its accuracy and path.
+
+Per-epoch metrics (``log_metrics(..., step=k)``) are buffered and sent in batches every
+``LOGIX_MLFLOW_FLUSH_STEPS`` steps (default 200) or ``LOGIX_MLFLOW_FLUSH_SECS`` seconds
+(default 120), and when the run ends: one HTTP call per epoch took 3.4 s with a dozen
+runs writing to the server, which left the training processes idle. Every step is
+still recorded, with the time it was logged.
 """
 import contextlib
 import os
 import subprocess
+import time
 import warnings
 
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -34,6 +41,8 @@ except ImportError:                                    # tracking is optional
     mlflow = None
 
 _warned = False
+_buffer = []                                           # pending per-step metrics
+_last_flush = time.time()
 
 
 def enabled():
@@ -107,7 +116,25 @@ def run(experiment, run_name, params=None, tags=None):
 
 @_safe
 def _end(status):
+    flush()
     mlflow.end_run(status=status)
+
+
+@_safe
+def flush():
+    """Send the buffered per-step metrics of the active run."""
+    global _last_flush
+    _last_flush = time.time()
+    if not _buffer or not _active():
+        _buffer.clear()
+        return
+    from mlflow.entities import Metric
+    run_id = mlflow.active_run().info.run_id
+    metrics = [Metric(k, v, ts, step) for k, v, ts, step in _buffer]
+    _buffer.clear()
+    client = mlflow.MlflowClient()
+    for i in range(0, len(metrics), 1000):             # log_batch limit
+        client.log_batch(run_id, metrics=metrics[i:i + 1000])
 
 
 def _active():
@@ -125,7 +152,16 @@ def log_params(params):
 def log_metrics(metrics, step=None):
     if _active():
         clean = {k: float(v) for k, v in metrics.items() if v is not None}
-        mlflow.log_metrics(clean, step=step)
+        if step is None:                               # final values: send now
+            flush()
+            mlflow.log_metrics(clean)
+            return
+        ts = int(time.time() * 1000)
+        _buffer.extend((k, v, ts, int(step)) for k, v in clean.items())
+        steps = len({b[3] for b in _buffer})
+        if (steps >= int(os.environ.get('LOGIX_MLFLOW_FLUSH_STEPS', 200))
+                or time.time() - _last_flush >= float(os.environ.get('LOGIX_MLFLOW_FLUSH_SECS', 120))):
+            flush()
 
 
 @_safe
