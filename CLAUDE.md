@@ -71,11 +71,15 @@ Compute has a carbon cost. Spend it deliberately.
   Evaluate from checkpoints (`--only_eval`) instead of retraining.
 - **Efficient runs:** use early stopping or plateau schedules where they don't change the
   science. Don't leave the GPU idle-but-held. Kill your own finished or stuck jobs.
-- **CO₂ estimation (TODO, not implemented yet):** add `codecarbon` (not installed in
-  `logix-gin` yet) as an optional tracker in `utils/tracking.py`, following the same
-  no-op-if-missing pattern as MLflow. Log `emissions_kg` and `energy_kwh` per run to MLflow,
-  and report the total CO₂ of a sweep next to its results. Until then, a rough estimate is
-  GPU-hours × ~0.175 kW (RTX 2060 SUPER TDP) × grid intensity (France ≈ 0.05 kgCO₂e/kWh).
+- **CO₂ measurement:** `codecarbon` (installed in `logix-gin`) measures every tracked run
+  (`utils/tracking.py`, a no-op if it's missing or `LOGIX_CO2=0`) and logs
+  `co2/emissions_kg`, `co2/energy_kwh` and the GPU/CPU/RAM parts to MLflow. Report the
+  total CO₂ of a sweep next to its results. The GPU part is the whole GPU's energy, so
+  parallel runs each count it: don't just sum `co2/gpu_kwh` over parallel jobs (see the
+  module docstring). Rough fallback: GPU-hours × ~0.175 kW (RTX 2060 SUPER TDP) × grid
+  intensity (France ≈ 0.05 kgCO₂e/kWh).
+- **MLflow per-epoch logging is batched** (every 200 steps / 120 s). One HTTP call per
+  epoch made a dozen parallel runs wait on the server (3.4 s per call).
 
 ## Environment
 

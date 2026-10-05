@@ -40,10 +40,12 @@ class TestTracking(unittest.TestCase):
 
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
-        self.env = {k: os.environ.get(k) for k in ('MLFLOW_TRACKING_URI', 'LOGIX_MLFLOW_ARTIFACTS', 'LOGIX_MLFLOW')}
+        self.env = {k: os.environ.get(k) for k in ('MLFLOW_TRACKING_URI', 'LOGIX_MLFLOW_ARTIFACTS', 'LOGIX_MLFLOW',
+                                                   'LOGIX_CO2')}
         os.environ['MLFLOW_TRACKING_URI'] = f'sqlite:///{self.tmp.name}/t.db'
         os.environ['LOGIX_MLFLOW_ARTIFACTS'] = os.path.join(self.tmp.name, 'art')
         os.environ.pop('LOGIX_MLFLOW', None)
+        os.environ.setdefault('LOGIX_CO2', '0')      # only test_co2_is_logged measures
         self.client = lambda: tracking.mlflow.MlflowClient(os.environ['MLFLOW_TRACKING_URI'])
 
     def tearDown(self):
@@ -90,6 +92,16 @@ class TestTracking(unittest.TestCase):
             os.environ.pop('LOGIX_MLFLOW_FLUSH_STEPS')
         hist = self.client().get_metric_history(rid, 'a')
         self.assertEqual([(m.step, m.value) for m in hist], [(0, 1.0), (1, 2.0), (2, 3.0)])
+
+    @unittest.skipIf(tracking.OfflineEmissionsTracker is None, 'codecarbon not installed')
+    def test_co2_is_logged(self):
+        os.environ['LOGIX_CO2'] = '1'
+        with tracking.run('test/exp', 'co2') as r:
+            rid = r.info.run_id
+        m = self.client().get_run(rid).data.metrics
+        for k in ('co2/emissions_kg', 'co2/energy_kwh', 'co2/gpu_kwh', 'co2/cpu_kwh', 'co2/duration_s'):
+            self.assertIn(k, m)
+        self.assertGreaterEqual(m['co2/emissions_kg'], 0)
 
     def test_exception_marks_run_failed_and_propagates(self):
         with self.assertRaises(ValueError):

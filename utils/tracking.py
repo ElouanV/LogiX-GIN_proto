@@ -26,6 +26,14 @@ Per-epoch metrics (``log_metrics(..., step=k)``) are buffered and sent in batche
 (default 120), and when the run ends: one HTTP call per epoch took 3.4 s with a dozen
 runs writing to the server, which left the training processes idle. Every step is
 still recorded, with the time it was logged.
+
+CO₂: if codecarbon is installed (and ``LOGIX_CO2`` is not 0), every run is measured with
+an offline tracker (grid of ``LOGIX_CO2_COUNTRY``, default FRA) and logs ``co2/emissions_kg``,
+``co2/energy_kwh`` and its GPU / CPU / RAM parts. CPU and RAM are this process's share
+(tracking_mode='process'), but the GPU part is the whole GPU's energy over the run, so
+runs sharing the GPU each count it: sum ``co2/gpu_kwh`` over parallel runs and it
+over-counts by about the number of jobs. Report a sweep's total from the per-run
+CPU/RAM sums plus the GPU energy of one run per parallel slot.
 """
 import contextlib
 import os
@@ -39,6 +47,11 @@ try:
     import mlflow
 except ImportError:                                    # tracking is optional
     mlflow = None
+
+try:
+    from codecarbon import OfflineEmissionsTracker
+except ImportError:                                    # CO₂ measurement is optional too
+    OfflineEmissionsTracker = None
 
 _warned = False
 _buffer = []                                           # pending per-step metrics
@@ -88,10 +101,36 @@ def _set_experiment(experiment):
     mlflow.set_experiment(experiment)
 
 
+def _start_co2():
+    if OfflineEmissionsTracker is None or os.environ.get('LOGIX_CO2', '1') == '0':
+        return None
+    try:
+        t = OfflineEmissionsTracker(country_iso_code=os.environ.get('LOGIX_CO2_COUNTRY', 'FRA'),
+                                    save_to_file=False, log_level='error', tracking_mode='process',
+                                    allow_multiple_runs=True)
+        t.start()
+        return t
+    except Exception as e:
+        warnings.warn(f'CO2 tracking could not start, training continues without it: {e!r}')
+        return None
+
+
+@_safe
+def _stop_co2(tracker):
+    """Stop the tracker and log its totals into the active run."""
+    if tracker is None:
+        return
+    kg = tracker.stop()
+    d = tracker.final_emissions_data
+    log_metrics({'co2/emissions_kg': kg, 'co2/energy_kwh': d.energy_consumed, 'co2/gpu_kwh': d.gpu_energy,
+                 'co2/cpu_kwh': d.cpu_energy, 'co2/ram_kwh': d.ram_energy, 'co2/duration_s': d.duration})
+
+
 @contextlib.contextmanager
 def run(experiment, run_name, params=None, tags=None):
     """Open an MLflow run for the duration of the block (yields the run or None)."""
     active = None
+    co2 = None
     if enabled():
         try:
             _set_experiment(experiment)
@@ -99,6 +138,7 @@ def run(experiment, run_name, params=None, tags=None):
             active = mlflow.start_run(run_name=run_name,
                                       tags={k: str(v) for k, v in {**_git(), **(tags or {})}.items()})
             log_params(params or {})
+            co2 = _start_co2()
         except Exception as e:
             warnings.warn(f'MLflow run could not start, training continues without it: {e!r}')
             active = None
@@ -106,11 +146,13 @@ def run(experiment, run_name, params=None, tags=None):
         yield active
     except BaseException:
         if active is not None:
+            _stop_co2(co2)
             _end('FAILED')
             active = None
         raise
     finally:
         if active is not None:
+            _stop_co2(co2)
             _end('FINISHED')
 
 
