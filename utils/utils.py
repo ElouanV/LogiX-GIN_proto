@@ -87,10 +87,12 @@ def get_dataset(dataset_name):
         return MoleculeNet(name='BBBP', root='data/BBBP_onehot', pre_transform=MolOneHot())
     elif dataset_name == 'BBBP_raw':
         return MoleculeNet(name='BBBP', root='data/BBBP')
-    elif dataset_name == 'AIDS':
+    elif dataset_name in ('AIDS', 'PROTEINS'):
         # use_node_attr=True would prepend 4 continuous columns (chem, charge, x, y
-        # coordinates) to the 38 one-hot atom labels; the logic layers need [0,1] literals
-        return TUDataset(root='data/AIDS', name='AIDS', use_node_attr=False)
+        # coordinates) to the 38 one-hot atom labels, and for PROTEINS one continuous
+        # column (values in [-538, 798]) to the 3 one-hot SSE labels; the logic layers
+        # need [0,1] literals
+        return TUDataset(root=f'data/{dataset_name}', name=dataset_name, use_node_attr=False)
     elif dataset_name == 'BaMultiShapes':
         return BAMultiShapesDataset(root=f'data/{dataset_name}')
     return TUDataset(root=f'data/{dataset_name}', name=dataset_name, use_node_attr=True)
