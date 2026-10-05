@@ -263,6 +263,9 @@ def interp_metrics(model, dataset, device, ds_name=None):
     head_lit = np.vstack(lits)
     logic_pred = margin.argmax(1)
 
+    def bits(li, k):
+        return int(protos[li]['care'][k].sum())
+
     backed = [e for e in expl if e is not None]
     cites = Counter(int(i) for e in backed for i in e)
     if base:
@@ -280,9 +283,6 @@ def interp_metrics(model, dataset, device, ds_name=None):
     for i, n in cites.items():
         holds = head_lit[:, i]
         purity += [float(np.bincount(y[holds], minlength=W.shape[0]).max() / holds.sum())] * n
-
-    def bits(li, k):
-        return int(protos[li]['care'][k].sum())
 
     def stat(v, name):
         return {f'{name}_mean': float(np.mean(v)) if len(v) else None,
