@@ -8,7 +8,6 @@ import torch_geometric.transforms as T
 from torch_geometric.loader import DataLoader
 from torch_geometric.nn import GINConv, global_mean_pool, global_max_pool, global_add_pool
 from utils.utils import *
-from sklearn.model_selection import train_test_split
 import shutil
 import glob
 import pandas as pd
@@ -19,6 +18,7 @@ from models.model import GIN
 from torch.optim.lr_scheduler import ReduceLROnPlateau
 from utils import tracking
 from utils.evaluation import evaluate
+from utils.splits import split_indices, SPLITS
 SEEDS = 10
 
 def train_epoch(model, loader, device, optimizer, num_classes):
@@ -93,12 +93,7 @@ def _train_seed(dataset_name, args, seed, device):
 
     if num_features == 0: num_features = 10
     
-    indices = list(range(len(dataset)))
-    train_indices, val_test_indices = train_test_split(indices, test_size=0.2,
-    shuffle=True, stratify=dataset.data.y, random_state=seed)
-
-    val_indices = val_test_indices[:len(val_test_indices)//2]
-    test_indices = val_test_indices[len(val_test_indices)//2:]
+    train_indices, val_indices, test_indices = split_indices(dataset.data.y, seed, args.get('split', 'random'))
 
     train_dataset = dataset[train_indices]
     val_dataset = dataset[val_indices]
@@ -195,12 +190,7 @@ def eval_seed(dataset_name, args, seed, device):
 
     if num_features == 0: num_features = 10
     
-    indices = list(range(len(dataset)))
-    train_indices, val_test_indices = train_test_split(indices, test_size=0.2,
-    shuffle=True, stratify=dataset.data.y, random_state=seed)
-
-    val_indices = val_test_indices[:len(val_test_indices)//2]
-    test_indices = val_test_indices[len(val_test_indices)//2:]
+    train_indices, val_indices, test_indices = split_indices(dataset.data.y, seed, args.get('split', 'random'))
 
     train_dataset = dataset[train_indices]
     val_dataset = dataset[val_indices]
@@ -256,6 +246,9 @@ def train_eval(dataset_name,  args):
     
     seed_todo = args.pop('seed', None)
     only_eval = args.pop('only_eval', False)
+    # the upstream split stays out of the config, so existing result dirs keep their names
+    if args.get('split', 'random') == 'random':
+        args.pop('split', None)
     
     path = create_folder(dataset_name, args)
     print(path)
@@ -320,6 +313,7 @@ if __name__ == '__main__':
     parser.add_argument('--nogumbel',      action='store_true',             help='Number of Convolutional Layers')
     parser.add_argument('--only_eval',    action='store_true',              help='Number of Convolutional Layers')
     parser.add_argument('--seed',          default=None,      type=int,    help='Number of Convolutional Layers')
+    parser.add_argument('--split',         default='random',  choices=SPLITS, help='random: 80/10/10 per seed (upstream); kfold: stratified 10-fold, seed = fold')
 
     args = parser.parse_args().__dict__
     
