@@ -141,6 +141,8 @@ class _HeadBase:
     """Head inputs [s, 1-s]: a literal reads s (or 1-s) through phi_in's intervals."""
 
     def __init__(self, model, acts):
+        if getattr(model, 'has_unbounded_readout', False):
+            raise NotImplementedError('sum-pooled readout: the head is [s, 1 - s_bounded], not [s, 1 - s]')
         ll = model.fc
         self.n = ll.in_features // 2
         self.w = ll.phi_in.w.detach().double().cpu().numpy()

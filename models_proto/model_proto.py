@@ -15,6 +15,18 @@ Head, unchanged from GINTELL:
     task='classification' → fc = LogicalLayer(2·dim(s) → C) applied to [s, 1−s]
     task='regression'     → fc = nn.Linear(dim(s) → out)
 
+Sum pooling (``pool_ops`` / ``node_pool_ops`` / ``graph_pool_ops`` containing 'sum', off
+by default) is supported as in PLEX/model_proto.py:
+    node level   the summed similarity counts the nodes matching a prototype. It is
+                 unbounded, so the head negates only the bounded columns
+                 (``bounded_mask``): fc reads [s, 1 − s_bounded], and its phi_in turns a
+                 count into the literal "count ≥ t".
+    graph level  the summed trunk units are counts, which a binary prototype cannot be
+                 compared to by Hamming agreement. They go through a learned threshold
+                 first (``phi_sum``, the Phi of the LogicalLayers), so a prototype bit on
+                 that block reads "unit u holds on ≥ t_u nodes".
+With mean/max only, both are no-ops and the model is the one of earlier checkpoints.
+
 The trunk is shape-identical to models_proto.model.GINTELL (same state-dict keys
 under `convs`), so the layer-wise distillation of train_logic.py applies to it
 unchanged; the prototype layer(s) have no teacher counterpart.
@@ -23,10 +35,11 @@ import torch
 from torch import nn
 from torch_geometric.nn import GINConv, global_mean_pool, global_max_pool, global_add_pool
 
-from models_proto.tell import LogicalLayer
+from models_proto.tell import LogicalLayer, Phi
 from models_proto.proto import PrototypeLayer
 
 POOLS = {'mean': global_mean_pool, 'max': global_max_pool, 'sum': global_add_pool}
+BOUNDED_POOLS = ('mean', 'max')        # pooled values of [0,1] inputs stay in [0,1]
 
 
 class GINTELLProtoBase(nn.Module):
@@ -52,7 +65,10 @@ class GINTELLProtoBase(nn.Module):
 
         self._build_readout()
         if task == 'classification':
-            self.fc = LogicalLayer(2 * self.readout_dim, num_classes, dummy_phi_in=False)
+            bounded = torch.tensor(self.bounded_mask, dtype=torch.bool)
+            assert len(bounded) == self.readout_dim, (len(bounded), self.readout_dim)
+            self.register_buffer('_bounded', bounded, persistent=False)
+            self.fc = LogicalLayer(self.readout_dim + int(bounded.sum()), num_classes, dummy_phi_in=False)
         elif task == 'regression':
             self.fc = nn.Linear(self.readout_dim, num_classes)
         else:
@@ -68,6 +84,11 @@ class GINTELLProtoBase(nn.Module):
 
     @property
     def proto_layers(self):
+        raise NotImplementedError
+
+    @property
+    def bounded_mask(self):
+        """Per readout column: True if it stays in [0,1] (and so has a negation literal)."""
         raise NotImplementedError
 
     def prototype_inputs(self, xs, batch):
@@ -90,6 +111,28 @@ class GINTELLProtoBase(nn.Module):
     @staticmethod
     def _pool(x, batch, ops):
         return torch.hstack([POOLS[op](x, batch) for op in ops])
+
+    @staticmethod
+    def _bounded_for(ops, k):
+        """Column mask of k columns pooled with ops, in _pool's order."""
+        return [op in BOUNDED_POOLS for op in ops for _ in range(k)]
+
+    def _make_phi_sum(self, ops):
+        """Thresholds of the summed trunk units (graph-level prototypes with 'sum')."""
+        return Phi(self.num_layers * self.hidden_dim) if 'sum' in ops else None
+
+    def _pool_graph(self, h, batch, ops, phi_sum, symbolic=False):
+        """Pooled trunk units in [0,1] for graph prototypes: a summed block goes through
+        phi_sum, binarised (straight-through) in hard mode or for the symbolic reading."""
+        blocks = []
+        for op in ops:
+            z = POOLS[op](h, batch)
+            if op == 'sum':
+                z = phi_sum(z)
+                if symbolic or getattr(self, 'hard', False):
+                    z = z + ((z >= 0.5).float() - z).detach()
+            blocks.append(z)
+        return torch.hstack(blocks)
 
     def _bit_layers(self, n_ops=None):
         """Conv layer of each bit of hstack(xs) (n_ops=None) or of its n_ops pooled copies."""
@@ -120,6 +163,7 @@ class GINTELLProtoBase(nn.Module):
         for c in self.convs:
             c.nn[0].hard_in = c.nn[0].hard_out = hard
         self.fc.hard_in = hard
+        self.hard = hard                    # binarises phi_sum too (graph-level sum)
 
     def set_mask_layer_cost(self, cost):
         """Weight the cared-bit penalty of every prototype layer by the conv layer each bit
@@ -130,9 +174,28 @@ class GINTELLProtoBase(nn.Module):
         for p, bl in zip(self.proto_layers, self.prototype_bit_layers()):
             p.set_bit_cost(cost[bl])
 
+    def head_input(self, s):
+        """What fc reads: [s, 1 - s] over the bounded columns (all of them without sum;
+        pickles from before bounded_mask have no _bounded and are all bounded)."""
+        b = getattr(self, '_bounded', None)
+        return torch.hstack([s, 1 - s if b is None or bool(b.all()) else 1 - s[:, b]])
+
+    @property
+    def has_unbounded_readout(self):
+        """True with sum pooling at node level: the head is then not [s, 1 - s]."""
+        b = getattr(self, '_bounded', None)
+        return b is not None and not bool(b.all())
+
+    def head_columns(self):
+        """Per head literal: (readout column, positive?), in head_input's order."""
+        R = self.readout_dim
+        b = getattr(self, '_bounded', None)
+        neg = range(R) if b is None else torch.nonzero(b.cpu()).flatten().tolist()
+        return [(i, True) for i in range(R)] + [(i, False) for i in neg]
+
     def head(self, s, discrete_output=False):
         if self.task == 'classification':
-            return self.fc(torch.hstack([s, 1 - s]), discrete_output=discrete_output)
+            return self.fc(self.head_input(s), discrete_output=discrete_output)
         return self.fc(s)
 
     def forward(self, x, edge_index, batch, discrete=False, *args, **kwargs):
@@ -192,10 +255,10 @@ class GINTELLProtoNode(GINTELLProtoBase):
     A head literal then reads "mean / max over the nodes of the similarity to
     prototype k": max → some node resembles k, mean → average resemblance.
 
-    Like GINTELLProtoGraph, only pooling operators whose output stays in [0,1] are
-    used. sum is excluded: a summed similarity grows with graph size (measured range
-    3.7-94 on Mutagenicity), so the head's negation literal 1-s leaves [0,1] entirely
-    and stops being a negation.
+    By default only pooling operators whose output stays in [0,1] are used. With
+    'sum', the summed similarity grows with graph size (measured range 3.7-94 on
+    Mutagenicity), so it gets no negation literal (bounded_mask) and the head's phi_in
+    thresholds it as a count.
     """
 
     def __init__(self, num_features, num_classes, num_layers=3, hidden_dim=64, dropout=0.1,
@@ -210,6 +273,10 @@ class GINTELLProtoNode(GINTELLProtoBase):
     @property
     def readout_dim(self):
         return len(self.pool_ops) * self.num_prototypes
+
+    @property
+    def bounded_mask(self):
+        return self._bounded_for(self.pool_ops, self.num_prototypes)
 
     @property
     def proto_layers(self):
@@ -233,8 +300,8 @@ class GINTELLProtoNode(GINTELLProtoBase):
 class GINTELLProtoGraph(GINTELLProtoBase):
     """Prototypes over the pooled graph embedding.
 
-    Only pooling operators whose output stays in [0,1] are used (mean, max), since
-    Hamming agreement needs inputs in [0,1]; sum is excluded by default.
+    Hamming agreement needs inputs in [0,1], so a 'sum' block (off by default) is
+    thresholded by phi_sum before the prototypes see it.
     """
 
     def __init__(self, num_features, num_classes, num_layers=3, hidden_dim=64, dropout=0.1,
@@ -246,17 +313,25 @@ class GINTELLProtoGraph(GINTELLProtoBase):
     def _build_readout(self):
         self.proto = PrototypeLayer(len(self.pool_ops) * self.num_layers * self.hidden_dim, self.num_prototypes,
                                     **self.proto_kwargs)
+        self.phi_sum = self._make_phi_sum(self.pool_ops)
 
     @property
     def readout_dim(self):
         return self.num_prototypes
 
     @property
+    def bounded_mask(self):
+        return [True] * self.num_prototypes
+
+    def graph_input(self, h, batch, symbolic=False):
+        return self._pool_graph(h, batch, self.pool_ops, getattr(self, 'phi_sum', None), symbolic)
+
+    @property
     def proto_layers(self):
         return [self.proto]
 
     def prototype_inputs(self, xs, batch):
-        return [self._pool(torch.hstack(xs), batch, self.pool_ops)]
+        return [self.graph_input(torch.hstack(xs), batch)]
 
     def prototype_bit_layers(self):
         return [self._bit_layers(len(self.pool_ops))]
@@ -265,7 +340,7 @@ class GINTELLProtoGraph(GINTELLProtoBase):
         return torch.arange(self.num_prototypes)
 
     def readout(self, xs, batch):
-        z = self._pool(torch.hstack(xs), batch, self.pool_ops)   # [G × 2·L·h]
+        z = self.graph_input(torch.hstack(xs), batch)            # [G × 2·L·h]
         return self.proto(z)                                     # [G × K]
 
 
@@ -284,10 +359,18 @@ class GINTELLProtoBoth(GINTELLProtoBase):
         self.proto_node = PrototypeLayer(self.num_layers * self.hidden_dim, self.num_prototypes, **self.proto_kwargs)
         self.proto_graph = PrototypeLayer(len(self.graph_pool_ops) * self.num_layers * self.hidden_dim,
                                           self.num_graph_prototypes, **self.proto_kwargs)
+        self.phi_sum = self._make_phi_sum(self.graph_pool_ops)
 
     @property
     def readout_dim(self):
         return len(self.node_pool_ops) * self.num_prototypes + self.num_graph_prototypes
+
+    @property
+    def bounded_mask(self):
+        return self._bounded_for(self.node_pool_ops, self.num_prototypes) + [True] * self.num_graph_prototypes
+
+    def graph_input(self, h, batch, symbolic=False):
+        return self._pool_graph(h, batch, self.graph_pool_ops, getattr(self, 'phi_sum', None), symbolic)
 
     @property
     def proto_layers(self):
@@ -295,7 +378,7 @@ class GINTELLProtoBoth(GINTELLProtoBase):
 
     def prototype_inputs(self, xs, batch):
         h = torch.hstack(xs)
-        return [h, self._pool(h, batch, self.graph_pool_ops)]
+        return [h, self.graph_input(h, batch)]
 
     def prototype_bit_layers(self):
         return [self._bit_layers(), self._bit_layers(len(self.graph_pool_ops))]
@@ -307,7 +390,7 @@ class GINTELLProtoBoth(GINTELLProtoBase):
     def readout(self, xs, batch):
         h = torch.hstack(xs)
         s_node = self._pool(self.proto_node(h), batch, self.node_pool_ops)       # [G × 2K_n]
-        s_graph = self.proto_graph(self._pool(h, batch, self.graph_pool_ops))    # [G × K_g]
+        s_graph = self.proto_graph(self.graph_input(h, batch))                   # [G × K_g]
         return torch.hstack([s_node, s_graph])
 
 

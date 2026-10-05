@@ -220,6 +220,11 @@ def test_epoch(model, loader, device):
 def build_proto_model(args, baseline_args, num_features, num_classes, device):
     """The student. num_layers/hidden_dim must match the teacher: the trunk is
     distilled layer by layer, so the shapes have to line up."""
+    kwargs = {}
+    if args.get('pool_ops'):                       # default: each class's mean / max
+        ops = tuple(args['pool_ops'].split(','))
+        kwargs = ({'node_pool_ops': ops, 'graph_pool_ops': ops} if args['proto_level'] == 'both'
+                  else {'pool_ops': ops})
     return get_model(
         args['proto_level'],
         num_features=num_features,
@@ -228,6 +233,7 @@ def build_proto_model(args, baseline_args, num_features, num_classes, device):
         num_layers=baseline_args['num_layers'],
         num_prototypes=args['num_prototypes'],
         proto_mask=args.get('proto_mask', False),
+        **kwargs,
     ).to(device)
 
 
@@ -467,6 +473,8 @@ def train_eval(dataset_name, baseline_path, args):
 
     seed_todo = args.pop('seed', None)
     only_eval = args.pop('only_eval', False)
+    if args.get('pool_ops') is None:               # default readout: keep existing dir names
+        args.pop('pool_ops', None)
 
     path = create_folder_proto(dataset_name, args, baseline_args)
 
@@ -538,6 +546,7 @@ if __name__ == '__main__':
     parser.add_argument('--mask_layer_cost', default=None,      type=str,   help='Comma-separated cared-bit cost per conv layer, e.g. 0.25,1,1 (default: 1 each, with --proto_mask)')
     parser.add_argument('--vocab_reg',      default=None,       type=float, help='Weight of the shared-vocabulary penalty: fraction of trunk units any prototype cares about (with --proto_mask)')
     parser.add_argument('--mask_ckpt_temp', default=None,       type=float, help='Keep checkpoints only once T <= this (default: always, with --proto_mask)')
+    parser.add_argument('--pool_ops',       default=None,       type=str,   help='Comma-separated readout pooling, e.g. mean,max,sum (default mean,max; sum: see models_proto/model_proto.py)')
     parser.add_argument('--only_eval',     action='store_true',             help='Only evaluate')
     parser.add_argument('--seed',           default=None,       type=int,   help='Single seed to run')
 

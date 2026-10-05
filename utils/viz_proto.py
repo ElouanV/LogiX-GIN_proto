@@ -134,6 +134,8 @@ def head_literal_interval(model, i):
     The head literal reads phi([s, 1 - s])_i >= 0.5; phi is evaluated on a grid of its
     input, then mapped back to s (literals of the 1 - s half flip the interval).
     """
+    if getattr(model, 'has_unbounded_readout', False):
+        raise NotImplementedError('sum-pooled readout: counts are not in the [0, 1] grid read here')
     _, _, _, pos = head_literal_map(model)[i]
     phi = model.fc.phi_in
     grid = torch.linspace(0, 1, 1001)

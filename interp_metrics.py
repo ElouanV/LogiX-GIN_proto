@@ -107,31 +107,36 @@ def symbolic_head(model, xs, batch):
     and the node-prototype similarities [N × K] (None without node prototypes).
     """
     s, s_node = readout_values(model, xs, batch)
-    head_lit = model.fc.phi_in(torch.hstack([s, 1 - s])) >= 0.5
+    head_in = model.head_input(s) if hasattr(model, 'head_input') else torch.hstack([s, 1 - s])
+    head_lit = model.fc.phi_in(head_in) >= 0.5
     margin = head_lit.float() @ model.fc.weight.t() + model.fc.b
     return margin, head_lit, s_node
 
 
 @torch.no_grad()
 def readout_values(model, xs, batch):
-    """The head's positive inputs s [G × R] (the model feeds it [s, 1 - s]), and the
-    node-prototype similarities [N × K] or None."""
+    """The head's positive inputs s [G × R] (the model feeds it [s, 1 - s], or with sum
+    pooling [s, 1 - s_bounded]), and the node-prototype similarities [N × K] or None.
+    A graph-level sum block is read through phi_sum, binarised like every literal."""
     level = level_of(model)
     h = torch.hstack(xs)
     s_node = None
     if level == 'base':
         # classic LogiX-GIN: the head reads the pooled trunk units directly, with the same
         # 1 - x negation the model applies (also to the unbounded sum, as upstream does)
-        s = torch.hstack([global_mean_pool(h, batch), global_max_pool(h, batch), global_add_pool(h, batch)])
+        if hasattr(model, 'readout'):                 # GINTELLPool: its own pooling ops
+            s = model.readout(xs, batch)
+        else:
+            s = torch.hstack([global_mean_pool(h, batch), global_max_pool(h, batch), global_add_pool(h, batch)])
     elif level == 'node':
         s_node = model.proto.similarity(h)
         s = model._pool(s_node, batch, model.pool_ops)
     elif level == 'graph':
-        s = model.proto.similarity(model._pool(h, batch, model.pool_ops))
+        s = model.proto.similarity(model.graph_input(h, batch, symbolic=True))
     else:
         s_node = model.proto_node.similarity(h)
         s = torch.hstack([model._pool(s_node, batch, model.node_pool_ops),
-                          model.proto_graph.similarity(model._pool(h, batch, model.graph_pool_ops))])
+                          model.proto_graph.similarity(model.graph_input(h, batch, symbolic=True))])
     return s, s_node
 
 
@@ -182,24 +187,25 @@ def trunk_shape(model):
 def base_literal_map(model):
     """Classic LogiX-GIN head literal i -> (trunk unit, pool op, positive?).
 
-    The head reads hstack([p, 1 - p]) with p = [mean | max | sum] of the L·h trunk units.
+    The head reads hstack([p, 1 - p]) with p = [mean | max | sum] of the L·h trunk units
+    (or the pooling ops of a GINTELLPool).
     """
     L, h = trunk_shape(model)
     n = L * h
-    R = len(BASE_POOLS) * n
-    return [((i % R) % n, BASE_POOLS[(i % R) // n], i < R) for i in range(2 * R)]
+    ops = getattr(model, 'pool_ops', BASE_POOLS)
+    R = len(ops) * n
+    return [((i % R) % n, ops[(i % R) // n], i < R) for i in range(2 * R)]
 
 
 def head_literal_map(model):
     """Head literal i -> (prototype layer, prototype k, pool op, positive?)."""
     level = level_of(model)
     cols = readout_columns(model, level)
-    R = len(cols)
     lits = []
-    for i in range(2 * R):
-        kind, k, op = cols[i % R]
+    for c, pos in model.head_columns():       # sum-pooled columns have no negation
+        kind, k, op = cols[c]
         li = 1 if (level == 'both' and kind == 'graph') else 0
-        lits.append((li, k, op, i < R))
+        lits.append((li, k, op, pos))
     return lits
 
 

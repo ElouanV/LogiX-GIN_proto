@@ -326,7 +326,7 @@ def forward_with_activations(model, x, edge_index, batch):
         h = torch.hstack(xs)
         s = torch.hstack([global_mean_pool(h, batch), global_max_pool(h, batch),
                           global_add_pool(h, batch)])
-    ret['x'] = torch.hstack([s, 1 - s])
+    ret['x'] = model.head_input(s) if hasattr(model, 'head_input') else torch.hstack([s, 1 - s])
     ret['x_sum'] = ret['x']                  # no aggregation at the head
     ret['x_bin'] = model.fc.phi_in(ret['x']) >= 0.5
     out = model.fc(ret['x'])

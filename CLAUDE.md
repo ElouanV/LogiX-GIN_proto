@@ -140,7 +140,10 @@ Compute has a carbon cost. Spend it deliberately.
   restored from the checkpoint. `models_proto/` already drops it. `models/model.py` is
   deliberately left as upstream.
 - Sum-pooled values are unbounded counts. Never apply `1 - s` negation to them, only to
-  bounded (mean/max) columns (`bounded_mask`).
+  bounded (mean/max) columns (`bounded_mask`). `--pool_ops` sets the readout: on
+  `train_proto.py` sum is off by default (node level: no negation on the count; graph
+  level: counts are thresholded by `phi_sum` before the prototypes); on `train_logic.py`
+  `--pool_ops mean,max` drops the upstream sum (`models_proto/gintell.py`).
 
 ## Rule-extraction limits (read before running extraction)
 

@@ -16,6 +16,7 @@ import argparse
 import pickle
 import json
 from models.model import GIN, GINTELL
+from models_proto.gintell import GINTELLPool
 from torch.optim.lr_scheduler import ReduceLROnPlateau
 from utils import tracking
 from utils.evaluation import evaluate
@@ -33,6 +34,15 @@ def get_best_baseline_path(dataset_name):
     fname = df.iloc[-1]['fname']
     fname = fname.replace('/results.json', '')
     return fname
+
+def build_logic_model(args, baseline_args, num_features, num_classes, device):
+    """Upstream GINTELL, or GINTELLPool when --pool_ops picks another readout."""
+    kwargs = dict(num_features=num_features, num_classes=num_classes, hidden_dim=baseline_args['hidden_dim'],
+                  num_layers=baseline_args['num_layers'])
+    if args.get('pool_ops'):
+        return GINTELLPool(**kwargs, pool_ops=tuple(args['pool_ops'].split(','))).to(device)
+    return GINTELL(**kwargs).to(device)
+
 
 def train_epoch(model, model_tell, loader, device, optimizer, num_classes, train_full=True, conv_reg=0.001, fc_reg=0.01,
                 extra_loss=None):
@@ -72,7 +82,10 @@ def train_epoch(model, model_tell, loader, device, optimizer, num_classes, train
                 total_loss[i] += layer_loss.item() / len(loader.dataset)
                 total_correct[i] += ((layer_out >= 0.5).long() == layer_y).sum().item() / (layer_y.shape[-2]*layer_y.shape[-1]*len(loader))
             
-            out = model_tell.fc(torch.hstack([layers_x[-1], 1-layers_x[-1]]))       
+            pooled = layers_x[-1]           # the teacher's mean ‖ max ‖ sum readout
+            if hasattr(model_tell, 'select_pooled'):
+                pooled = model_tell.select_pooled(pooled)
+            out = model_tell.fc(torch.hstack([pooled, 1-pooled]))
             pred = out.argmax(-1)
             loss += F.binary_cross_entropy(out.reshape(-1), torch.nn.functional.one_hot(y, num_classes=num_classes).float().reshape(-1)) + F.nll_loss(F.log_softmax(out, dim=-1), y.long())
             
@@ -178,7 +191,7 @@ def _train_seed(dataset_name, baseline_path, args, seed, device):
     for p in model.parameters():
         p.requires_grad_ = False
     print('Baseline Acc:', test_epoch(model, test_loader, device))
-    model_tell = GINTELL(num_features=num_features, num_classes=num_classes, hidden_dim=baseline_args['hidden_dim'], num_layers=baseline_args['num_layers']).to(device)
+    model_tell = build_logic_model(args, baseline_args, num_features, num_classes, device)
     
     optimizer = torch.optim.AdamW(model_tell.parameters(), lr=args['lr'], weight_decay=args['l2'])
 
@@ -278,7 +291,7 @@ def eval_seed(dataset_name, baseline_path, args, seed, device):
     for p in model.parameters():
         p.requires_grad_ = False
     print('Baseline Acc:', test_epoch(model, test_loader, device))
-    model_tell = GINTELL(num_features=num_features, num_classes=num_classes, hidden_dim=baseline_args['hidden_dim'], num_layers=baseline_args['num_layers']).to(device)
+    model_tell = build_logic_model(args, baseline_args, num_features, num_classes, device)
     model_tell = torch.load(os.path.join(path, 'best.pt'))
 
     val_acc = test_epoch(model_tell, val_loader, device)
@@ -299,6 +312,8 @@ def train_eval(dataset_name, baseline_path, args):
     
     seed_todo = args.pop('seed', None)
     only_eval = args.pop('only_eval', False)
+    if args.get('pool_ops') is None:               # upstream readout: keep existing dir names
+        args.pop('pool_ops', None)
     
     path = create_folder_logic(dataset_name, args, baseline_args)
 
@@ -361,6 +376,7 @@ if __name__ == '__main__':
     parser.add_argument('--l2',            default=0.0,      type=float,     help='Weight decay')
     parser.add_argument('--conv_reg',      default=0.001,      type=float,   help='Conv layer regularization')
     parser.add_argument('--fc_reg',        default=0.01,      type=float,    help='Last layer regularization')
+    parser.add_argument('--pool_ops',      default=None,      type=str,     help='Comma-separated readout pooling, e.g. mean,max (default: upstream mean,max,sum; models_proto/gintell.py)')
     parser.add_argument('--only_eval',    action='store_true',              help='Number of Convolutional Layers')
     parser.add_argument('--seed',          default=None,      type=int,    help='Number of Convolutional Layers')
 

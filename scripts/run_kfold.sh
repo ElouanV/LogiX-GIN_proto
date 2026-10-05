@@ -10,6 +10,9 @@
 #   classic_nosum   LogiX-GIN with a mean ‖ max readout (train_logic.py --pool_ops mean,max)
 #   node_mask_push  NMP: node prototypes + care mask + push (train_proto.py)
 #   graph           dense graph-level prototypes (train_proto.py --proto_level graph)
+#   *_sum           the same prototype model with a mean ‖ max ‖ sum readout
+#                   (--pool_ops mean,max,sum): the sum-pooling ablation. Classic
+#                   LogiX-GIN has sum upstream, so its ablation is classic_nosum.
 # A fold whose log already holds its result line is skipped, so the script resumes.
 # Folds are the seeds 0-9; small datasets first, so results come in early.
 # Logs: logs/<dataset>/kfold_<model>_fold<k>.log.
@@ -19,7 +22,7 @@ cd "$REPO"
 PY="${PY:-$HOME/miniconda3/envs/logix-gin/bin/python}"
 STAGE="${STAGE:-teachers}"
 DATASETS="${DATASETS:-MUTAG BaMultiShapes PROTEINS AIDS BBBP NCI1 Mutagenicity}"
-MODELS="${MODELS:-classic classic_nosum node_mask_push graph}"
+MODELS="${MODELS:-classic classic_nosum node_mask_push node_mask_push_sum graph graph_sum}"
 FOLDS="${FOLDS:-0 1 2 3 4 5 6 7 8 9}"
 JOBS="${JOBS:-6}"
 export MLFLOW_TRACKING_URI="${MLFLOW_TRACKING_URI:-http://127.0.0.1:5055}"
@@ -37,12 +40,14 @@ student() {
     log="logs/$ds/kfold_${model}_fold$k.log"
     grep -q "^\[{'seed'" "$log" 2>/dev/null && { echo "[$(date +%T)] $ds $model fold $k: done already"; return; }
     [ -f "$teacher/$k/best.pt" ] || { echo "[$(date +%T)] $ds $model fold $k: no teacher"; return; }
-    case $model in
+    sum=()
+    [[ $model == *_sum ]] && sum=(--pool_ops mean,max,sum)
+    case ${model%_sum} in
         classic)        cmd=(train_logic.py) ;;
         classic_nosum)  cmd=(train_logic.py --pool_ops mean,max) ;;
         node_mask_push) cmd=(train_proto.py $PROTO_ARGS --proto_level node --push_every 200 --proto_mask
-                             --mask_reg 0.5 --mask_anneal_frac 0.8 --mask_ckpt_temp 1.0) ;;
-        graph)          cmd=(train_proto.py $PROTO_ARGS --proto_level graph) ;;
+                             --mask_reg 0.5 --mask_anneal_frac 0.8 --mask_ckpt_temp 1.0 "${sum[@]}") ;;
+        graph)          cmd=(train_proto.py $PROTO_ARGS --proto_level graph "${sum[@]}") ;;
         *) echo "unknown model $model"; return ;;
     esac
     $PY "${cmd[@]}" --dataset "$ds" --baseline_path "$teacher" $STUDENT_ARGS --seed "$k" > "$log" 2>&1
