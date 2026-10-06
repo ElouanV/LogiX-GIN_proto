@@ -14,7 +14,8 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 try:
     from models_proto.tell import LogicalLayer
     from models_proto.model_proto import get_model
-    from sparsify_proto import hoyer, hoyer_penalty, prune, unit_groups, unit_hoyer_penalty, used_units
+    from sparsify_proto import (hoyer, hoyer_penalty, layerwise_sparsify, layerwise_steps, notebook_hoyer_loss, prune,
+                                unit_groups, unit_hoyer_penalty, used_units)
 except Exception as e:                                   # torch_geometric missing etc.
     raise unittest.SkipTest(f'sparsify_proto not importable: {e}')
 
@@ -156,6 +157,41 @@ class TestPrune(unittest.TestCase):
             m.fc(torch.rand(6, 10)).sum().backward()
             opt.step()
         self.assertTrue((m.fc.weight.detach()[zero] == 0).all())
+
+
+class TestLayerwise(unittest.TestCase):
+    """--layerwise: the notebook's layer-by-layer procedure (nbs/LayerWiseRules.ipynb)."""
+
+    def test_notebook_hoyer_normalises_by_all_entries(self):
+        w = torch.tensor([[1.0, 0.0, 0.0, 0.0], [1.0, 0.0, 0.0, 0.0]])
+        # one-hot rows: |w|_1/|w|_2 = 1, normalised by sqrt(8) (all entries), not sqrt(4)
+        expected = 1 - (8 ** 0.5 - 1) / (8 ** 0.5 - 1)
+        self.assertAlmostEqual(notebook_hoyer_loss(w).item(), expected, places=5)
+
+    def test_order_head_then_last_to_first_conv(self):
+        model = get_model('node', num_features=3, num_classes=2, num_layers=3, hidden_dim=4, num_prototypes=2)
+        self.assertEqual([s[0] for s in layerwise_steps(model)], ['head', 'L2', 'L1', 'L0'])
+
+    def test_each_step_trains_only_its_layer(self):
+        from torch_geometric.data import Data
+        from torch_geometric.loader import DataLoader
+        torch.manual_seed(0)
+        graphs = [Data(x=(torch.rand(5, 3) > 0.5).float(), edge_index=torch.tensor([[0, 1, 2, 3], [1, 2, 3, 4]]),
+                       y=torch.tensor([i % 2])) for i in range(16)]
+        loader = DataLoader(graphs, batch_size=8)
+        model = get_model('node', num_features=3, num_classes=2, num_layers=2, hidden_dim=4, num_prototypes=2,
+                          proto_mask=True)
+        before = {k: v.clone() for k, v in model.state_dict().items()}
+        out, hist = layerwise_sparsify(model, loader, loader, 'cpu', 2, max_epochs=2)
+        self.assertEqual([h['step'] for h in hist], ['head', 'L1', 'L0'])
+        after = out.state_dict()
+        trained = ('fc.weight_sigma', 'fc.weight_exp') + tuple(
+            f'convs.{l}.nn.0.weight_{p}' for l in range(2) for p in ('sigma', 'exp'))
+        for k, v in before.items():
+            if k not in trained:
+                self.assertTrue(torch.equal(v, after[k]), k)       # prototypes, masks, thresholds fixed
+        for h in hist:
+            self.assertLessEqual(h['epochs'], 2)
 
 
 if __name__ == '__main__':
