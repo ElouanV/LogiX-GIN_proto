@@ -298,8 +298,7 @@ def train_eval(dataset_name,  args):
     return ret
 
 
-if __name__ == '__main__':
-
+def get_parser():
     parser = argparse.ArgumentParser(description='train_baseline.py')
 
     parser.add_argument('--dataset',       default='PROTEINS', type=str,     help='Dataset to use')
@@ -314,10 +313,15 @@ if __name__ == '__main__':
     parser.add_argument('--only_eval',    action='store_true',              help='Number of Convolutional Layers')
     parser.add_argument('--seed',          default=None,      type=int,    help='Number of Convolutional Layers')
     parser.add_argument('--split',         default='random',  choices=SPLITS, help='random: 80/10/10 per seed (upstream); kfold: stratified 10-fold, seed = fold')
+    return parser
 
-    args = parser.parse_args().__dict__
-    
-    dataset_name = args.pop('dataset')
+
+def parse_cli(argv=None):
+    """(dataset, args) from a command line; utils/experiment.py builds teacher runs through it."""
+    args = get_parser().parse_args(argv).__dict__
+    return args.pop('dataset'), args
+
+
+if __name__ == '__main__':
+    dataset_name, args = parse_cli()
     train_eval(dataset_name, args)
-
-    

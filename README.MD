@@ -14,21 +14,23 @@ To cite our work, please use:
 The environment details are available in the `environment.yml` file (the original
 environment of the paper is `environment.upstream.yml`).
 
-## Running the experiments on another machine
+## Running the experiments (any machine)
+Experiments are YAML configs (`configs/experiments/*.yaml`; models in `configs/models.yaml`,
+search spaces in `configs/search_spaces.yaml`). One machine owns a dataset: it trains the
+teachers, runs the hyper-parameter studies and the final 10-fold runs, so nothing is copied.
 ```
 git clone <this repository> && cd LogiX-GIN && git checkout <branch>
 conda env create -f environment.yml && conda activate logix-gin
-python -m utils.teachers unpack teachers_kfold.tar.gz   # same teachers as the main machine (copied from bundles/)
-python scripts/check_setup.py --download                # versions, GPU, datasets, teachers, tracking
-DATASETS="AIDS" scripts/run_hps.sh                      # e.g. the hyper-parameter studies of some datasets
+python scripts/check_setup.py --download
+python run_experiment.py configs/experiments/sum_ablation.yaml run --datasets AIDS   # this machine's dataset(s)
+python run_experiment.py configs/experiments/sum_ablation.yaml status
 ```
-Datasets download on first use. Teachers are shipped, not retrained: a retrained teacher
-differs (GPU nondeterminism) and the students distilled from it would not compare.
-`unpack` rebuilds each teacher's split and checks it reproduces its recorded accuracy.
-Give each machine its own datasets (one Optuna study lives on one machine), then copy
-`results_hps/<dataset>/` back (`rsync -a`) and run `python optimize_optuna.py --export`.
-MLflow: tunnel to the main server (`ssh -N -L 5055:127.0.0.1:5055 <main host>`) so every
-run lands in one store, or start a local `scripts/mlflow_server.sh`, or `LOGIX_MLFLOW=0`.
+Progress goes to `logs/progress/<host>.jsonl` and, with `NOTION_TOKEN` and
+`NOTION_PROGRESS_DB` set, to a shared Notion database (`utils/progress.py`). MLflow:
+tunnel to the main server (`ssh -N -L 5055:127.0.0.1:5055 <main host>`) so every run lands
+in one store, or start a local `scripts/mlflow_server.sh`, or `LOGIX_MLFLOW=0`. Teachers
+trained elsewhere can be moved with `python -m utils.teachers pack|unpack` (a retrained
+teacher differs, so never mix teachers of two machines within one dataset).
 
 ## Training Models:
 It is possible to train the models using the following commands

@@ -56,38 +56,29 @@ def _c(*choices):
     return {'type': 'categorical', 'choices': list(choices)}
 
 
-COMMON = {                        # every student (train_logic.py and train_proto.py)
-    'lr': _f(1e-4, 1e-2, log=True),
-    'batch_size': _c(16, 32, 64, 128),
-    'l2': _c(0.0, 1e-4),
-    'conv_reg': _f(1e-4, 1e-1, log=True),
-    'fc_reg': _f(1e-4, 1e-1, log=True),
-    'epochs': _c(500, 1000, 2000),
-    'warmup_frac': _c(0.2, 0.33, 0.5),         # --warmup_epochs = round(frac * epochs)
-}
-PROTO = {
-    'num_prototypes': _c(8, 16, 32),
-    'proto_div_reg': _f(1e-3, 1e-1, log=True),
-    'proto_ent_reg': _f(1e-3, 1e-1, log=True),
-}
-NMP = {
-    'mask_reg': _f(0.05, 1.0, log=True),
-    'push_every': _c(50, 100, 200),
-    'vocab_reg': _c(0.0, 0.1),
-}
-NMP_FIXED = {'proto_level': 'node', 'proto_mask': True, 'mask_anneal_frac': 0.8, 'mask_ckpt_temp': 1.0}
-SUM = {'pool_ops': 'mean,max,sum'}
+CONFIGS = os.environ.get('LOGIX_CONFIGS', os.path.join(REPO, 'configs'))   # models.yaml, search_spaces.yaml
 
-MODELS = {
-    'classic':            {'script': 'logic', 'fixed': {}, 'space': COMMON},
-    'classic_nosum':      {'script': 'logic', 'fixed': {'pool_ops': 'mean,max'}, 'space': COMMON},
-    'node_mask_push':     {'script': 'proto', 'fixed': NMP_FIXED, 'space': {**COMMON, **PROTO, **NMP}},
-    'node_mask_push_sum': {'script': 'proto', 'fixed': {**NMP_FIXED, **SUM}, 'space': {**COMMON, **PROTO, **NMP}},
-    'graph':              {'script': 'proto', 'fixed': {'proto_level': 'graph', 'push_every': 0},
-                           'space': {**COMMON, **PROTO}},
-    'graph_sum':          {'script': 'proto', 'fixed': {'proto_level': 'graph', 'push_every': 0, **SUM},
-                           'space': {**COMMON, **PROTO}},
-}
+
+def load_space(name, spaces=None):
+    """A search space of configs/search_spaces.yaml, its ``extends`` chain resolved."""
+    import yaml
+    spaces = spaces or yaml.safe_load(open(os.path.join(CONFIGS, 'search_spaces.yaml')))
+    s = dict(spaces[name])
+    base = s.pop('extends', None)
+    return {**(load_space(base, spaces) if base else {}), **s}
+
+
+def load_models():
+    """configs/models.yaml with each model's space resolved: {name: {script, fixed, space}}."""
+    import yaml
+    spaces = yaml.safe_load(open(os.path.join(CONFIGS, 'search_spaces.yaml')))
+    models = yaml.safe_load(open(os.path.join(CONFIGS, 'models.yaml')))
+    return {m: {'script': spec['script'], 'fixed': spec.get('fixed') or {},
+                'space': load_space(spec['space'], spaces), 'space_name': spec['space']}
+            for m, spec in models.items()}
+
+
+MODELS = load_models()
 
 SAMPLER = {'name': 'TPESampler', 'multivariate': True, 'n_startup_trials': 10}
 PRUNER = {'name': 'MedianPruner', 'n_startup_trials': 8, 'n_warmup_steps': 0}
@@ -108,8 +99,10 @@ def study_dir(dataset, model, fold, root=ROOT):
     return os.path.join(root, dataset, model, f'fold{fold}')
 
 
-def teacher_path(dataset):
-    return os.path.join('results', dataset, TEACHER_CFG)
+def teacher_path(dataset, teacher=None):
+    """Teacher configuration directory (one subdirectory per fold); default: the k-fold
+    teachers of the sum-pooling study."""
+    return teacher or os.path.join('results', dataset, TEACHER_CFG)
 
 
 def suggest(trial, space):
@@ -122,13 +115,13 @@ def suggest(trial, space):
     return params
 
 
-def to_argv(dataset, model, params, fold):
+def to_argv(dataset, model, params, fold, teacher=None):
     """The training script's command line for a parameter set (what best.json stores)."""
     spec = MODELS[model]
     p = dict(params)
     if 'warmup_frac' in p:
         p['warmup_epochs'] = int(round(p.pop('warmup_frac') * p['epochs']))
-    argv = ['--dataset', dataset, '--baseline_path', teacher_path(dataset), '--seed', str(fold)]
+    argv = ['--dataset', dataset, '--baseline_path', teacher_path(dataset, teacher), '--seed', str(fold)]
     for k, v in {**spec['fixed'], **p}.items():
         if v is True:
             argv.append(f'--{k}')
@@ -155,18 +148,18 @@ def run_dir(model, dataset, args, teacher_fold_path, seed, root):
     return m.create_folder_proto(dataset, args, baseline_args, seed=seed, root=root)
 
 
-def study_attrs(dataset, model, fold):
+def study_attrs(dataset, model, fold, teacher=None):
     return {'dataset': dataset, 'model': model, 'fold': fold, 'script': f"train_{MODELS[model]['script']}.py",
             'fixed': MODELS[model]['fixed'], 'search_space': MODELS[model]['space'],
             'sampler': SAMPLER, 'pruner': PRUNER, 'objective': OBJECTIVE,
-            'teacher': os.path.join(teacher_path(dataset), str(fold)), 'split': 'kfold'}
+            'teacher': os.path.join(teacher_path(dataset, teacher), str(fold)), 'split': 'kfold'}
 
 
 # ---------------------------------------------------------------------------
 # study, objective, worker
 # ---------------------------------------------------------------------------
 
-def open_study(dataset, model, fold, root=ROOT, sampler_seed=0, register=True):
+def open_study(dataset, model, fold, root=ROOT, sampler_seed=0, register=True, teacher=None):
     """Create or join the study. Refuses to join one whose search space differs from the
     current code, so a study never mixes two spaces. ``register`` records this checkout's
     git commit (workers); exports only read."""
@@ -183,7 +176,7 @@ def open_study(dataset, model, fold, root=ROOT, sampler_seed=0, register=True):
     name = f'{dataset}/{model}/fold{fold}'
     study = optuna.create_study(study_name=name, storage=storage, direction='maximize',
                                 sampler=sampler, pruner=pruner, load_if_exists=True)
-    attrs = {**study_attrs(dataset, model, fold), 'sampler_seed': sampler_seed}
+    attrs = {**study_attrs(dataset, model, fold, teacher), 'sampler_seed': sampler_seed}
     if 'search_space' in study.user_attrs:
         old = {k: study.user_attrs.get(k) for k in ('search_space', 'fixed', 'objective')}
         new = {k: json.loads(json.dumps(attrs[k])) for k in old}
@@ -221,54 +214,75 @@ class PruneCallback:
             raise optuna.TrialPruned(f'val balanced acc {v:.3f} at epoch {epoch}')
 
 
-def objective(trial, dataset, model, fold, root, device, report_every=50):
-    import pickle
-    import torch
-    from torch_geometric.loader import DataLoader
-    from utils.evaluation import evaluate
-    params = suggest(trial, MODELS[model]['space'])
-    argv = to_argv(dataset, model, params, fold)
-    trial.set_user_attr('argv', argv)
-    trial.set_user_attr('git_commit', git_commit())
+def train_from_argv(model, argv, out_root, device, epoch_callback=None, tags=None):
+    """Train one run from the training script's command line (as train_eval would, minus the
+    summary), into out_root. Returns (run directory, args)."""
     m = script_module(model)
     ds, baseline_path, args = m.parse_cli(argv)
     seed = args.pop('seed')
     args.pop('only_eval', None)
     if args.get('pool_ops') is None:                     # as train_eval does
         args.pop('pool_ops', None)
-    teacher = os.path.join(baseline_path, str(fold))
+    teacher = os.path.join(baseline_path, str(seed))
+    cb = epoch_callback(args) if epoch_callback else None
+    m.train_seed(ds, teacher, args, seed, device, out_root=out_root, epoch_callback=cb, tags=tags)
+    return run_dir(model, ds, args, teacher, seed, out_root), args
+
+
+def objective(trial, dataset, model, fold, root, device, report_every=50, teacher=None):
+    params = suggest(trial, MODELS[model]['space'])
+    argv = to_argv(dataset, model, params, fold, teacher)
+    trial.set_user_attr('argv', argv)
+    trial.set_user_attr('git_commit', git_commit())
     out_root = os.path.join(study_dir(dataset, model, fold, root), 'runs', f'trial{trial.number:03d}')
     tags = {'hps_study': f'{dataset}/{model}/fold{fold}', 'hps_trial': trial.number, 'kind': 'hps'}
-    m.train_seed(ds, teacher, args, seed, device, out_root=out_root,
-                 epoch_callback=PruneCallback(trial, args['warmup_epochs'], device, report_every), tags=tags)
-    path = run_dir(model, ds, args, teacher, seed, out_root)
+    path, _ = train_from_argv(model, argv, out_root, device, tags=tags,
+                              epoch_callback=lambda a: PruneCallback(trial, a['warmup_epochs'], device, report_every))
     trial.set_user_attr('run_dir', path)
-    ckpt = os.path.join(path, 'best.pt')
-    if not os.path.exists(ckpt):                         # no checkpoint was ever kept
-        raise RuntimeError(f'no best.pt in {path}')
-    net = torch.load(ckpt, map_location=device, weights_only=False)
-    data = pickle.load(open(os.path.join(path, 'data.pkl'), 'rb'))
-    metrics = {**evaluate(net, DataLoader(data['val_dataset'], batch_size=64), device, prefix='val_'),
-               **evaluate(net, DataLoader(data['test_dataset'], batch_size=64), device, prefix='test_')}
+    metrics = evaluate_run(path, device)
     for k, v in metrics.items():
         trial.set_user_attr(k, v)
     return metrics['val_balanced_acc']
 
 
-def run_worker(dataset, model, fold, n_trials, root=ROOT, sampler_seed=0, report_every=50):
+def evaluate_run(path, device):
+    """val_* / test_* metrics (utils/evaluation.py) of the checkpoint a run kept."""
+    import pickle
+    import torch
+    from torch_geometric.loader import DataLoader
+    from utils.evaluation import evaluate
+    ckpt = os.path.join(path, 'best.pt')
+    if not os.path.exists(ckpt):                         # no checkpoint was ever kept
+        raise RuntimeError(f'no best.pt in {path}')
+    net = torch.load(ckpt, map_location=device, weights_only=False)
+    data = pickle.load(open(os.path.join(path, 'data.pkl'), 'rb'))
+    return {**evaluate(net, DataLoader(data['val_dataset'], batch_size=64), device, prefix='val_'),
+            **evaluate(net, DataLoader(data['test_dataset'], batch_size=64), device, prefix='test_')}
+
+
+def run_worker(dataset, model, fold, n_trials, root=ROOT, sampler_seed=0, report_every=50, teacher=None,
+               on_trial=None, sole_worker=False):
     """Run trials until the study holds n_trials finished ones (complete, pruned or failed);
-    several workers on one study share that budget."""
+    several workers on one study share that budget. ``on_trial(study, trial)`` is called
+    after each trial (progress reporting). With ``sole_worker`` (utils/experiment.py runs
+    one worker per study) a trial still RUNNING when the worker starts was interrupted,
+    and is marked FAIL so it neither lingers nor counts as in flight."""
     import optuna
     import torch
     from optuna.study import MaxTrialsCallback
     from optuna.trial import TrialState
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-    study = open_study(dataset, model, fold, root, sampler_seed)
+    study = open_study(dataset, model, fold, root, sampler_seed, teacher=teacher)
     done = (TrialState.COMPLETE, TrialState.PRUNED, TrialState.FAIL)
+    if sole_worker:
+        for t in study.get_trials(deepcopy=False, states=(TrialState.RUNNING,)):
+            study._storage.set_trial_user_attr(t._trial_id, 'interrupted', True)
+            study._storage.set_trial_state_values(t._trial_id, TrialState.FAIL)
     if len(study.get_trials(deepcopy=False, states=done)) >= n_trials:
         return study
-    study.optimize(lambda t: objective(t, dataset, model, fold, root, device, report_every),
-                   callbacks=[MaxTrialsCallback(n_trials, states=done)], catch=(Exception,), gc_after_trial=True)
+    callbacks = [MaxTrialsCallback(n_trials, states=done)] + ([on_trial] if on_trial else [])
+    study.optimize(lambda t: objective(t, dataset, model, fold, root, device, report_every, teacher),
+                   callbacks=callbacks, catch=(Exception,), gc_after_trial=True)
     export_study(study, study_dir(dataset, model, fold, root))
     return study
 

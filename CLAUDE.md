@@ -113,11 +113,17 @@ Compute has a carbon cost. Spend it deliberately.
 5. Rule-extraction core: `latent_logic.py` (port of `nbs/LayerWiseRules.ipynb`, the
    canonical reading; keep its logic unchanged) and `min_covers.py` (exact DNF of a unit =
    its minimal covers).
+- **Experiments are YAML configs** run by `run_experiment.py <config> run --datasets ...`
+  (`utils/experiment.py`): per dataset, on one machine, k-fold teachers -> one Optuna study
+  per model -> every fold re-trained with the best set (`results_final/<exp>/<ds>/`) ->
+  summary.csv. Units resume from disk; progress goes to `utils/progress.py` (local JSONL +
+  optional Notion). New experiment = new YAML, not a new launcher script.
 - `optimize_optuna.py` + `utils/hps.py`: Optuna search of the six students of the
   sum-pooling ablation (classic ± sum, NMP ± sum, graph ± sum) on the k-fold teachers,
   one study per (dataset, model, fold), objective = val balanced accuracy, test never
   used. Spaces, studies and best sets are saved under `results_hps/` (see the module
-  docstring); `scripts/run_hps.sh` launches it. Changing a space needs a new `--root`.
+  docstring). Models and spaces live in `configs/models.yaml` and
+  `configs/search_spaces.yaml`; changing a space needs a new hps root.
 - `optimize_*.py` run grid searches (upstream). `optimize_*.py` and `train_*.py` accept `--dataset`
   (MUTAG, Mutagenicity, AIDS, BBBP, PROTEINS, ...).
 - Batch launchers are in `scripts/` (`launch_all.sh`, `run_hoyer_sweep.sh`,

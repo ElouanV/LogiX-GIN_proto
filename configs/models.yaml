@@ -1,0 +1,28 @@
+# Students of LogiX-GIN experiments: training script, the arguments that define the
+# model (fixed for every run of it) and the search space it is tuned in
+# (configs/search_spaces.yaml). The *_sum / *_nosum pairs share their space, so the
+# sum-pooling ablation compares two models tuned the same way.
+classic:
+  script: logic                     # train_logic.py (upstream GINTELL, mean | max | sum readout)
+  fixed: {}
+  space: common
+classic_nosum:
+  script: logic
+  fixed: {pool_ops: "mean,max"}     # models_proto/gintell.py GINTELLPool
+  space: common
+node_mask_push:                     # NMP: node prototypes + care mask + push
+  script: proto                     # train_proto.py
+  fixed: {proto_level: node, proto_mask: true, mask_anneal_frac: 0.8, mask_ckpt_temp: 1.0}
+  space: nmp
+node_mask_push_sum:
+  script: proto
+  fixed: {proto_level: node, proto_mask: true, mask_anneal_frac: 0.8, mask_ckpt_temp: 1.0, pool_ops: "mean,max,sum"}
+  space: nmp
+graph:                              # dense graph-level prototypes
+  script: proto
+  fixed: {proto_level: graph, push_every: 0}
+  space: proto
+graph_sum:
+  script: proto
+  fixed: {proto_level: graph, push_every: 0, pool_ops: "mean,max,sum"}
+  space: proto
