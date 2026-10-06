@@ -66,6 +66,10 @@ class MolOneHot:
 def get_dataset(dataset_name):
     if dataset_name == 'Ba2Motifs':
         return  SynGraphDataset(root='data/ba_2motifs', name='ba_2motifs')
+    elif dataset_name == 'BA2Motifs':
+        # BA graphs with a house or a 5-cycle motif on nodes 20-24 (the class), constant
+        # node features; 'Ba2Motifs' (upstream) has random node features (see syn_dataset.py)
+        return SynGraphDataset(root='data/ba_2motifs', name='ba_2motifs_clean')
     elif dataset_name == 'Ba2MotifsNoisy':
         return  SynGraphDataset(root='data/ba_2motifs', name='ba_2motifsnoisy')
     elif dataset_name == 'TreeGrid':

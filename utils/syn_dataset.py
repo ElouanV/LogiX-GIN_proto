@@ -56,7 +56,10 @@ class SynGraphDataset(InMemoryDataset):
         'tree_grid': ['Tree_Grid', 'Tree_Grid.pkl', 'Tree_Grid'],
         'tree_cycle': ['Tree_Cycle', 'Tree_Cycles.pkl', 'Tree_Cycles'],
         'ba_2motifs': ['BA_2Motifs', 'BA_2Motifs.pkl', 'BA_2Motifs'],
-        'ba_2motifsnoisy': ['BA_2Motifs', 'BA_2Motifs.pkl', 'BA_2Motifs']
+        'ba_2motifsnoisy': ['BA_2Motifs', 'BA_2Motifs.pkl', 'BA_2Motifs'],
+        # read_ba2motif_data defaults to noisy=True, so 'ba_2motifs' gets uniform random node
+        # features too (upstream quirk, kept); this name keeps the original constant features
+        'ba_2motifs_clean': ['BA_2Motifs', 'BA_2Motifs.pkl', 'BA_2Motifs'],
     }
 
     def __init__(self, root, name, transform=None, pre_transform=None):
@@ -97,6 +100,10 @@ class SynGraphDataset(InMemoryDataset):
                 data_list = [self.get(idx) for idx in range(len(self))]
                 data_list = [self.pre_transform(data) for data in data_list]
                 self.data, self.slices = self.collate(data_list)
+        elif self.name == 'ba_2motifs_clean':
+            data_list = read_ba2motif_data(self.raw_dir, self.names[self.name][2], noisy=False)
+            for d in data_list:
+                d.y = d.y.view(-1)
         elif self.name.lower() == 'BA_2MotifsNoisy'.lower():
             data_list = read_ba2motif_data(self.raw_dir, self.names[self.name][2], noisy=True)
 
