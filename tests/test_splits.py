@@ -1,10 +1,13 @@
 import glob
 import os
 import pickle
+import tempfile
 import unittest
+from unittest import mock
 
 import numpy as np
 
+from utils import splits
 from utils.splits import N_FOLDS, split_indices
 
 
@@ -39,6 +42,31 @@ class TestSplits(unittest.TestCase):
         self.assertEqual(split_indices(self.y, 4, 'kfold'), split_indices(self.y, 4, 'kfold'))
         with self.assertRaises(ValueError):
             split_indices(self.y, N_FOLDS, 'kfold')
+
+
+    def test_saved_file_is_the_reference(self):
+        """split_indices(dataset=...) writes the file once, then reads it; other labels refuse it."""
+        with tempfile.TemporaryDirectory() as d, mock.patch.object(splits, 'SPLIT_DIR', d):
+            got = split_indices(self.y, 3, 'kfold', 'Toy')
+            self.assertTrue(os.path.exists(os.path.join(d, 'Toy_kfold.json')))
+            self.assertEqual(got, splits.draw_split(self.y, 3, 'kfold'))
+            self.assertEqual(split_indices(self.y, 3, 'kfold', 'Toy'), got)
+            data = dict(zip(('train_indices', 'val_indices', 'test_indices'), got))
+            self.assertEqual(len(splits.same_split('Toy', 3, data)), 64)
+            with self.assertRaises(RuntimeError):
+                splits.same_split('Toy', 4, data)
+            with self.assertRaises(RuntimeError):
+                split_indices(self.y[::-1], 3, 'kfold', 'Toy')
+
+    def test_saved_files_match_a_fresh_draw(self):
+        """Committed splits/*.json are the folds the k-fold teachers were trained on."""
+        if not glob.glob(os.path.join(splits.SPLIT_DIR, 'MUTAG_kfold.json')):
+            self.skipTest('no saved MUTAG split')
+        from utils.utils import get_dataset
+        y = get_dataset('MUTAG').data.y
+        for k in range(N_FOLDS):
+            f = splits.load_split('MUTAG', k, y=y)
+            self.assertEqual((f['train'], f['val'], f['test']), splits.draw_split(y, k, 'kfold'))
 
 
 if __name__ == '__main__':

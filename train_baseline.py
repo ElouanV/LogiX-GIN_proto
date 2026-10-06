@@ -93,7 +93,7 @@ def _train_seed(dataset_name, args, seed, device):
 
     if num_features == 0: num_features = 10
     
-    train_indices, val_indices, test_indices = split_indices(dataset.data.y, seed, args.get('split', 'random'))
+    train_indices, val_indices, test_indices = split_indices(dataset.data.y, seed, args.get('split', 'random'), dataset_name)
 
     train_dataset = dataset[train_indices]
     val_dataset = dataset[val_indices]
@@ -190,7 +190,7 @@ def eval_seed(dataset_name, args, seed, device):
 
     if num_features == 0: num_features = 10
     
-    train_indices, val_indices, test_indices = split_indices(dataset.data.y, seed, args.get('split', 'random'))
+    train_indices, val_indices, test_indices = split_indices(dataset.data.y, seed, args.get('split', 'random'), dataset_name)
 
     train_dataset = dataset[train_indices]
     val_dataset = dataset[val_indices]

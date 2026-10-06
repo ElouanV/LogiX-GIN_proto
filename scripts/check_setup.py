@@ -20,7 +20,7 @@ REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, REPO)
 os.chdir(REPO)
 
-DATASETS = ['MUTAG', 'PROTEINS', 'BaMultiShapes', 'AIDS', 'BBBP', 'NCI1', 'Mutagenicity']
+DATASETS = ['MUTAG', 'PROTEINS', 'BaMultiShapes', 'BA2Motifs', 'AIDS', 'BBBP', 'NCI1', 'Mutagenicity']
 PKG = {'torch': 'torch', 'torch-geometric': 'torch_geometric', 'numpy': 'numpy', 'scikit-learn': 'sklearn',
        'pandas': 'pandas', 'mlflow': 'mlflow', 'optuna': 'optuna', 'codecarbon': 'codecarbon', 'rdkit': 'rdkit'}
 

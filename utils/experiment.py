@@ -23,6 +23,7 @@ import concurrent.futures as cf
 import datetime
 import json
 import os
+import pickle
 import shutil
 import subprocess
 import sys
@@ -31,6 +32,7 @@ import optuna
 import yaml
 
 from utils import hps, progress
+from utils.splits import same_split, split_file
 
 optuna.logging.set_verbosity(optuna.logging.WARNING)
 
@@ -192,10 +194,12 @@ class Experiment:
         path, _ = hps.train_from_argv(model, argv, os.path.join(d, 'run'), device,
                                       tags={'experiment': self.name, 'kind': 'final', 'model_name': model})
         metrics = hps.evaluate_run(path, device)
+        split_sha = same_split(dataset, fold, pickle.load(open(os.path.join(path, 'data.pkl'), 'rb')))
         with open(os.path.join(d, 'final.json'), 'w') as f:
             json.dump({'experiment': self.name, 'dataset': dataset, 'model': model, 'fold': fold,
                        'metrics': metrics, 'argv': argv, 'params': best['params'], 'run_dir': path,
-                       'study': best['study'], 'study_trial': best['number'], 'git_commit': hps.git_commit()},
+                       'study': best['study'], 'study_trial': best['number'], 'git_commit': hps.git_commit(),
+                       'split_file': os.path.relpath(split_file(dataset), REPO), 'split_sha256': split_sha},
                       f, indent=1)
         return metrics, None
 

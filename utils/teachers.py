@@ -42,7 +42,7 @@ def rebuild_data(config_dir, seed):
     from utils.splits import split_indices
     from utils.utils import get_dataset
     dataset = get_dataset(config_dir.split(os.sep)[-2])
-    tr, va, te = split_indices(dataset.data.y, seed, _split_of(config_dir))
+    tr, va, te = split_indices(dataset.data.y, seed, _split_of(config_dir), config_dir.split(os.sep)[-2])
     return {'train_indices': tr, 'val_indices': va, 'test_indices': te,
             'train_dataset': dataset[tr], 'val_dataset': dataset[va], 'test_dataset': dataset[te]}
 

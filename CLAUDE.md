@@ -116,7 +116,8 @@ Compute has a carbon cost. Spend it deliberately.
 - **Experiments are YAML configs** run by `run_experiment.py <config> run --datasets ...`
   (`utils/experiment.py`): per dataset, on one machine, k-fold teachers -> one Optuna study
   per model -> every fold re-trained with the best set (`results_final/<exp>/<ds>/`) ->
-  summary.csv. Units resume from disk; progress goes to `utils/progress.py` (local JSONL +
+  summary.csv. Fold indices are committed in `splits/<dataset>_kfold.json` (the reference
+  for every model and baseline; `utils/splits.py`, final runs check them). Units resume from disk; progress goes to `utils/progress.py` (local JSONL +
   optional Notion). New experiment = new YAML, not a new launcher script.
 - `optimize_optuna.py` + `utils/hps.py`: Optuna search of the six students of the
   sum-pooling ablation (classic ± sum, NMP ± sum, graph ± sum) on the k-fold teachers,
