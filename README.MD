@@ -11,7 +11,24 @@ To cite our work, please use:
 }
 ```
 
-The environment details are available in the `environment.yml` file.
+The environment details are available in the `environment.yml` file (the original
+environment of the paper is `environment.upstream.yml`).
+
+## Running the experiments on another machine
+```
+git clone <this repository> && cd LogiX-GIN && git checkout <branch>
+conda env create -f environment.yml && conda activate logix-gin
+python -m utils.teachers unpack teachers_kfold.tar.gz   # same teachers as the main machine (copied from bundles/)
+python scripts/check_setup.py --download                # versions, GPU, datasets, teachers, tracking
+DATASETS="AIDS" scripts/run_hps.sh                      # e.g. the hyper-parameter studies of some datasets
+```
+Datasets download on first use. Teachers are shipped, not retrained: a retrained teacher
+differs (GPU nondeterminism) and the students distilled from it would not compare.
+`unpack` rebuilds each teacher's split and checks it reproduces its recorded accuracy.
+Give each machine its own datasets (one Optuna study lives on one machine), then copy
+`results_hps/<dataset>/` back (`rsync -a`) and run `python optimize_optuna.py --export`.
+MLflow: tunnel to the main server (`ssh -N -L 5055:127.0.0.1:5055 <main host>`) so every
+run lands in one store, or start a local `scripts/mlflow_server.sh`, or `LOGIX_MLFLOW=0`.
 
 ## Training Models:
 It is possible to train the models using the following commands

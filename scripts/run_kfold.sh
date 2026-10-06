@@ -19,7 +19,7 @@
 set -uo pipefail
 REPO="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$REPO"
-PY="${PY:-$HOME/miniconda3/envs/logix-gin/bin/python}"
+. "$REPO/scripts/env.sh"
 STAGE="${STAGE:-teachers}"
 DATASETS="${DATASETS:-MUTAG BaMultiShapes PROTEINS AIDS BBBP NCI1 Mutagenicity}"
 MODELS="${MODELS:-classic classic_nosum node_mask_push node_mask_push_sum graph graph_sum}"

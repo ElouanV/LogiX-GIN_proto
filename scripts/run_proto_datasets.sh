@@ -10,7 +10,7 @@
 set -uo pipefail
 REPO="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$REPO"
-PY="${PY:-$HOME/miniconda3/envs/logix-gin/bin/python}"
+. "$REPO/scripts/env.sh"
 DATASETS="${DATASETS:-AIDS BBBP}"
 JOBS="${JOBS:-3}"
 SEEDS="${SEEDS:-0 1 2 3 4 5 6 7 8 9}"

@@ -84,8 +84,15 @@ Compute has a carbon cost. Spend it deliberately.
 ## Environment
 
 - Python: `~/miniconda3/envs/logix-gin/bin/python` (py3.10, torch 2.5.1+cu121, PyG 2.6.1).
-- `environment.yml` is **stale** (py3.8 / torch 1.12) and the old `pygeo` env is broken
-  (torch-sparse ABI mismatch). Don't rebuild from either.
+  `environment.yml` pins it (keep it in sync when installing a package); the paper's
+  original is `environment.upstream.yml` (py3.8 / torch 1.12, no longer builds) and the old
+  `pygeo` env is broken. Launchers find the interpreter through `scripts/env.sh` (`$PY`,
+  the active logix-gin env, then the default conda paths).
+- Other machines: README "Running the experiments on another machine". Teachers move as a
+  bundle (`python -m utils.teachers pack|unpack|verify`, bundles in `bundles/`, gitignored),
+  never retrained elsewhere. `scripts/check_setup.py` checks a checkout. Never edit a
+  launcher in place while it runs (bash reads scripts as it goes): replace the file
+  (write a copy, then rename).
 - Shared machine and shared GPU (RTX 2060 SUPER). Processes owned by `jose` (e.g. Logical
   CNN `main.py --config configs/Logical_CNN_*`) are someone else's work: **never kill
   them**. Check the owner (`stat -c %U /proc/<pid>`) and kill only by a pattern you launched

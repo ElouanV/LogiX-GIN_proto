@@ -18,9 +18,9 @@ if ss -ltn 2>/dev/null | awk '{print $4}' | grep -q ":$PORT\$"; then
     echo "port $PORT is already in use - not starting (is it another MLflow server?)" >&2
     exit 1
 fi
-PY="${PY:-$HOME/miniconda3/envs/logix-gin/bin}"
+. "$REPO/scripts/env.sh"
 export MLFLOW_DISABLE_AGENT_HINT=1
-exec "$PY/mlflow" server \
+exec "$(dirname "$PY")/mlflow" server \
     --backend-store-uri "sqlite:///$REPO/mlflow.db" \
     --default-artifact-root "file://$REPO/mlartifacts" \
     --host 127.0.0.1 --port "$PORT" --workers 2

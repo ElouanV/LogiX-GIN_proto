@@ -22,7 +22,7 @@
 set -uo pipefail
 REPO="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$REPO"
-PY="${PY:-$HOME/miniconda3/envs/logix-gin/bin/python}"
+. "$REPO/scripts/env.sh"
 DATASET="${DATASET:-Mutagenicity}"
 TRUNKS="${TRUNKS:-64x3}"
 SEEDS="${SEEDS:-0 1 2}"

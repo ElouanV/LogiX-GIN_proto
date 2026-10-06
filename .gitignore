@@ -3,3 +3,8 @@ mlflow.db
 mlartifacts/
 mlruns/
 logs/
+
+# teacher bundles for other machines (python -m utils.teachers pack)
+bundles/
+# hyper-parameter studies (utils/hps.py)
+results_hps/
