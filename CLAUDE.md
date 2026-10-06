@@ -49,6 +49,9 @@ from a commit, a command and a seed.
 
 ## Git workflow
 
+- Commit hashes recorded by runs before 2026-10-06 refer to the pre-rewrite
+  `feat/kfold-hpo`; `docs/rewritten_commits.tsv` maps them to the current commits.
+
 - **One commit per feature or fix** as soon as it works, with a message that says what
   changed and why. Don't bundle unrelated changes, and don't commit data, results,
   `mlflow.db`, `__pycache__` or notebook outputs you didn't intend to.
@@ -88,7 +91,9 @@ Compute has a carbon cost. Spend it deliberately.
   original is `environment.upstream.yml` (py3.8 / torch 1.12, no longer builds) and the old
   `pygeo` env is broken. Launchers find the interpreter through `scripts/env.sh` (`$PY`,
   the active logix-gin env, then the default conda paths).
-- Other machines: README "Running the experiments on another machine". Teachers move as a
+- Other machines: **`docs/EXPERIMENT_PROTOCOL.md` is binding** for anyone (agent or human)
+  running the paper's experiments on a machine other than the main one; read it first. README
+  "Running the experiments (any machine)" is the short version. Teachers move as a
   bundle (`python -m utils.teachers pack|unpack|verify`, bundles in `bundles/`, gitignored),
   never retrained elsewhere. `scripts/check_setup.py` checks a checkout. Never edit a
   launcher in place while it runs (bash reads scripts as it goes): replace the file

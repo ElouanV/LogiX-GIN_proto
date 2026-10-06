@@ -1,0 +1,19 @@
+# feat/kfold-hpo was rewritten on 2026-10-06 to drop commit-message trailers; the trees are
+# identical. Runs made before then record the old hashes (study.json, MLflow tags, logs):
+# this table maps them to the new commits. Old commits stay locally under
+# refs/backup/feat-kfold-hpo-before-trailer-rewrite on the main machine.
+# old_commit	new_commit	subject
+c01ee3a1ebfa9143c4a19abfaaf9590abdfd5ffb	85d9730720ba2c74ac85c53a66c7d3b82d8cdcbe	Stratified 10-fold split for teachers: --split kfold
+46f4722a63eb3de90dffe99646ab331d98874b06	8c9ea746fceea882149e8d0ac13a5c57e8b209cf	PROTEINS without its continuous node attribute
+b9e8c77faf0fff5cbbd4bd4e59e2c49a934a93b6	ac14e3024b06722138632da7ffd404a4682b9717	run_kfold.sh: 10-fold teachers and student comparison across datasets
+753f891c22fb201816165741208e96ef4dd21558	11e00eb17cb9be3cdf8aca66bd9791401534a8d0	interp_metrics.py: define bits() before its first use
+d1b970be78dfa3129348a60788e3851627301e18	62859bdf0ba9badfaee8d2c8e604168d316a6cfd	Sum-pooling ablation: --pool_ops for classic and prototype LogiX-GIN
+fc523b2d09114bacb204cca22bf2e2c0ab355bdd	ff8d99f4a713b2da78a806c29e51045e3959d34f	tracking: batch per-epoch MLflow metrics
+bdedb85696b1be4562f92321700beb48c92f6a9b	2e84602b303ced9bc80f3d7eb555d579f3724871	tracking: per-run CO2 with codecarbon
+a6d9f42159c639624de346c97d163df4b3a3003b	d899ff66e455ca227ea15ef8f765efcb7d3ac874	Training entry points: parse_cli(), out_root, epoch_callback, tags
+f3fa8ea994c7c0af7f913ffbcf4240ec5e7f21be	4e58351c2e25fd201ba3065aa910de40d62254cc	Optuna search of the sum-pooling ablation students: optimize_optuna.py
+b2b55856fdd5fc44faa9dd800915541691b048b1	e931645d8b2d012f991c3069891c874b47135d38	Portable experiments: pinned environment, teacher bundles, setup check
+5216accc0c1e03ed8de4fcabfcbbd83696cff6b6	9b216d0a1207a8c5ddc4bc00d6b5979d86b6c97f	YAML experiments and a per-dataset pipeline: run_experiment.py
+8de200aa93140f7b154c44c0e06954daa6aeed30	b130ab83e239ea7a429caaec0ef55f3d2fbab11d	BA2Motifs: BA-2Motifs with its original constant node features
+91cc7dddedfab56167ff50f707379a2efa7f20aa	63e85313e59f71b9e65212ccaeb0a14c338cac46	Committed k-fold splits: splits/<dataset>_kfold.json
+5745cc90aeb4f424a5358fd3a96d689120edc723	eeb1e5d8c6d933e4f605a4d1fce4390cc94e0c42	sum_ablation: add BA2Motifs; Notion Run progress database id and push

@@ -15,6 +15,7 @@ The environment details are available in the `environment.yml` file (the origina
 environment of the paper is `environment.upstream.yml`).
 
 ## Running the experiments (any machine)
+The full protocol that every machine follows is `docs/EXPERIMENT_PROTOCOL.md`.
 Experiments are YAML configs (`configs/experiments/*.yaml`; models in `configs/models.yaml`,
 search spaces in `configs/search_spaces.yaml`). One machine owns a dataset: it trains the
 teachers, runs the hyper-parameter studies and the final 10-fold runs, so nothing is copied.
