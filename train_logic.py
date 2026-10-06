@@ -128,27 +128,33 @@ def test_epoch(model, loader, device):
     
     return val_acc
 
-def train_seed(dataset_name, baseline_path, args, seed, device):
-    """One seed, logged as one MLflow run of experiment logic/<dataset> (utils/tracking.py)."""
+def train_seed(dataset_name, baseline_path, args, seed, device, out_root=None, epoch_callback=None, tags=None):
+    """One seed, logged as one MLflow run of experiment logic/<dataset> (utils/tracking.py).
+
+    ``out_root`` replaces the results root (e.g. a hyper-parameter study's directory) and
+    ``epoch_callback(epoch, model, val_loader)`` is called after every epoch (optimize_optuna.py
+    reports to Optuna and prunes there); ``tags`` are added to the MLflow run.
+    """
+    root = out_root or 'results_logic'
     baseline_args = json.load(open(os.path.join(baseline_path, 'args.json'), 'r'))
-    cfg = os.path.relpath(os.path.dirname(create_folder_logic(dataset_name, args, baseline_args, seed=seed)),
-                          f'results_logic/{dataset_name}')
+    cfg = os.path.relpath(os.path.dirname(create_folder_logic(dataset_name, args, baseline_args, seed=seed, root=root)),
+                          f'{root}/{dataset_name}')
     params = {**args, **{f'teacher/{k}': v for k, v in baseline_args.items()},
               'seed': seed, 'dataset': dataset_name, 'teacher_path': baseline_path}
     with tracking.run(f'logic/{dataset_name}', run_name=f"h{baseline_args['hidden_dim']}/seed{seed}", params=params,
                       tags={'config': cfg, 'seed': seed, 'kind': 'seed', 'dataset': dataset_name,
-                            'hidden_dim': baseline_args['hidden_dim']}):
-        return _train_seed(dataset_name, baseline_path, args, seed, device)
+                            'hidden_dim': baseline_args['hidden_dim'], **(tags or {})}):
+        return _train_seed(dataset_name, baseline_path, args, seed, device, root, epoch_callback)
 
 
-def _train_seed(dataset_name, baseline_path, args, seed, device):
+def _train_seed(dataset_name, baseline_path, args, seed, device, root='results_logic', epoch_callback=None):
     set_seed(seed)
 
         
     baseline_args = json.load(open(os.path.join(baseline_path, 'args.json'), 'r'))
-    path = create_folder_logic(dataset_name, args, baseline_args, seed=seed)
+    path = create_folder_logic(dataset_name, args, baseline_args, seed=seed, root=root)
     shutil.rmtree(path)
-    path = create_folder_logic(dataset_name, args, baseline_args, seed=seed)
+    path = create_folder_logic(dataset_name, args, baseline_args, seed=seed, root=root)
 
     with open(os.path.join(path, 'args.json'), 'w') as f:
         args = {k: (v.item() if hasattr(v, 'item') else v) for k,v in args.items()}
@@ -223,6 +229,8 @@ def _train_seed(dataset_name, baseline_path, args, seed, device):
                               **{f'distill/L{i}_loss': l for i, l in enumerate(train_loss[:-1])},
                               **{f'distill/L{i}_acc': c for i, c in enumerate(train_acc[:-1])}},
                              step=epoch)
+        if epoch_callback is not None:
+            epoch_callback(epoch, model_tell, val_loader)
         
         if epoch % 10 == 0:
             print(f'Epoch: {epoch+1}, Train Loss: {train_loss}, Train Acc: {train_acc}, Val Acc: {val_acc:.4f}, Test Acc: {test_acc:.4f}')
@@ -363,8 +371,7 @@ def train_eval(dataset_name, baseline_path, args):
     return ret
     
 
-if __name__ == '__main__':
-
+def get_parser():
     parser = argparse.ArgumentParser(description='train_baseline.py')
 
     parser.add_argument('--dataset',       default='PROTEINS', type=str,     help='Dataset to use')
@@ -379,14 +386,19 @@ if __name__ == '__main__':
     parser.add_argument('--pool_ops',      default=None,      type=str,     help='Comma-separated readout pooling, e.g. mean,max (default: upstream mean,max,sum; models_proto/gintell.py)')
     parser.add_argument('--only_eval',    action='store_true',              help='Number of Convolutional Layers')
     parser.add_argument('--seed',          default=None,      type=int,    help='Number of Convolutional Layers')
+    return parser
 
-    args = parser.parse_args().__dict__
-    
-    dataset_name = args.pop('dataset')
-    baseline_path = args.pop('baseline_path')
+
+def parse_cli(argv=None):
+    """(dataset, baseline_path or None, args) from a command line; optimize_optuna.py
+    builds its trials through it too."""
+    args = get_parser().parse_args(argv).__dict__
+    return args.pop('dataset'), args.pop('baseline_path'), args
+
+
+if __name__ == '__main__':
+    dataset_name, baseline_path, args = parse_cli()
     if baseline_path is None:
         baseline_path = get_best_baseline_path(dataset_name)
         print('Baseline path found:', baseline_path)
     train_eval(dataset_name, baseline_path, args)
-
-    

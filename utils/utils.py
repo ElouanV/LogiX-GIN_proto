@@ -28,10 +28,10 @@ def create_folder(dataset_name, args, seed=None):
     os.makedirs(path, exist_ok=True)
     return path
 
-def create_folder_logic(dataset_name, args, baseline_args, seed=None):
+def create_folder_logic(dataset_name, args, baseline_args, seed=None, root='results_logic'):
     args_s = '|'.join([f"{k}={args[k]}" for k in sorted(args.keys())])
     baseline_args_s = '|'.join([f"{k}={baseline_args[k]}" for k in sorted(baseline_args.keys())])
-    path = f'results_logic/{dataset_name}/{args_s}/{baseline_args_s}'    
+    path = f'{root}/{dataset_name}/{args_s}/{baseline_args_s}'    
     if seed is not None:
         path = f"{path}/{seed}"
     os.makedirs(path, exist_ok=True)

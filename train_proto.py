@@ -58,7 +58,7 @@ from utils.evaluation import evaluate
 SEEDS = 10
 
 
-def create_folder_proto(dataset_name, args, baseline_args, seed=None):
+def create_folder_proto(dataset_name, args, baseline_args, seed=None, root='results_proto'):
     """Mirror of utils.create_folder_logic, under results_proto/.
 
     args already carries proto_level / num_prototypes / ..., so two prototype
@@ -69,12 +69,12 @@ def create_folder_proto(dataset_name, args, baseline_args, seed=None):
     if len(args_s.encode()) > 255:        # filesystem limit on one path component
         args_s = f"{args['proto_level']}-{hashlib.sha1(args_s.encode()).hexdigest()[:12]}"
     baseline_args_s = '|'.join([f"{k}={baseline_args[k]}" for k in sorted(baseline_args.keys())])
-    path = f'results_proto/{dataset_name}/{args_s}/{baseline_args_s}'
+    path = f'{root}/{dataset_name}/{args_s}/{baseline_args_s}'
     if seed is not None:
         path = f"{path}/{seed}"
     os.makedirs(path, exist_ok=True)
     if args_s != full_args_s:             # the hashed name's configuration, for lookup
-        with open(f'results_proto/{dataset_name}/{args_s}/config.txt', 'w') as f:
+        with open(f'{root}/{dataset_name}/{args_s}/config.txt', 'w') as f:
             f.write(full_args_s + '\n')
     return path
 
@@ -246,27 +246,33 @@ def mask_temperature(args, epoch, d):
     return t0 * (t1 / t0) ** f
 
 
-def train_seed(dataset_name, baseline_path, args, seed, device):
-    """One seed, logged as one MLflow run of experiment proto/<dataset> (utils/tracking.py)."""
+def train_seed(dataset_name, baseline_path, args, seed, device, out_root=None, epoch_callback=None, tags=None):
+    """One seed, logged as one MLflow run of experiment proto/<dataset> (utils/tracking.py).
+
+    ``out_root`` replaces the results root (e.g. a hyper-parameter study's directory) and
+    ``epoch_callback(epoch, model, val_loader)`` is called after every epoch (optimize_optuna.py
+    reports to Optuna and prunes there); ``tags`` are added to the MLflow run.
+    """
+    root = out_root or 'results_proto'
     baseline_args = json.load(open(os.path.join(baseline_path, 'args.json'), 'r'))
-    cfg = os.path.relpath(os.path.dirname(create_folder_proto(dataset_name, args, baseline_args, seed=seed)),
-                          f'results_proto/{dataset_name}')
+    cfg = os.path.relpath(os.path.dirname(create_folder_proto(dataset_name, args, baseline_args, seed=seed, root=root)),
+                          f'{root}/{dataset_name}')
     params = {**args, **{f'teacher/{k}': v for k, v in baseline_args.items()},
               'seed': seed, 'dataset': dataset_name, 'teacher_path': baseline_path}
     with tracking.run(f'proto/{dataset_name}', run_name=f"{args['proto_level']}/seed{seed}", params=params,
                       tags={'config': cfg, 'seed': seed, 'kind': 'seed', 'dataset': dataset_name,
-                            'proto_level': args['proto_level']}):
-        return _train_seed(dataset_name, baseline_path, args, seed, device)
+                            'proto_level': args['proto_level'], **(tags or {})}):
+        return _train_seed(dataset_name, baseline_path, args, seed, device, root, epoch_callback)
 
 
-def _train_seed(dataset_name, baseline_path, args, seed, device):
+def _train_seed(dataset_name, baseline_path, args, seed, device, root='results_proto', epoch_callback=None):
     set_seed(seed)
 
 
     baseline_args = json.load(open(os.path.join(baseline_path, 'args.json'), 'r'))
-    path = create_folder_proto(dataset_name, args, baseline_args, seed=seed)
+    path = create_folder_proto(dataset_name, args, baseline_args, seed=seed, root=root)
     shutil.rmtree(path)
-    path = create_folder_proto(dataset_name, args, baseline_args, seed=seed)
+    path = create_folder_proto(dataset_name, args, baseline_args, seed=seed, root=root)
 
     with open(os.path.join(path, 'args.json'), 'w') as f:
         args = {k: (v.item() if hasattr(v, 'item') else v) for k,v in args.items()}
@@ -366,6 +372,8 @@ def _train_seed(dataset_name, baseline_path, args, seed, device):
                               **{f'distill/L{i}_loss': l for i, l in enumerate(train_loss[:-1])},
                               **{f'distill/L{i}_acc': c for i, c in enumerate(train_acc[:-1])}},
                              step=epoch)
+        if epoch_callback is not None:
+            epoch_callback(epoch, model_proto, val_loader)
 
         if epoch % 10 == 0:
             print(f'Epoch: {epoch+1}, Train Loss: {train_loss}, Train Acc: {train_acc}, Val Acc: {val_acc:.4f}, Test Acc: {test_acc:.4f}')
@@ -519,8 +527,7 @@ def train_eval(dataset_name, baseline_path, args):
     return ret
 
 
-if __name__ == '__main__':
-
+def get_parser():
     parser = argparse.ArgumentParser(description='train_proto.py')
 
     parser.add_argument('--dataset',        default='PROTEINS', type=str,   help='Dataset to use')
@@ -549,8 +556,14 @@ if __name__ == '__main__':
     parser.add_argument('--pool_ops',       default=None,       type=str,   help='Comma-separated readout pooling, e.g. mean,max,sum (default mean,max; sum: see models_proto/model_proto.py)')
     parser.add_argument('--only_eval',     action='store_true',             help='Only evaluate')
     parser.add_argument('--seed',           default=None,       type=int,   help='Single seed to run')
+    return parser
 
-    args = parser.parse_args().__dict__
+
+def parse_cli(argv=None):
+    """(dataset, baseline_path or None, args) from a command line, normalised like the
+    results paths expect; optimize_optuna.py builds its trials through it too."""
+    parser = get_parser()
+    args = parser.parse_args(argv).__dict__
     if not args['proto_mask']:            # keep the results paths of unmasked configurations unchanged
         for k in ('proto_mask', 'mask_reg', 'mask_temp_start', 'mask_temp_end'):
             args.pop(k)
@@ -559,9 +572,11 @@ if __name__ == '__main__':
             args.pop(k)
     if args.get('mask_ckpt_temp') is not None and args['mask_ckpt_temp'] < args['mask_temp_end']:
         parser.error('--mask_ckpt_temp below --mask_temp_end would never keep a checkpoint')
+    return args.pop('dataset'), args.pop('baseline_path'), args
 
-    dataset_name = args.pop('dataset')
-    baseline_path = args.pop('baseline_path')
+
+if __name__ == '__main__':
+    dataset_name, baseline_path, args = parse_cli()
     if baseline_path is None:
         baseline_path = get_best_baseline_path(dataset_name)
         print('Baseline path found:', baseline_path)
