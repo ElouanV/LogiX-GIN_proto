@@ -6,9 +6,9 @@ name: sum_ablation
 description: >
   Does sum pooling help? classic LogiX-GIN (upstream mean|max|sum readout) vs without
   sum, NMP and graph-level prototypes without vs with sum; each model tuned with Optuna.
-datasets: [MUTAG, PROTEINS, BaMultiShapes, AIDS, BBBP, NCI1, Mutagenicity]
+datasets: [MUTAG, PROTEINS, BaMultiShapes, BA2Motifs, AIDS, BBBP, NCI1, Mutagenicity]
 models: [classic, classic_nosum, node_mask_push, node_mask_push_sum, graph, graph_sum]
-folds: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]   # stratified 10-fold (utils/splits.py), fold = seed
+folds: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]   # stratified 10-fold, fold = seed; indices in splits/<dataset>_kfold.json
 
 teacher:                                 # train_baseline.py arguments (fixed, not tuned)
   epochs: 500

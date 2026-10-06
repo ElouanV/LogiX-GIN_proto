@@ -25,8 +25,15 @@ python scripts/check_setup.py --download
 python run_experiment.py configs/experiments/sum_ablation.yaml run --datasets AIDS   # this machine's dataset(s)
 python run_experiment.py configs/experiments/sum_ablation.yaml status
 ```
-Progress goes to `logs/progress/<host>.jsonl` and, with `NOTION_TOKEN` and
-`NOTION_PROGRESS_DB` set, to a shared Notion database (`utils/progress.py`). MLflow:
+Splits: the indices of every k-fold split are committed in `splits/<dataset>_kfold.json`
+and are the reference for every model, external baselines included
+(`utils.splits.load_split(dataset, fold)`; `python -m utils.splits check` compares them
+with a fresh draw and with the teachers).
+
+Progress goes to `logs/progress/<host>.jsonl` and, with `NOTION_TOKEN` (an internal
+integration's secret, the "Run progress" database shared with it) and
+`NOTION_PROGRESS_DB=e0c0a6960cab48ac9de50515b6875c5f` set, to the shared Notion database
+(`utils/progress.py`; `python -m utils.progress push` backfills it). MLflow:
 tunnel to the main server (`ssh -N -L 5055:127.0.0.1:5055 <main host>`) so every run lands
 in one store, or start a local `scripts/mlflow_server.sh`, or `LOGIX_MLFLOW=0`. Teachers
 trained elsewhere can be moved with `python -m utils.teachers pack|unpack` (a retrained

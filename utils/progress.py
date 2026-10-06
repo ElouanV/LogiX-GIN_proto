@@ -8,7 +8,11 @@ hyper-parameter study, or a final fold of a tuned model. Each unit reports its s
     Notion  when NOTION_TOKEN (an internal integration's secret) and NOTION_PROGRESS_DB
             (the database id) are set: one row per unit, created or updated in place
             (title = unit key). The database schema is ``NOTION_SCHEMA``; create it once
-            and share it with the integration.
+            and share it with the integration. The project's database is "Run progress"
+            (id ``NOTION_PROGRESS_DB_ID``) on the Notion page "LogiX-GIN prototypes: paper
+            experiments", next to the "Experiment plan" database.
+
+    python -m utils.progress push     # send the latest local record of every unit to Notion
 
 Like MLflow tracking, reporting is optional and never stops a run: a failure is warned
 about once and the local line is still written. MLflow keeps the detailed record of
@@ -23,6 +27,7 @@ import warnings
 
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 NOTION_VERSION = '2022-06-28'
+NOTION_PROGRESS_DB_ID = 'e0c0a6960cab48ac9de50515b6875c5f'
 STATUSES = ('queued', 'running', 'done', 'failed', 'skipped')
 # Notion database properties (name -> type) the rows are written to
 NOTION_SCHEMA = {
@@ -142,3 +147,20 @@ def latest(paths=None):
             if rec['unit'] not in last or rec['time'] >= last[rec['unit']]['time']:
                 last[rec['unit']] = rec
     return last
+
+
+def push():
+    """Backfill Notion with the latest local record of each unit (e.g. after setting the token)."""
+    if not (os.environ.get('NOTION_TOKEN') and os.environ.get('NOTION_PROGRESS_DB')):
+        raise SystemExit(f'set NOTION_TOKEN and NOTION_PROGRESS_DB (={NOTION_PROGRESS_DB_ID}) first')
+    recs = latest()
+    for rec in recs.values():
+        _notion_upsert(rec)
+    print(f'{len(recs)} units pushed')
+
+
+if __name__ == '__main__':
+    import sys
+    if sys.argv[1:] != ['push']:
+        raise SystemExit('usage: python -m utils.progress push')
+    push()
