@@ -106,7 +106,12 @@ Compute has a carbon cost. Spend it deliberately.
 5. Rule-extraction core: `latent_logic.py` (port of `nbs/LayerWiseRules.ipynb`, the
    canonical reading; keep its logic unchanged) and `min_covers.py` (exact DNF of a unit =
    its minimal covers).
-- `optimize_*.py` run grid searches. `optimize_*.py` and `train_*.py` accept `--dataset`
+- `optimize_optuna.py` + `utils/hps.py`: Optuna search of the six students of the
+  sum-pooling ablation (classic ± sum, NMP ± sum, graph ± sum) on the k-fold teachers,
+  one study per (dataset, model, fold), objective = val balanced accuracy, test never
+  used. Spaces, studies and best sets are saved under `results_hps/` (see the module
+  docstring); `scripts/run_hps.sh` launches it. Changing a space needs a new `--root`.
+- `optimize_*.py` run grid searches (upstream). `optimize_*.py` and `train_*.py` accept `--dataset`
   (MUTAG, Mutagenicity, AIDS, BBBP, PROTEINS, ...).
 - Batch launchers are in `scripts/` (`launch_all.sh`, `run_hoyer_sweep.sh`,
   `run_proto_datasets.sh`, `run_fanin.sh`, ...). They detach, and their logs go to `logs/`.
