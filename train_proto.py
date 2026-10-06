@@ -398,6 +398,12 @@ def _train_seed(dataset_name, baseline_path, args, seed, device, root='results_p
         'test_acc': test_acc,
     }
 
+    # How each prototype separates the classes (agreement.{png,json,npz} + MLflow), for
+    # every run: Optuna trials and final folds go through here too.
+    from utils.agreement import log_agreement
+    log_agreement(model_proto, {'train': push_loader, 'val': val_loader, 'test': test_loader}, device, path,
+                  title=f"{dataset_name} {args['proto_level']} seed {seed}")
+
     # Final evaluation of the kept checkpoint: imbalance-aware metrics and the size of the
     # extracted explanation (rules per unit, shortest rule, fidelity), then registration.
     if tracking.enabled():
