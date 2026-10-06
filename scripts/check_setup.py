@@ -2,6 +2,7 @@
 
     python scripts/check_setup.py              # environment, GPU, datasets, teachers
     python scripts/check_setup.py --download   # also download / process every dataset
+    python scripts/check_setup.py --datasets AIDS BBBP   # only this machine's datasets
 
 Checks: package versions against environment.yml, CUDA, that each dataset of the
 k-fold study loads with [0,1] node features, that the k-fold teachers are present
@@ -45,6 +46,7 @@ def pinned():
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument('--download', action='store_true', help='load every dataset (downloads on first use)')
+    ap.add_argument('--datasets', nargs='+', default=DATASETS, help="this machine's datasets (default: all)")
     a = ap.parse_args()
 
     print('environment')
@@ -66,7 +68,7 @@ def main():
 
     print('datasets')
     from utils.utils import get_dataset
-    for name in DATASETS:
+    for name in a.datasets:
         present = os.path.isdir(os.path.join('data', name))
         if not (present or a.download):
             print(f'  --   {name}: not downloaded yet (first use downloads it; --download to do it now)')
@@ -81,7 +83,7 @@ def main():
     print('teachers (k-fold)')
     from utils.teachers import seeds_of, teacher_configs
     configs = {c.split(os.sep)[-2]: c for c in teacher_configs()}
-    for name in DATASETS:
+    for name in a.datasets:
         n = len(seeds_of(configs[name])) if name in configs else 0
         report(n == 10, f'{name}: {n}/10 folds' + ('' if n == 10 else ' - python -m utils.teachers unpack <bundle>'))
 

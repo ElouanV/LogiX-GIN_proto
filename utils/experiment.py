@@ -116,13 +116,14 @@ class Experiment:
 
     def is_done(self, u):
         if u.stage == 'teacher':
-            return os.path.exists(os.path.join(self.teacher_dir(u.dataset), str(u.fold), 'last.pt'))
+            d = os.path.join(self.teacher_dir(u.dataset), str(u.fold))
+            if os.path.exists(os.path.join(d, 'last.pt')):
+                return True
+            # an unpacked teacher bundle (utils/teachers.py) has best.pt but no last.pt; best.pt
+            # alone may also be an interrupted run, so require the fold in total_results.csv
+            return os.path.exists(os.path.join(d, 'best.pt')) and self._in_teacher_summary(u.dataset, [u.fold])
         if u.stage == 'teacher_summary':
-            f = os.path.join(self.teacher_dir(u.dataset), 'total_results.csv')
-            if not os.path.exists(f):
-                return False
-            import pandas as pd
-            return set(self.folds) <= set(pd.read_csv(f)['seed'])
+            return self._in_teacher_summary(u.dataset, self.folds)
         if u.stage == 'hps':
             from optuna.trial import TrialState
             if not os.path.exists(os.path.join(hps.study_dir(u.dataset, u.model, u.fold, self.cfg['hps']['root']),
@@ -137,6 +138,13 @@ class Experiment:
         if u.stage == 'summary':
             return False                                   # cheap: always refreshed
         raise ValueError(u.stage)
+
+    def _in_teacher_summary(self, dataset, folds):
+        f = os.path.join(self.teacher_dir(dataset), 'total_results.csv')
+        if not os.path.exists(f):
+            return False
+        import pandas as pd
+        return set(folds) <= set(pd.read_csv(f)['seed'])
 
     # ---- unit execution (in the unit's own process) ----
     def run_unit(self, stage, dataset, model=None, fold=None):
@@ -223,7 +231,7 @@ class Experiment:
         return agg
 
     # ---- scheduling (orchestrator process) ----
-    def run(self, datasets, stages=None, jobs=None, dry=False):
+    def run(self, datasets, stages=None, jobs=None, dry=False, allow_dirty=False):
         jobs = jobs or self.cfg.get('jobs', 1)
         units = [u for u in self.units(datasets) if stages is None or u.stage in stages]
         by_key = {u.key: u for u in units}
@@ -236,6 +244,11 @@ class Experiment:
                 if d not in by_key and not self.is_done(all_units[d]):
                     raise RuntimeError(f'{u.key} needs {d}, which is neither done nor selected')
         print(f'{self.name}: {len(units)} units, {len(done)} done, {len(todo)} to run, {jobs} at a time')
+        problems = self.preflight(datasets)
+        for p in problems:
+            print('  preflight:', p)
+        if problems and not (dry or allow_dirty):
+            raise SystemExit('preflight failed (docs/EXPERIMENT_PROTOCOL.md); --allow_dirty only for tests')
         if dry:
             for u in todo:
                 print('  ', u.key)
@@ -267,6 +280,83 @@ class Experiment:
                     print(f"[{datetime.datetime.now():%H:%M:%S}] {u.key}: {'done' if ok else 'FAILED'}", flush=True)
         print(f'{self.name}: {len(failed)} failed' if failed else f'{self.name}: all done')
         return not failed
+
+    def preflight(self, datasets):
+        """Conditions every machine must meet before running (results comparable across machines)."""
+        from utils.splits import load_split
+        from utils.utils import get_dataset
+        problems = []
+        dirty = subprocess.run(['git', 'status', '--porcelain', '--untracked-files=no'], cwd=REPO,
+                               capture_output=True, text=True).stdout.strip()
+        if dirty:
+            problems.append('tracked files are modified (results must come from a commit):\n' + dirty)
+        for ds in datasets:
+            if not os.path.exists(split_file(ds)):
+                problems.append(f'{ds}: no committed split {os.path.relpath(split_file(ds), REPO)}')
+                continue
+            try:
+                load_split(ds, 0, y=get_dataset(ds).data.y)
+            except RuntimeError as e:
+                problems.append(str(e))
+        return problems
+
+    # ---- moving results between machines ----
+    RESULT_SKIP = ('data.pkl', 'last.pt')
+
+    def pack(self, datasets, out):
+        """Results of some datasets as one archive for the main machine: studies (journal,
+        trials, best set), final runs (checkpoint, args, metrics), teacher summaries, unit
+        logs and this host's progress log. Not packed: data.pkl (rebuilt from the teacher
+        on unpack), last.pt, and the checkpoints of the hps trials."""
+        import glob
+        import socket
+        import tarfile
+        hroot = self.cfg['hps']['root']
+        files = []
+        for ds in datasets:
+            for f in glob.glob(os.path.join(hroot, ds, '**', '*'), recursive=True):
+                if os.path.isfile(f) and f'{os.sep}runs{os.sep}' not in f:
+                    files.append(f)
+            for f in glob.glob(os.path.join(self.final_dir(ds), '**', '*'), recursive=True):
+                if os.path.isfile(f) and os.path.basename(f) not in self.RESULT_SKIP:
+                    files.append(f)
+            t = self.teacher_dir(ds)
+            files += [os.path.join(t, f) for f in ('results.json', 'total_results.csv')
+                      if os.path.exists(os.path.join(t, f))]
+            files += glob.glob(os.path.join('logs', self.name, f'{ds}_*.log'))
+        files += glob.glob(os.path.join('logs', 'progress', f'{socket.gethostname()}.jsonl'))
+        files += glob.glob(os.path.join(self.cfg['final']['root'], self.name, 'config_*.yaml'))
+        with tarfile.open(out, 'w:gz') as tar:
+            for f in sorted(set(files)):
+                tar.add(f)
+        print(f'{out}: {len(set(files))} files')
+        return out
+
+    def unpack(self, archive, overwrite=False):
+        """Extract a pack() archive and rebuild each final run's data.pkl from its teacher fold
+        (the run's indices are then checked against the committed split)."""
+        import glob
+        import tarfile
+        with tarfile.open(archive, 'r:gz') as tar:
+            names = tar.getnames()
+            for n in names:
+                if n.startswith('/') or '..' in n.split('/'):
+                    raise RuntimeError(f'unexpected path in archive: {n}')
+                # progress logs are per host and teacher summaries must already match
+                if os.path.exists(n) and not overwrite and not n.startswith(('logs/', 'results/')):
+                    raise RuntimeError(f'{n} exists; pass --overwrite to replace it')
+            tar.extractall(filter='data', members=[m for m in tar.getmembers()
+                                                     if not (m.name.startswith('results/') and os.path.exists(m.name))])
+        n = 0
+        for fj in [f for f in names if f.endswith('final.json')]:
+            rec = json.load(open(fj))
+            teacher = os.path.join(self.teacher_dir(rec['dataset']), str(rec['fold']), 'data.pkl')
+            for run in glob.glob(os.path.join(os.path.dirname(fj), 'run', '**', 'best.pt'), recursive=True):
+                dst = os.path.join(os.path.dirname(run), 'data.pkl')
+                shutil.copyfile(teacher, dst)
+                same_split(rec['dataset'], rec['fold'], pickle.load(open(dst, 'rb')))
+                n += 1
+        print(f'{archive}: {len(names)} files, data.pkl rebuilt for {n} final runs')
 
     def _spawn(self, u, log_dir):
         log = os.path.join(log_dir, u.key.replace('/', '_') + '.log')

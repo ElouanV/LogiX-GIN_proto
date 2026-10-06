@@ -6,11 +6,16 @@ pipeline, units and outputs are documented in utils/experiment.py.
     python run_experiment.py configs/experiments/sum_ablation.yaml status
     python run_experiment.py configs/experiments/sum_ablation.yaml plan        # list the work left in the progress table
     python run_experiment.py configs/experiments/sum_ablation.yaml summary --datasets MUTAG
+    python run_experiment.py configs/experiments/sum_ablation.yaml pack --datasets AIDS   # results -> bundles/
+    python run_experiment.py configs/experiments/sum_ablation.yaml unpack bundles/<archive>.tar.gz
+
+The protocol every machine follows is docs/EXPERIMENT_PROTOCOL.md.
 
 One machine should own a dataset: its teachers, studies and final runs then live in one
 place and nothing has to be copied.
 """
 import argparse
+import os
 
 from utils.experiment import Experiment
 
@@ -24,6 +29,13 @@ def main():
     r.add_argument('--stages', nargs='+', choices=['teacher', 'teacher_summary', 'hps', 'final', 'summary'])
     r.add_argument('--jobs', type=int, help='default: the config\'s jobs')
     r.add_argument('--dry', action='store_true', help='only list the units to run')
+    r.add_argument('--allow_dirty', action='store_true', help='skip the preflight refusal (tests only)')
+    pk = sub.add_parser('pack', help='archive the results of some datasets for the main machine')
+    pk.add_argument('--datasets', nargs='+', required=True)
+    pk.add_argument('--out', help='default: bundles/<experiment>_<datasets>_<host>.tar.gz')
+    up = sub.add_parser('unpack', help='extract a pack archive on the main machine')
+    up.add_argument('archive')
+    up.add_argument('--overwrite', action='store_true')
     for name in ('status', 'plan', 'summary'):
         p = sub.add_parser(name)
         p.add_argument('--datasets', nargs='+')
@@ -37,7 +49,14 @@ def main():
     exp = Experiment(a.config)
     datasets = getattr(a, 'datasets', None) or exp.cfg['datasets']
     if a.cmd == 'run':
-        raise SystemExit(0 if exp.run(datasets, a.stages, a.jobs, a.dry) else 1)
+        raise SystemExit(0 if exp.run(datasets, a.stages, a.jobs, a.dry, a.allow_dirty) else 1)
+    if a.cmd == 'pack':
+        import socket
+        os.makedirs('bundles', exist_ok=True)
+        exp.pack(a.datasets, a.out or os.path.join(
+            'bundles', f"{exp.name}_{'-'.join(a.datasets)}_{socket.gethostname()}.tar.gz"))
+    elif a.cmd == 'unpack':
+        exp.unpack(a.archive, a.overwrite)
     if a.cmd == 'unit':
         exp.run_unit(a.stage, a.dataset, a.model, a.fold)
     elif a.cmd == 'status':
