@@ -1,4 +1,4 @@
-# feat/kfold-hpo was rewritten on 2026-10-06 to drop commit-message trailers; the trees are
+# feat/kfold-hpo (renamed exp/paper-experiments) was rewritten on 2026-10-06 to drop commit-message trailers; the trees are
 # identical. Runs made before then record the old hashes (study.json, MLflow tags, logs):
 # this table maps them to the new commits. Old commits stay locally under
 # refs/backup/feat-kfold-hpo-before-trailer-rewrite on the main machine.

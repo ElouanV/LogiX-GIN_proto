@@ -50,7 +50,7 @@ from a commit, a command and a seed.
 ## Git workflow
 
 - Commit hashes recorded by runs before 2026-10-06 refer to the pre-rewrite
-  `feat/kfold-hpo`; `docs/rewritten_commits.tsv` maps them to the current commits.
+  branch `feat/kfold-hpo` (now `exp/paper-experiments`); `docs/rewritten_commits.tsv` maps them to the current commits.
 
 - **One commit per feature or fix** as soon as it works, with a message that says what
   changed and why. Don't bundle unrelated changes, and don't commit data, results,

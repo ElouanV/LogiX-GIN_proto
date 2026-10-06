@@ -42,7 +42,7 @@ other with a seeded sampler, and pruning depends on epochs, not time.
 
 | Item | Example | Why |
 |---|---|---|
-| Repository URL, branch and **commit** | `feat/kfold-hpo` @ `<sha>` | every machine runs the same code |
+| Repository URL, branch and **commit** | `exp/paper-experiments` @ `<sha>` | every machine runs the same code |
 | Datasets assigned to this machine | `AIDS BBBP` | one machine owns a dataset |
 | Teacher bundle file | `teachers_kfold.tar.gz` (~15 MB) | identical teachers everywhere |
 | Notion token (optional) | `NOTION_TOKEN=secret_...` | shared progress table |
