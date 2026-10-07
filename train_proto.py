@@ -27,6 +27,14 @@ Extra knobs over train_logic.py:
                                       the prototypes care about (vocab_penalty), so they share few.
                                       Off by default; the mask options only enter the results
                                       path when it is on, the last four only when set.
+    --harden_to B                     gradual hardening (GINTELLProtoBase.set_sharpness): the
+                                      literals and conv units are sharpened towards {0, 1},
+                                      the sharpness growing geometrically from 1 to B between
+                                      --harden_start_frac (default: the end of the warmup) and
+                                      --harden_end_frac (default 0.9) of the epochs, then held;
+                                      checkpoints are kept only at sharpness B, so the kept
+                                      network is close to the rules it is read as. Off by
+                                      default (no harden_* entry in the results path).
 
 Results go to results_proto/ so they never collide with results_logic/.
 """
@@ -246,6 +254,18 @@ def mask_temperature(args, epoch, d):
     return t0 * (t1 / t0) ** f
 
 
+def sharpness(args, epoch):
+    """Geometric hardening schedule: 1 until --harden_start_frac of the epochs (default the
+    end of the warmup), harden_to from --harden_end_frac on."""
+    b = args.get('harden_to')
+    if b is None:
+        return 1.0
+    e0 = args['harden_start_frac'] * args['epochs'] if args.get('harden_start_frac') is not None \
+        else args['warmup_epochs'] + 1
+    e1 = max(e0 + 1, args.get('harden_end_frac', 0.9) * args['epochs'])
+    return float(b ** min(1.0, max(0.0, (epoch - e0) / (e1 - e0))))
+
+
 def train_seed(dataset_name, baseline_path, args, seed, device, out_root=None, epoch_callback=None, tags=None):
     """One seed, logged as one MLflow run of experiment proto/<dataset> (utils/tracking.py).
 
@@ -338,6 +358,9 @@ def _train_seed(dataset_name, baseline_path, args, seed, device, root='results_p
         if args.get('proto_mask'):
             for p in model_proto.proto_layers:
                 p.mask_temp = mask_temperature(args, epoch, p.in_features)
+        beta = sharpness(args, epoch)
+        if args.get('harden_to') is not None:
+            model_proto.set_sharpness(beta)
         train_loss, train_acc = train_epoch(model, model_proto, train_loader, device, optimizer, num_classes,
                                             train_full=epoch>args['warmup_epochs'], conv_reg=args['conv_reg'], fc_reg=args['fc_reg'],
                                             proto_div_reg=args['proto_div_reg'], proto_ent_reg=args['proto_ent_reg'],
@@ -359,6 +382,8 @@ def _train_seed(dataset_name, baseline_path, args, seed, device, root='results_p
         # masked prototypes are only ANDs once T is low: keep no checkpoint before that
         ckpt_open = args.get('mask_ckpt_temp') is None or \
             all(p.mask_temp <= args['mask_ckpt_temp'] + 1e-9 for p in model_proto.proto_layers)
+        # hardened models: only once fully sharpened
+        ckpt_open = ckpt_open and (args.get('harden_to') is None or beta >= args['harden_to'] - 1e-9)
         if epoch>args['warmup_epochs'] and ckpt_open and val_acc >= best_val_acc:
             torch.save(model_proto, os.path.join(path, 'best.pt'))
             best_val_acc = val_acc
@@ -368,7 +393,7 @@ def _train_seed(dataset_name, baseline_path, args, seed, device, root='results_p
         tracking.log_metrics({'val_acc': val_acc, 'test_acc': test_acc, 'best_val_acc': best_val_acc,
                               'best_test_acc': best_test_acc, 'train_loss': train_loss[-1],
                               'train_acc': train_acc[-1], 'lr': optimizer.param_groups[0]['lr'],
-                              'phase_full': float(epoch > args['warmup_epochs']),
+                              'phase_full': float(epoch > args['warmup_epochs']), 'sharpness': beta,
                               **{f'distill/L{i}_loss': l for i, l in enumerate(train_loss[:-1])},
                               **{f'distill/L{i}_acc': c for i, c in enumerate(train_acc[:-1])}},
                              step=epoch)
@@ -559,6 +584,9 @@ def get_parser():
     parser.add_argument('--mask_layer_cost', default=None,      type=str,   help='Comma-separated cared-bit cost per conv layer, e.g. 0.25,1,1 (default: 1 each, with --proto_mask)')
     parser.add_argument('--vocab_reg',      default=None,       type=float, help='Weight of the shared-vocabulary penalty: fraction of trunk units any prototype cares about (with --proto_mask)')
     parser.add_argument('--mask_ckpt_temp', default=None,       type=float, help='Keep checkpoints only once T <= this (default: always, with --proto_mask)')
+    parser.add_argument('--harden_to',      default=None,       type=float, help='Gradual hardening: final sharpness of literals and conv units (default: off)')
+    parser.add_argument('--harden_start_frac', default=None,    type=float, help='Fraction of the epochs where hardening starts (default: end of warmup, with --harden_to)')
+    parser.add_argument('--harden_end_frac', default=None,      type=float, help='Fraction of the epochs where the final sharpness is reached (default 0.9, with --harden_to)')
     parser.add_argument('--pool_ops',       default=None,       type=str,   help='Comma-separated readout pooling, e.g. mean,max,sum (default mean,max; sum: see models_proto/model_proto.py)')
     parser.add_argument('--only_eval',     action='store_true',             help='Only evaluate')
     parser.add_argument('--seed',           default=None,       type=int,   help='Single seed to run')
@@ -576,6 +604,12 @@ def parse_cli(argv=None):
     for k in ('mask_anneal_frac', 'mask_ckpt_temp', 'mask_layer_cost', 'vocab_reg'):      # nor those of earlier masked ones
         if args[k] is None or not args.get('proto_mask'):
             args.pop(k)
+    hardened = args['harden_to'] is not None
+    for k in ('harden_to', 'harden_start_frac', 'harden_end_frac'):     # off: results paths unchanged
+        if args[k] is None or not hardened:
+            args.pop(k)
+    if args.get('harden_to') is not None and args['harden_to'] < 1:
+        parser.error('--harden_to must be >= 1 (1 = no hardening)')
     if args.get('mask_ckpt_temp') is not None and args['mask_ckpt_temp'] < args['mask_temp_end']:
         parser.error('--mask_ckpt_temp below --mask_temp_end would never keep a checkpoint')
     return args.pop('dataset'), args.pop('baseline_path'), args

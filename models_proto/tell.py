@@ -9,6 +9,12 @@ def sigmoid(x, tau=10):
     return 1/(1+torch.exp(-tau*x))
 
 
+def sharpen(p, beta):
+    """p in [0, 1] pushed towards {0, 1} around 0.5: sigmoid(beta * logit(p)). beta = 1 is
+    the identity, beta -> inf the step p >= 0.5 the rules read; gradients stay real."""
+    return torch.sigmoid(beta * torch.logit(p, eps=1e-6))
+
+
 def hard_sigmoid(logits, threshold=0.5):
     y_soft = logits.sigmoid()
     indices = (y_soft > threshold).nonzero(as_tuple=True)
@@ -226,6 +232,11 @@ class LogicalLayer(nn.Module):
     def forward(self, x, discrete_output=False):
         # x = self.phi_in(torch.hstack([x, 1-x]))
         x = self.phi_in(x)
+        # sharpness / sharpness_out (set by GINTELLProtoBase.set_sharpness): gradual
+        # hardening of the literals (sharpen) and of the output (a steeper sigmoid); 1 = off
+        beta_in, beta_out = getattr(self, 'sharpness', 1.0), getattr(self, 'sharpness_out', 1.0)
+        if beta_in != 1.0:
+            x = sharpen(x, beta_in)
         # hard_in / hard_out (set by GINTELLProtoBase.set_hard): binarise the literals / the
         # output at 0.5 in the forward pass, straight-through in the backward pass, so the
         # layer computes exactly its rules (pickles from before have neither attribute)
@@ -244,7 +255,7 @@ class LogicalLayer(nn.Module):
         self.reg_loss = reg_loss
         
         w = self.weight
-        o = sigmoid(x @ w.t() + self.b)
+        o = sigmoid(x @ w.t() + self.b, tau=10 * beta_out)
         if discrete_output or getattr(self, 'hard_out', False):
             o = hard_sigmoid(x @ w.t() + self.b)
         

@@ -35,7 +35,7 @@ import torch
 from torch import nn
 from torch_geometric.nn import GINConv, global_mean_pool, global_max_pool, global_add_pool
 
-from models_proto.tell import LogicalLayer, Phi
+from models_proto.tell import LogicalLayer, Phi, sharpen
 from models_proto.proto import PrototypeLayer
 
 POOLS = {'mean': global_mean_pool, 'max': global_max_pool, 'sum': global_add_pool}
@@ -129,6 +129,8 @@ class GINTELLProtoBase(nn.Module):
             z = POOLS[op](h, batch)
             if op == 'sum':
                 z = phi_sum(z)
+                if getattr(self, 'sharpness', 1.0) != 1.0:
+                    z = sharpen(z, self.sharpness)
                 if symbolic or getattr(self, 'hard', False):
                     z = z + ((z >= 0.5).float() - z).detach()
             blocks.append(z)
@@ -164,6 +166,17 @@ class GINTELLProtoBase(nn.Module):
             c.nn[0].hard_in = c.nn[0].hard_out = hard
         self.fc.hard_in = hard
         self.hard = hard                    # binarises phi_sum too (graph-level sum)
+
+    def set_sharpness(self, beta):
+        """Gradual version of set_hard: every literal sharpened towards {0, 1} (tell.sharpen)
+        and every conv unit's sigmoid made beta times steeper, so as beta grows the network
+        approaches the rules it is read as (beta = 1: the plain model). Like set_hard, the
+        head keeps a graded output; phi_sum (graph-level sum) is sharpened too."""
+        beta = float(beta)
+        for c in self.convs:
+            c.nn[0].sharpness = c.nn[0].sharpness_out = beta
+        self.fc.sharpness = beta
+        self.sharpness = beta
 
     def set_mask_layer_cost(self, cost):
         """Weight the cared-bit penalty of every prototype layer by the conv layer each bit
