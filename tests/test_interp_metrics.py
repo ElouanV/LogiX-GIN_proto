@@ -116,6 +116,35 @@ class TestSymbolicForward(unittest.TestCase):
                 out = m(self.x, self.e, self.batch)
                 torch.testing.assert_close(out, torch.sigmoid(10 * margin))
 
+    def test_sharpness_one_is_the_plain_model(self):
+        torch.manual_seed(2)
+        for level, cls in MODELS.items():
+            m = cls(len(ATOMS), 2, num_layers=2, hidden_dim=8, num_prototypes=4, proto_mask=True).eval()
+            ref = m(self.x, self.e, self.batch)
+            m.set_sharpness(1.0)
+            self.assertTrue(torch.equal(m(self.x, self.e, self.batch), ref))
+
+    def test_full_sharpness_approaches_the_rules(self):
+        """set_sharpness(large): the network's trunk states and output tend to the symbolic
+        ones (set_hard's limit, with real gradients)."""
+        torch.manual_seed(3)
+        for level, cls in MODELS.items():
+            m = cls(len(ATOMS), 2, num_layers=2, hidden_dim=8, num_prototypes=4, proto_mask=True).eval()
+            with torch.no_grad():                 # thresholds off the tie phi = 0.5 of the init (b = 0)
+                for conv in m.convs:
+                    conv.nn[0].phi_in.b.uniform_(-0.4, -0.1)
+                m.fc.phi_in.b.uniform_(-0.4, -0.1)
+            m.set_sharpness(1e4)
+            net = trunk_states(m, self.x, self.e, symbolic=False)
+            sym = trunk_states(m, self.x, self.e)
+            for n, s in zip(net, sym):
+                torch.testing.assert_close(n, s, atol=1e-3, rtol=0)
+            margin = symbolic_head(m, sym, self.batch)[0]
+            torch.testing.assert_close(m(self.x, self.e, self.batch), torch.sigmoid(10 * margin), atol=1e-3, rtol=0)
+            m.train()
+            m(self.x, self.e, self.batch).sum().backward()
+            self.assertIsNotNone(m.convs[0].nn[0].weight_sigma.grad)
+
 
 class TestClassicLogiXGIN(unittest.TestCase):
     """interp_metrics on models/model.py GINTELL (no prototypes)."""
