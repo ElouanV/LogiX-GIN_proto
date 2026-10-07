@@ -2,7 +2,8 @@
 outputs: utils/hps.py).
 
 One process is one worker of one study (dataset, model, fold); start several on the same
-study to run its trials in parallel (scripts/run_hps.sh does).
+study to run its trials in parallel. Whole experiments (teachers, studies, final folds)
+run through run_experiment.py.
 
     python optimize_optuna.py --dataset MUTAG --model node_mask_push --fold 0 --n_trials 30
     python optimize_optuna.py --export            # results_hps/best_params.csv + per-study files
