@@ -8,6 +8,8 @@ Units of a dataset D (key ``<experiment>/<D>/<stage>[/<model>][/fold<k>]``):
     hps/<model>/fold<t>        one Optuna study per tuning fold t (utils/hps.py)
     final/<model>/fold<k>      fold k re-trained with the best set of its study (the study of
                                fold k if k is a tuning fold, else of the first tuning fold)
+    interp/<model>/fold<k>     interpretability of that final checkpoint (interp_metrics.py, val
+                               and test), only for the k-fold final runs, never for hps trials
     summary                    mean ± std per model over the final folds (CPU)
 
 A unit runs when the units it needs are done (an hps study needs only its teacher fold),
@@ -15,7 +17,8 @@ each in its own process (``run_experiment.py <config> unit ...``), ``jobs`` at a
 Units already done on disk are skipped, so a run resumes where it stopped. Outputs:
 teachers in results/<D>/<teacher cfg>/, studies in <hps.root>/<D>/<model>/fold<t>/,
 final runs in <final.root>/<experiment>/<D>/<model>/fold<k>/ (final.json: metrics,
-command, study it came from, git commit), the summary in
+command, study it came from, git commit; interp.json: interpretability metrics, also logged
+into the fold's MLflow training run as interp/<split>/<metric>), the summary in
 <final.root>/<experiment>/<D>/summary.csv. Each run also copies the config it was started
 with (and its git commit) to <final.root>/<experiment>/config_<time>.yaml.
 """
@@ -110,8 +113,10 @@ class Experiment:
                 out += studies
                 for k in self.folds:
                     src = Unit('hps', ds, m, self.source_study(k)).key
-                    out.append(Unit('final', ds, m, k, deps=[src, Unit('teacher', ds, fold=k).key]))
-            out.append(Unit('summary', ds, deps=[u.key for u in out if u.dataset == ds and u.stage == 'final']))
+                    final = Unit('final', ds, m, k, deps=[src, Unit('teacher', ds, fold=k).key])
+                    out += [final, Unit('interp', ds, m, k, deps=[final.key])]
+            out.append(Unit('summary', ds, deps=[u.key for u in out if u.dataset == ds
+                                                 and u.stage in ('final', 'interp')]))
         return out
 
     def is_done(self, u):
@@ -135,6 +140,8 @@ class Experiment:
             return len(done) >= self.cfg['hps']['n_trials']
         if u.stage == 'final':
             return os.path.exists(os.path.join(self.final_dir(u.dataset, u.model, u.fold), 'final.json'))
+        if u.stage == 'interp':
+            return os.path.exists(os.path.join(self.final_dir(u.dataset, u.model, u.fold), 'interp.json'))
         if u.stage == 'summary':
             return False                                   # cheap: always refreshed
         raise ValueError(u.stage)
@@ -211,6 +218,33 @@ class Experiment:
                       f, indent=1)
         return metrics, None
 
+    INTERP_SPLITS = ('val', 'test')
+    NETWORK_KEYS = ('acc', 'balanced_acc', 'n', 'f1', 'auc')       # utils.evaluation, already in final.json
+
+    def _unit_interp(self, dataset, model, fold, rep):
+        """interp_metrics.py on the final checkpoint of a fold (the network metrics it repeats,
+        acc / auc / ..., are already in final.json and are left out)."""
+        import torch
+        import interp_metrics
+        from utils import tracking
+        d = self.final_dir(dataset, model, fold)
+        rec = json.load(open(os.path.join(d, 'final.json')))
+        device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+        res = {s: interp_metrics.run(rec['run_dir'], s, 'best.pt', device, dataset) for s in self.INTERP_SPLITS}
+        res = {s: {k: v for k, v in r.items() if k not in self.NETWORK_KEYS} for s, r in res.items()}
+        flat = {f'{s}_interp_{k}': v for s, r in res.items() for k, v in r.items() if isinstance(v, (int, float))}
+        run_id = tracking.log_to_run([f"{hps.MODELS[model]['script']}/{dataset}"],
+                                     {'experiment': self.name, 'kind': 'final', 'model_name': model,
+                                      'dataset': dataset, 'seed': fold},
+                                     {f'interp/{s}/{k}': v for s, r in res.items() for k, v in r.items()
+                                      if isinstance(v, (int, float))},
+                                     [os.path.join(rec['run_dir'], f'interp_{s}.json') for s in self.INTERP_SPLITS])
+        with open(os.path.join(d, 'interp.json'), 'w') as f:
+            json.dump({'experiment': self.name, 'dataset': dataset, 'model': model, 'fold': fold,
+                       'metrics': flat, 'run_dir': rec['run_dir'], 'mlflow_run_id': run_id,
+                       'git_commit': hps.git_commit()}, f, indent=1)
+        return {k: flat.get(f'test_interp_{k}') for k in ('logic_fidelity', 'expl_bits_median')}, None
+
     def _unit_summary(self, dataset, model, fold, rep):
         df = self.summary(dataset)
         return {}, f'{len(df)} models' if df is not None else 'no final run yet'
@@ -218,14 +252,21 @@ class Experiment:
     def summary(self, dataset):
         import glob
         import pandas as pd
-        rows = [json.load(open(f)) for f in glob.glob(os.path.join(self.final_dir(dataset), '*', 'fold*', 'final.json'))]
+        rows = []
+        for f in glob.glob(os.path.join(self.final_dir(dataset), '*', 'fold*', 'final.json')):
+            r = json.load(open(f))
+            fi = os.path.join(os.path.dirname(f), 'interp.json')
+            interp = json.load(open(fi))['metrics'] if os.path.exists(fi) else {}
+            rows.append({'model': r['model'], 'fold': r['fold'], **r['metrics'], **interp})
         if not rows:
             return None
-        df = pd.DataFrame([{'model': r['model'], 'fold': r['fold'], **r['metrics']} for r in rows])
+        df = pd.DataFrame(rows)
         cols = [c for c in df.columns if c.startswith(('val_', 'test_')) and not c.endswith('_n')]
         agg = df.groupby('model')[cols].agg(['mean', 'std'])
         agg.columns = [f'{c}_{s}' for c, s in agg.columns]
         agg.insert(0, 'n_folds', df.groupby('model').size())
+        if 'test_interp_logic_fidelity' in df:
+            agg.insert(1, 'n_interp', df.groupby('model')['test_interp_logic_fidelity'].count())
         agg = agg.reindex([m for m in self.cfg['models'] if m in agg.index])
         agg.to_csv(os.path.join(self.final_dir(dataset), 'summary.csv'))
         return agg

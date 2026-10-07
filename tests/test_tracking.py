@@ -56,6 +56,20 @@ class TestTracking(unittest.TestCase):
                 os.environ[k] = v
         self.tmp.cleanup()
 
+    def test_log_to_run_adds_metrics_to_the_latest_matching_run(self):
+        for i in range(2):
+            with tracking.run('proto/X', f'r{i}', tags={'kind': 'final', 'seed': 3}):
+                tracking.log_metrics({'test_acc': i})
+        with tracking.run('proto/X', 'other', tags={'kind': 'final', 'seed': 4}):
+            pass
+        run_id = tracking.log_to_run(['proto/X', 'logic/X'], {'kind': 'final', 'seed': 3}, {'interp/f': 0.5, 'none': None})
+        r = self.client().get_run(run_id)
+        self.assertEqual(r.info.run_name, 'r1')
+        self.assertEqual(r.data.metrics['interp/f'], 0.5)
+        self.assertNotIn('none', r.data.metrics)
+        self.assertIsNone(tracking.log_to_run(['proto/X'], {'seed': 9}, {'a': 1}))
+        self.assertIsNone(tracking.log_to_run(['missing/X'], {'seed': 3}, {'a': 1}))
+
     def test_run_logs_params_metrics_tags_artifacts(self):
         p = os.path.join(self.tmp.name, 'a.json')
         open(p, 'w').write('{}')

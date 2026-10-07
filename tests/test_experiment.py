@@ -38,10 +38,14 @@ class TestExperiment(unittest.TestCase):
     def test_units_and_dependencies(self):
         units = {u.key: u for u in self.exp.units(['MUTAG'])}
         n_models, n_folds = len(self.exp.cfg['models']), len(self.exp.folds)
-        self.assertEqual(len(units), n_folds + 1 + n_models * (len(self.exp.tune_folds) + n_folds) + 1)
+        self.assertEqual(len(units), n_folds + 1 + n_models * (len(self.exp.tune_folds) + 2 * n_folds) + 1)
         self.assertEqual(units['MUTAG/hps/graph_sum/fold0'].deps, ('MUTAG/teacher/fold0',))
         self.assertEqual(set(units['MUTAG/final/graph_sum/fold7'].deps),
                          {'MUTAG/hps/graph_sum/fold0', 'MUTAG/teacher/fold7'})
+        # interpretability only of the k-fold final runs, and the summary waits for it
+        self.assertEqual(units['MUTAG/interp/graph_sum/fold7'].deps, ('MUTAG/final/graph_sum/fold7',))
+        self.assertFalse(any(u.stage == 'interp' and u.fold not in self.exp.folds for u in units.values()))
+        self.assertIn('MUTAG/interp/classic/fold3', units['MUTAG/summary'].deps)
         for u in units.values():
             for d in u.deps:
                 self.assertIn(d, units)

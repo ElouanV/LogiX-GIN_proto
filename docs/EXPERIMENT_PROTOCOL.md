@@ -166,7 +166,11 @@ setsid nohup python run_experiment.py configs/experiments/sum_ablation.yaml run 
   3. Each of the 10 folds retrained with the best setting of its model's study, in
      `results_final/sum_ablation/<D>/<model>/fold<k>/final.json`. Each final run checks
      that it used the committed indices of its fold.
-  4. `summary.csv`: mean ± std over the folds.
+  4. Interpretability of each final fold (`interp_metrics.py`, val and test) in
+     `interp.json` next to `final.json`, also logged into the fold's MLflow run as
+     `interp/<split>/<metric>`. Only the 10-fold final runs are evaluated, never the
+     hps trials.
+  5. `summary.csv`: mean ± std over the folds, interpretability columns included.
 - **Expected duration** on one RTX 2060-class GPU, 6 jobs:
 
   | Datasets | Duration |

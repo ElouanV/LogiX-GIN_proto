@@ -3,6 +3,7 @@ pipeline, units and outputs are documented in utils/experiment.py.
 
     python run_experiment.py configs/experiments/sum_ablation.yaml run --datasets MUTAG PROTEINS
     python run_experiment.py configs/experiments/sum_ablation.yaml run --datasets AIDS --stages teacher teacher_summary
+    python run_experiment.py configs/experiments/sum_ablation.yaml run --datasets MUTAG --stages interp summary
     python run_experiment.py configs/experiments/sum_ablation.yaml status
     python run_experiment.py configs/experiments/sum_ablation.yaml plan        # list the work left in the progress table
     python run_experiment.py configs/experiments/sum_ablation.yaml summary --datasets MUTAG
@@ -26,7 +27,7 @@ def main():
     sub = ap.add_subparsers(dest='cmd', required=True)
     r = sub.add_parser('run', help='run the units of some datasets')
     r.add_argument('--datasets', nargs='+', help='default: every dataset of the config')
-    r.add_argument('--stages', nargs='+', choices=['teacher', 'teacher_summary', 'hps', 'final', 'summary'])
+    r.add_argument('--stages', nargs='+', choices=['teacher', 'teacher_summary', 'hps', 'final', 'interp', 'summary'])
     r.add_argument('--jobs', type=int, help='default: the config\'s jobs')
     r.add_argument('--dry', action='store_true', help='only list the units to run')
     r.add_argument('--allow_dirty', action='store_true', help='skip the preflight refusal (tests only)')

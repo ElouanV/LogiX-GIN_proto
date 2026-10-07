@@ -87,10 +87,14 @@ def _git():
         return {}
 
 
-@_safe
-def _set_experiment(experiment):
+def _set_uri():
     mlflow.set_tracking_uri(os.environ.get('MLFLOW_TRACKING_URI',
                                            f'sqlite:///{os.path.join(REPO, "mlflow.db")}'))
+
+
+@_safe
+def _set_experiment(experiment):
+    _set_uri()
     if mlflow.get_experiment_by_name(experiment) is None:
         root = os.environ.get('LOGIX_MLFLOW_ARTIFACTS', os.path.join(REPO, 'mlartifacts'))
         loc = 'file://' + os.path.join(root, experiment)
@@ -249,3 +253,29 @@ def log_model(model, registered_name, code_dirs=(), tags=None):
         for k, v in tags.items():
             client.set_model_version_tag(registered_name, str(version), k, str(v))
     return info
+
+
+@_safe
+def log_to_run(experiments, tags, metrics, artifacts=()):
+    """Log metrics (and files) into an existing, finished run: the latest run of the given
+    experiments carrying all ``tags`` (e.g. a final fold's training run, to add the
+    metrics computed afterwards from its checkpoint). Returns its run id, None if none."""
+    from mlflow.entities import Metric
+    _set_uri()
+    client = mlflow.MlflowClient()
+    ids = [e.experiment_id for e in map(mlflow.get_experiment_by_name, experiments) if e is not None]
+    if not ids:
+        return None
+    filt = ' and '.join(f"tags.{k} = '{v}'" for k, v in tags.items())
+    runs = client.search_runs(ids, filt, order_by=['attributes.start_time DESC'], max_results=1)
+    if not runs:
+        return None
+    run_id = runs[0].info.run_id
+    ts = int(time.time() * 1000)
+    clean = [Metric(k, float(v), ts, 0) for k, v in metrics.items() if v is not None]
+    for i in range(0, len(clean), 1000):
+        client.log_batch(run_id, metrics=clean[i:i + 1000])
+    for a in artifacts:
+        if os.path.exists(a):
+            client.log_artifact(run_id, a)
+    return run_id
