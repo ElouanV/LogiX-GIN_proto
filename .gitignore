@@ -8,3 +8,11 @@ logs/
 bundles/
 # hyper-parameter studies (utils/hps.py)
 results_hps/
+
+# Python / Jupyter caches
+__pycache__/
+*.pyc
+.ipynb_checkpoints/
+# build products of deps/ (rebuilt by pip install deps/pygcanl)
+deps/*/build/
+deps/*/*.egg-info/
