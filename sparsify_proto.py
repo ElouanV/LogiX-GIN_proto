@@ -92,7 +92,7 @@ import torch
 import torch.nn.functional as F
 from torch_geometric.loader import DataLoader
 
-from models_proto.model import GIN
+from models.model import GIN
 from rule_eval import logical_layers, print_stats, rule_metrics, rule_stats
 from train_logic import train_epoch as train_epoch_logic
 from train_proto import test_epoch, train_epoch as train_epoch_proto

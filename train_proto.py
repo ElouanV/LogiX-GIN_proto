@@ -49,7 +49,7 @@ import argparse
 import hashlib
 import pickle
 import json
-from models_proto.model import GIN
+from models.model import GIN
 from models_proto.model_proto import get_model
 from torch.optim.lr_scheduler import ReduceLROnPlateau
 from utils import tracking

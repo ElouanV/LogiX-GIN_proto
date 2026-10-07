@@ -29,14 +29,13 @@ Read `CLAUDE.md` first (conventions, invariants, reproducibility and git rules).
    original `train_*.py`) or more than a few files.
 
 Known hotspots in this repo (re-measure, they may have changed):
-- `models_proto/tell.py` and `models_proto/model_node.py` are byte-identical copies of
-  `models/`. `models_proto/model.py` differs from `models/model.py` by the `init_eps`
-  removal only. Make these imports, not copies.
+- `models_proto/tell.py` is a copy of `models/tell.py` plus the hard / sharpness modes.
+  Prototype checkpoints pickle `models_proto.tell.LogicalLayer`, so it cannot simply
+  become an import (the old `models_proto/model.py` / `model_node.py` copies are gone).
 - `train_*.py` vs `train_*_node.py` and `optimize_*.py` vs `optimize_*_node.py`: large twins
   with the graph-level vs node-level task as the main difference.
 - `PLEX/proto.py` is a copy of `models_proto/proto.py` with only the import changed. PLEX is
   a separate repo, so ask before coupling them.
-- `__pycache__/*.pyc` files are tracked in git and `.gitignore` doesn't cover them.
 
 ## 2. Capture a baseline before touching code
 

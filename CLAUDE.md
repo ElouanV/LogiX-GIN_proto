@@ -163,10 +163,10 @@ Compute has a carbon cost. Spend it deliberately.
   prototype step is a constrained `LogicalLayer` (weights `[p, 1-p]`) and rule extraction
   stays valid. `task` switches the head between a `LogicalLayer` (classification) and
   `nn.Linear` (regression).
-- `models/model.py` uses `GINConv(..., init_eps=1)`, which raises `TypeError` on every PyG
-  version (PyG's argument is `eps`). Removing the kwarg is safe because `eps` is a buffer
-  restored from the checkpoint. `models_proto/` already drops it. `models/model.py` is
-  deliberately left as upstream.
+- Upstream `models/model.py` used `GINConv(..., init_eps=1)`, which raises `TypeError` on
+  every PyG version (PyG's argument is `eps`). The kwarg was removed (62bcd53): `eps` is a
+  buffer restored from the checkpoint, so outputs are unchanged. The teacher `GIN` is
+  imported from `models/model.py` everywhere (`models_proto/` no longer keeps a copy).
 - Sum-pooled values are unbounded counts. Never apply `1 - s` negation to them, only to
   bounded (mean/max) columns (`bounded_mask`). `--pool_ops` sets the readout: on
   `train_proto.py` sum is off by default (node level: no negation on the count; graph

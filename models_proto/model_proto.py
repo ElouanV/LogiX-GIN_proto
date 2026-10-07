@@ -27,7 +27,7 @@ by default) is supported as in PLEX/model_proto.py:
                  that block reads "unit u holds on ≥ t_u nodes".
 With mean/max only, both are no-ops and the model is the one of earlier checkpoints.
 
-The trunk is shape-identical to models_proto.model.GINTELL (same state-dict keys
+The trunk is shape-identical to models.model.GINTELL (same state-dict keys
 under `convs`), so the layer-wise distillation of train_logic.py applies to it
 unchanged; the prototype layer(s) have no teacher counterpart.
 """
