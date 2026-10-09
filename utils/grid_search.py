@@ -1,15 +1,9 @@
-from train_baseline_node import train
-
-import numpy as np
-# from skopt import gp_minimize
-# from skopt.space import Real, Integer, Categorical
-# from skopt.utils import use_named_args
-import argparse
-
-
+"""Exhaustive grid search in random order, parallel with joblib (upstream optimize_*.py)."""
 import itertools
-from joblib import Parallel, delayed
 import random
+
+from joblib import Parallel, delayed
+
 
 class CustomGridSearch:
     def __init__(self, param_grid, scoring_function, n_jobs=1):
@@ -48,53 +42,3 @@ class CustomGridSearch:
     def get_results(self):
         return self.results_
 
-
-
-# Define the search space for hyperparameters
-# params  = {
-#     'nogumbel': [False, True],
-#     'epochs': [1000],
-#     'lr': [0.001, 0.01, 0.1],
-#     'l2': [0, 0.001, 0.01, 0.1],
-#     'dropout': [0, 0.15, 0.3],
-#     'num_layers': [3],
-#     'hidden_dim': [16,32,64,128],
-#     'batch_size': [16,32,64],
-# }
-
-params  = {
-    'nogumbel': [False, True],
-    'epochs': [3000],
-    'lr': [0.001, 0.01],
-    'l2': [1e-4],
-    'dropout': [0,0.5],
-    'num_layers': [3],
-    'hidden_dim': [16,32],
-    'batch_size': [32,128],
-}
-
-
-
-def scoring_function(dataset_name, **params):
-    score = train(dataset_name, params)['val_acc_mean']
-    return score
-
-
-if __name__ == '__main__':
-    parser = argparse.ArgumentParser(description='optimize_baseline_node.py')
-    parser.add_argument('--dataset',  default='Cora', type=str, help='Dataset to use')
-    parser.add_argument('--n_jobs',  default=10, type=int, help='Number of jobs')
-    args = parser.parse_args()
-    dataset_name = args.dataset
-    n_jobs = args.n_jobs
-
-    grid_search = CustomGridSearch(params, scoring_function, n_jobs=n_jobs)
-    grid_search.fit(dataset_name)
-    
-    # Retrieve results
-    results = grid_search.get_results()
-    print("Best Parameters:", grid_search.best_params_)
-    print("Best Score:", grid_search.best_score_)
-    # print("All Results:", results)
-
-    

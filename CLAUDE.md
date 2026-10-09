@@ -39,7 +39,7 @@ from a commit, a command and a seed.
   variants). Pure computations (metrics, min covers) can stay functions. Prefer composition
   and small base classes over deep inheritance.
 - **No duplicated code:** before writing something, look for an existing implementation and
-  reuse or generalize it. Examples: the `*_node.py` twins of the train/optimize scripts, and
+  reuse or generalize it. Examples: the `train_*_node.py` twins of the train scripts, and
   `PLEX/` copies of `proto.py`. When two copies must diverge, extract the shared part and
   parametrize the difference. Existing duplication is refactoring debt (see the `refactor`
   skill). Don't add more of it.
@@ -130,7 +130,8 @@ Compute has a carbon cost. Spend it deliberately.
   used. Spaces, studies and best sets are saved under `results_hps/` (see the module
   docstring). Models and spaces live in `configs/models.yaml` and
   `configs/search_spaces.yaml`; changing a space needs a new hps root.
-- `optimize_*.py` run grid searches (upstream). `optimize_*.py` and `train_*.py` accept `--dataset`
+- `optimize_*.py` run grid searches (upstream; `--task node` for the node-level twins,
+  `utils/grid_search.py`). `optimize_*.py` and `train_*.py` accept `--dataset`
   (MUTAG, Mutagenicity, AIDS, BBBP, PROTEINS, ...).
 - `scripts/` holds only helpers (`env.sh`, `mlflow_server.sh`, `check_setup.py`). The old
   per-experiment launchers were removed (in git history up to ca49a45): batches are YAML configs.

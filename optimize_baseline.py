@@ -1,99 +1,43 @@
-from train_baseline import train
+"""Grid search over the teacher's hyperparameters (upstream), graph or node task.
 
-import numpy as np
-# from skopt import gp_minimize
-# from skopt.space import Real, Integer, Categorical
-# from skopt.utils import use_named_args
+    python optimize_baseline.py --dataset PROTEINS             # train_baseline.py
+    python optimize_baseline.py --task node --dataset Cora     # train_baseline_node.py
+"""
 import argparse
+import functools
+import importlib
 
+from utils.grid_search import CustomGridSearch
 
-import itertools
-from joblib import Parallel, delayed
-import random
-
-class CustomGridSearch:
-    def __init__(self, param_grid, scoring_function, n_jobs=1):
-        self.param_grid = param_grid
-        self.scoring_function = scoring_function
-        self.n_jobs = n_jobs
-        self.best_params_ = None
-        self.best_score_ = None
-        self.results_ = []
-
-    def fit(self, dataset_name):
-        # Generate all possible combinations of parameters
-        param_combinations = list(itertools.product(*(self.param_grid[param] for param in self.param_grid)))
-        random.shuffle(param_combinations)
-        print('Total combinations:', len(param_combinations))
-        
-        # Wrapper function to evaluate a single combination of parameters
-        def evaluate_params(params):
-            param_dict = {param: params[i] for i, param in enumerate(self.param_grid)}
-            print(param_dict)
-            score = self.scoring_function(dataset_name, **param_dict)
-            return param_dict, score
-
-        # Parallel processing of parameter combinations
-        results = Parallel(n_jobs=self.n_jobs)(delayed(evaluate_params)(params) for params in param_combinations)
-        
-        # Process results to find the best parameters and score
-        for param_dict, score in results:
-            self.results_.append({'params': param_dict, 'score': score})
-            if self.best_score_ is None or score > self.best_score_:
-                self.best_score_ = score
-                self.best_params_ = param_dict
-        
-        return self
-
-    def get_results(self):
-        return self.results_
-
-
-
-# Define the search space for hyperparameters
-# params  = {
-#     'nogumbel': [False, True],
-#     'epochs': [3000],
-#     'lr': [0.001, 0.01, 0.1],
-#     'l2': [0, 0.001, 0.01, 0.1],
-#     'dropout': [0, 0.15, 0.3],
-#     'num_layers': [3],
-#     'hidden_dim': [16,32,64,128],
-#     'batch_size': [16,32,64],
-# }
-
-params  = {
+GRAPH_PARAMS = {
     'nogumbel': [False, True],
     'epochs': [3000],
     'lr': [0.001, 0.01],
     'l2': [1e-4],
-    'dropout': [0,0.5],
+    'dropout': [0, 0.5],
     'num_layers': [5],
-    'hidden_dim': [16,32],
-    'batch_size': [32,128],
+    'hidden_dim': [16, 32],
+    'batch_size': [32, 128],
 }
+PARAMS = {'graph': GRAPH_PARAMS, 'node': {**GRAPH_PARAMS, 'num_layers': [3]}}
+TRAIN_MODULE = {'graph': 'train_baseline', 'node': 'train_baseline_node'}
+DEFAULT_DATASET = {'graph': 'PROTEINS', 'node': 'Cora'}
 
 
-def scoring_function(dataset_name, **params):
-    score = train(dataset_name, params)['val_acc_mean']
-    return score
+def scoring_function(task, dataset_name, **params):
+    train = importlib.import_module(TRAIN_MODULE[task]).train
+    return train(dataset_name, params)['val_acc_mean']
 
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='optimize_baseline.py')
-    parser.add_argument('--dataset',  default='PROTEINS', type=str, help='Dataset to use')
-    parser.add_argument('--n_jobs',  default=10, type=int, help='Number of jobs')
+    parser.add_argument('--task', default='graph', choices=['graph', 'node'], help='graph or node classification')
+    parser.add_argument('--dataset', default=None, type=str, help='default: PROTEINS (graph), Cora (node)')
+    parser.add_argument('--n_jobs', default=10, type=int, help='Number of jobs')
     args = parser.parse_args()
-    dataset_name = args.dataset
-    n_jobs = args.n_jobs
 
-    grid_search = CustomGridSearch(params, scoring_function, n_jobs=n_jobs)
-    grid_search.fit(dataset_name)
-    
-    # Retrieve results
-    results = grid_search.get_results()
+    grid_search = CustomGridSearch(PARAMS[args.task], functools.partial(scoring_function, args.task),
+                                   n_jobs=args.n_jobs)
+    grid_search.fit(args.dataset or DEFAULT_DATASET[args.task])
     print("Best Parameters:", grid_search.best_params_)
     print("Best Score:", grid_search.best_score_)
-    # print("All Results:", results)
-
-    
