@@ -132,8 +132,8 @@ Compute has a carbon cost. Spend it deliberately.
   `configs/search_spaces.yaml`; changing a space needs a new hps root.
 - `optimize_*.py` run grid searches (upstream). `optimize_*.py` and `train_*.py` accept `--dataset`
   (MUTAG, Mutagenicity, AIDS, BBBP, PROTEINS, ...).
-- Batch launchers are in `scripts/` (`launch_all.sh`, `run_hoyer_sweep.sh`,
-  `run_proto_datasets.sh`, `run_fanin.sh`, ...). They detach, and their logs go to `logs/`.
+- `scripts/` holds only helpers (`env.sh`, `mlflow_server.sh`, `check_setup.py`). The old
+  per-experiment launchers were removed (in git history up to ca49a45): batches are YAML configs.
 
 ## Tracking
 
