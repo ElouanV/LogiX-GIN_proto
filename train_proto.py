@@ -102,13 +102,8 @@ def get_best_baseline_path(dataset_name):
 
 def train_epoch(model, model_proto, loader, device, optimizer, num_classes, train_full=True,
                 conv_reg=0.001, fc_reg=0.01, proto_div_reg=0.0, proto_ent_reg=0.0,
-                extra_loss=None, mask_reg=0.0, vocab_reg=0.0):
-    """One epoch of distillation + task loss.
-
-    ``extra_loss(model_proto) -> tensor`` is added to every batch's loss; the
-    post-training sparsity fine-tuning (sparsify_proto.py) passes its Hoyer term here
-    so it optimises exactly this objective plus the penalty.
-    """
+                mask_reg=0.0, vocab_reg=0.0):
+    """One epoch of distillation + task loss."""
     model.train()
     model_proto.train()
 
@@ -180,9 +175,6 @@ def train_epoch(model, model_proto, loader, device, optimizer, num_classes, trai
                     loss = loss + mask_reg * p.mask_size
             if vocab_reg:
                 loss = loss + vocab_reg * model_proto.vocab_penalty()
-
-            if extra_loss is not None:
-                loss = loss + extra_loss(model_proto)
 
             loss.backward()
             zero_nan_gradients(model_proto)

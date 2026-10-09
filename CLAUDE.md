@@ -110,8 +110,8 @@ Compute has a carbon cost. Spend it deliberately.
 3. Prototype student: `train_proto.py` (`--proto_level node|graph|both`, `--num_prototypes`,
    `--push_every`, `--proto_mask`, `--seed`) writes to `results_proto/`. It uses the same
    distillation as `train_logic.py` and differs only in the head.
-4. Post-hoc: `sparsify_proto.py` (Hoyer fine-tune, then prune, then recover; works on base
-   and proto runs), `unpack_rules.py` (all rules as readable predicates), `rule_eval.py`
+4. Post-hoc: `sparsify_proto.py` (layer-by-layer Hoyer fine-tune of the notebook, head then
+   convs last to first; works on base and proto runs; the joint variant was removed), `unpack_rules.py` (all rules as readable predicates), `rule_eval.py`
    (rules/unit + fidelity), `explain_proto.py` (prototype-level explanations),
    `interp_metrics.py` (interpretability metrics of the symbolic model: fidelity, explanation
    size per prediction, prototype purity, NO2/NH2 ground truth), to compare methods beside acc/AUC.
@@ -180,8 +180,9 @@ Compute has a carbon cost. Spend it deliberately.
   diffusion, not of the search: raising `max_rule_len` or lowering `min_support` only
   burns time. Before extracting, compute the greedy minimum-cardinality bound (sum the
   largest weights until they reach the threshold). It is instant and exact.
-- Fan-in k bounds rules/unit by C(k, k/2). Sparsification (Hoyer reg ~3 in
-  `sparsify_proto.py`) cuts rules/unit by orders of magnitude at about 1 point of accuracy.
+- Fan-in k bounds rules/unit by C(k, k/2). The removed joint Hoyer sparsification (reg ~3)
+  cut rules/unit by orders of magnitude at about 1 point of accuracy but hurt prototype
+  fidelity; the layer-wise one keeps fidelity but so far only sparsifies the last conv layer.
 - Open problem: head fidelity. The binarized head can fire through soft "false" literals
   (phi≈0.03 with weight 4-5).
 

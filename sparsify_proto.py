@@ -1,81 +1,40 @@
-"""Post-training sparsification of a trained LogiX-GIN run (base or prototype): Hoyer fine-tuning, then pruning.
+"""Post-training sparsification of a trained LogiX-GIN run (base or prototype): the layer-by-layer Hoyer fine-tune.
 
 Works on both kinds of runs: ``results_logic/...`` (base LogiX-GIN, train_logic.py) and
-``results_proto/...`` (prototype variants, train_proto.py); each is fine-tuned with the
-objective of the script that trained it.
+``results_proto/...`` (prototype variants, train_proto.py).
 
 Why: a conv unit of layer 1-2 needs ~13 literals to reach its threshold because its
 weight mass is spread over ~35 mid-sized weights, which gives it ~1e10 minimal covers
 (rules). Dropping small weights at extraction time barely helps (see min_covers.py);
 the mass has to be *moved* onto few weights, which needs training.
 
-Three phases, starting from ``<run_path>/best.pt``:
+The procedure is the one of classic LogiX-GIN (nbs/LayerWiseRules.ipynb cells 11, 19 and
+23), ported unchanged to any run: the head first, then the conv layers from the last to
+the first, each step training only that layer's weights (``weight_sigma``,
+``weight_exp``; prototypes, masks and thresholds stay fixed) with Adam on the notebook's
+loss (task BCE + NLL, sqrt penalty on every conv, notebook Hoyer + sqrt penalty on the
+head; its ``train_sparsity_epoch``). After every epoch the model is kept if (val acc,
+-nonzero weights of the layer) beats the kept one, or if it has fewer nonzero weights
+(> 1e-4) at no less than ``--lw_tol`` x the kept val acc; a step ends after ``patience``
+epochs without a keep (at most ``--lw_max_epochs``) and the next one starts from the kept
+model. Head: lr 0.01, patience 100, conv_reg 0.1, fc_reg 0.1; convs: lr 0.005, patience
+50, conv_reg 0.1, fc_reg 0.01 (the notebook's). The tolerance is relative to the last
+kept model, so val accuracy can drift down by up to 1% per keep (notebook behaviour,
+kept; the step history in sparsity.json shows it). No pruning afterwards, as in the
+notebook. Deviation: an exception in a batch is raised instead of printed and skipped.
 
-1. Hoyer fine-tuning. The training objective of train_proto.py (layer-wise
-   distillation against the frozen teacher + task loss, the ``train_full`` regime)
-   plus ``hoyer_reg * sum_conv (1 - Hoyer(W))`` and ``hoyer_fc * (1 - Hoyer(W_fc))``.
-   Hoyer(w) = (sqrt(n) - |w|_1/|w|_2) / (sqrt(n) - 1) is 1 for a one-hot row and 0 for
-   a uniform one, and scale-invariant, so it concentrates mass without shrinking it.
-   It is applied per output unit (row), the level at which rules are counted. The
-   notebook version (nbs/LayerWiseRules.ipynb cell 11) normalises by the total number
-   of entries instead of the row length and only penalises the head.
-2. Pruning. Every weight ``<= prune_eps`` is fixed to 0 through LogicalLayer's prune
-   mask (``weight = sigmoid(ws) * exp(we) * prune``), so the sparsity is exact. With
-   ``--max_fanin k`` only the k largest weights of each unit survive as well: a rule
-   uses only a unit's nonzero weights, so no rule can then exceed k literals.
-   With ``--fanin_schedule 12,8,6,4`` the fan-in is instead capped gradually: each step
-   keeps the k largest weights of every unit, then trains ``--step_epochs`` epochs
-   (masks frozen) so the remaining weights take over before the next cut. A unit with k
-   inputs has at most C(k, k/2) minimal rules (they form an antichain), each of at most
-   k literals, and reads at most k lower units. ``--fc_fanin`` sets a different final
-   cap for the head.
-   ``--unit_hoyer`` adds, during the Hoyer phase and the schedule steps, a penalty that
-   leaves many lower units unused, so the class rules reach fewer units: per layer above
-   L0 (and the head), the norm of the weights reading each lower unit (both polarities,
-   and every pooling op for the head; for a prototype head the lower units are the
-   prototypes) is taken, and ``1 - Hoyer`` of that vector is penalised. Like the row
-   penalty it is scale-invariant, so shrinking every weight of a unit together with its
-   threshold does not satisfy it.
-3. Recovery. Same objective without the Hoyer term, masks frozen; the epoch with the
-   best validation accuracy is kept.
-
-``--task_only`` replaces that objective, in every phase, by the class loss of the
-model's own end-to-end forward pass (plus its regularisers and the penalties): no
-layer is asked to reproduce the teacher's node states any more, so the units can
-reorganise around the task once the sparsity constraints no longer let them imitate
-a dense teacher.
-
-``--hard`` fine-tunes the model in hard mode (models_proto GINTELLProtoBase.set_hard):
-every literal and conv unit is binarised in the forward pass with straight-through
-gradients, so the network computes exactly its extracted rules and the saved model keeps
-doing so. Requires ``--task_only`` (distilling binary outputs with BCE saturates).
-With ``--hoyer_reg 0 --hoyer_fc 0 --prune_eps 0`` it is a plain hard fine-tune.
-
-``--layerwise`` replaces phases 1-3 by the layer-by-layer procedure of classic LogiX-GIN
-(nbs/LayerWiseRules.ipynb cells 11, 19 and 23), ported unchanged to any run: the head
-first, then the conv layers from the last to the first, each step training only that
-layer's weights (``weight_sigma``, ``weight_exp``; prototypes, masks and thresholds stay
-fixed) with Adam on the notebook's loss (task BCE + NLL, sqrt penalty on every conv,
-notebook Hoyer + sqrt penalty on the head; its ``train_sparsity_epoch``). After every
-epoch the model is kept if (val acc, -nonzero weights of the layer) beats the kept one,
-or if it has fewer nonzero weights (> 1e-4) at no less than ``--lw_tol`` x the kept val
-acc; a step ends after ``patience`` epochs without a keep (at most ``--lw_max_epochs``)
-and the next one starts from the kept model. Head: lr 0.01, patience 100, conv_reg 0.1,
-fc_reg 0.1; convs: lr 0.005, patience 50, conv_reg 0.1, fc_reg 0.01 (the notebook's).
-The tolerance is relative to the last kept model, so val accuracy can drift down by up
-to 1% per keep (notebook behaviour, kept; the step history in sparsity.json shows it).
-No pruning afterwards, as in the notebook. Deviation: an exception in a batch is raised
-instead of printed and skipped.
-
-``--run_path`` may itself be a sparse run (``.../sparse/<cfg>``); with ``--epochs 0``
-the schedule then starts from its already Hoyer-sparsified weights.
+The joint variant (all layers at once with a row-wise Hoyer penalty, then pruning and
+recovery, plus fan-in schedules, a unit penalty, ``--task_only`` and ``--hard``) did worse
+on prototype runs (Mutagenicity NMP: fidelity 0.69 vs 0.80) and was removed; it is in the
+history up to commit ca49a45 (``git show ca49a45:sparsify_proto.py``), and its output
+directories (``sparse/epochs=...|hoyer_reg=...``) stay readable by utils/viz.py.
 
 Output: ``<run_path>/sparse/<config>/`` with ``best.pt``, ``args.json``, a link to the
 run's ``data.pkl``, and ``sparsity.json`` (metrics and rule statistics before and
-after). The directory is a regular run directory, so ``latent_logic.py --run_path`` and
-``tests/bench_min_covers.py --run_path`` work on it unchanged. The run is also logged
-to MLflow (experiment ``sparsify/<dataset>``, see utils/tracking.py) and the result is
-registered as ``logix-proto-sparse-<dataset>-<level>``.
+after, and the per-step history). The directory is a regular run directory, so
+``latent_logic.py --run_path`` and ``tests/bench_min_covers.py --run_path`` work on it
+unchanged. The run is also logged to MLflow (experiment ``sparsify/<dataset>``, see
+utils/tracking.py) and the result is registered as ``logix-proto-sparse-<dataset>-<level>``.
 
     python sparsify_proto.py --run_path "results_proto/Mutagenicity/<cfg>/<baseline cfg>/0"
     python sparsify_proto.py --run_path ... --stats_only      # rule statistics, no training
@@ -87,36 +46,15 @@ import os
 import pickle
 import time
 
-import numpy as np
 import torch
 import torch.nn.functional as F
 from torch_geometric.loader import DataLoader
 
-from models.model import GIN
 from rule_eval import logical_layers, print_stats, rule_metrics, rule_stats
-from train_logic import train_epoch as train_epoch_logic
-from train_proto import test_epoch, train_epoch as train_epoch_proto
+from train_proto import test_epoch
 from utils import tracking
 from utils.evaluation import evaluate
 from utils.utils import get_dataset, set_seed, zero_nan_gradients
-
-
-def hoyer(W, eps=1e-12):
-    """Row-wise Hoyer sparsity of a [out, in] matrix: 1 = one weight per row, 0 = uniform."""
-    n = W.shape[-1]
-    ratio = W.abs().sum(-1) / torch.sqrt((W ** 2).sum(-1) + eps)
-    return (n ** 0.5 - ratio) / (n ** 0.5 - 1)
-
-
-def hoyer_penalty(model, hoyer_reg, hoyer_fc):
-    def f(m):
-        loss = 0
-        if hoyer_reg:
-            loss = loss + hoyer_reg * sum((1 - hoyer(c.nn[0].weight)).mean() for c in m.convs)
-        if hoyer_fc:
-            loss = loss + hoyer_fc * (1 - hoyer(m.fc.weight)).mean()
-        return loss
-    return f
 
 
 def unit_groups(model):
@@ -138,78 +76,10 @@ def unit_groups(model):
     return out
 
 
-def unit_hoyer_penalty(model, unit_hoyer):
-    """unit_hoyer * sum over layers of (1 - Hoyer) of the per-lower-unit weight norms."""
-    groups = [(ll, g, int(g.max()) + 1) for ll, g in unit_groups(model)]
-    def f(m):
-        loss = 0
-        for ll, g, n in groups:
-            sq = torch.zeros(n, device=ll.weight.device).index_add_(0, g.to(ll.weight.device), (ll.weight ** 2).sum(0))
-            loss = loss + (1 - hoyer(torch.sqrt(sq + 1e-12)[None]))[0]
-        return unit_hoyer * loss
-    return f
-
-
 def used_units(model, eps=0.0):
     """Per layer above L0 (and head): how many lower units are read by some nonzero weight."""
     return [int(torch.zeros(int(g.max()) + 1).index_add_(0, g, (ll.weight.detach().cpu() > eps).float().sum(0)).gt(0).sum())
             for ll, g in unit_groups(model)]
-
-
-@torch.no_grad()
-def prune(model, prune_eps, max_fanin=None, fc_fanin=None):
-    """Fix every weight <= prune_eps to 0 via the prune mask, and with ``max_fanin`` every
-    weight outside the unit's ``max_fanin`` largest (``fc_fanin`` for the head, default
-    ``max_fanin``). Returns the fraction pruned."""
-    pruned, total = 0, 0
-    lls = logical_layers(model)
-    for li, ll in enumerate(lls):
-        k = (fc_fanin or max_fanin) if li == len(lls) - 1 else max_fanin
-        keep = (ll.weight > prune_eps).float()
-        if k is not None and k < ll.weight.shape[1]:
-            top = torch.zeros_like(keep).scatter_(1, ll.weight.topk(k, dim=1).indices, 1.0)
-            keep = keep * top
-        ll.set_prune(ll.prune * keep)
-        pruned += int((keep == 0).sum())
-        total += keep.numel()
-    return pruned / total
-
-
-def task_epoch(teacher, model, loader, device, optimizer, num_classes, train_full=True, conv_reg=0.001, fc_reg=0.01,
-               proto_div_reg=0.0, proto_ent_reg=0.0, mask_reg=0.0, vocab_reg=0.0, extra_loss=None):
-    """One epoch on the class loss only (same form as the task terms of train_logic.py:
-    BCE on one-hot + NLL), end to end, with the model's own regularisers. ``teacher`` is
-    ignored; the signature matches train_epoch so the phases can swap it in."""
-    model.train()
-    for ll in logical_layers(model):
-        ll.phi_in.tau = 10
-    total, correct, n = 0.0, 0, 0
-    for data in loader:
-        if data.y.numel() == 0 or data.x.isnan().any() or data.y.isnan().any():
-            continue
-        data = data.to(device)
-        y = data.y.reshape(-1).long()
-        optimizer.zero_grad()
-        out = model(data.x.float(), data.edge_index, data.batch)
-        loss = F.binary_cross_entropy(out.reshape(-1), F.one_hot(y, num_classes=num_classes).float().reshape(-1)) \
-            + F.nll_loss(F.log_softmax(out, dim=-1), y)
-        for c in model.convs:
-            loss = loss + conv_reg * (c.nn[0].reg_loss + c.nn[0].phi_in.entropy)
-        loss = loss + fc_reg * (model.fc.reg_loss + model.fc.phi_in.entropy)
-        for p in getattr(model, 'proto_layers', []):
-            loss = loss + proto_div_reg * p.reg_loss + proto_ent_reg * p.proto_entropy
-            if mask_reg and p.masked:
-                loss = loss + mask_reg * p.mask_size
-        if vocab_reg:
-            loss = loss + vocab_reg * model.vocab_penalty()
-        if extra_loss is not None:
-            loss = loss + extra_loss(model)
-        loss.backward()
-        optimizer.step()
-        total += loss.item() * data.num_graphs
-        correct += int((out.argmax(-1) == y).sum())
-        n += data.num_graphs
-    return [total / max(n, 1)], [correct / max(n, 1)]
 
 
 # ---------------------------------------------------------------------------
@@ -321,12 +191,6 @@ def split_run_path(run_path):
     raise ValueError(f'{run_path} is neither under results_proto/ nor results_logic/')
 
 
-def teacher_path(run_path):
-    """The frozen teacher of a run: results/<ds>/<baseline cfg>/<seed>."""
-    _, ds, _, base, seed = split_run_path(run_path)
-    return os.path.join('results', ds, base, seed)
-
-
 def full_eval(model, loaders, device):
     m = {}
     for name, loader in loaders.items():
@@ -334,123 +198,18 @@ def full_eval(model, loaders, device):
     return m
 
 
-def joint_phases(a, model_proto, run_args, stage, train_loader, val_loader, device, num_classes, num_features,
-                 schedule, out_dir):
-    """Phases 1-3 (joint Hoyer fine-tune, pruning, recovery); saves the kept model to
-    out_dir/best.pt and returns (pruned fraction, val acc right after pruning)."""
-    tpath = teacher_path(a.run_path)
-    targs = json.load(open(os.path.join(tpath, 'args.json')))
-    teacher = GIN(num_features=num_features, num_classes=num_classes, hidden_dim=targs['hidden_dim'],
-                  num_layers=targs['num_layers'], nogumbel=targs['nogumbel']).to(device)
-    teacher.load_state_dict(torch.load(os.path.join(tpath, 'best.pt'), map_location='cpu'))
-    teacher.eval()
-
-    common = dict(train_full=True, conv_reg=run_args['conv_reg'], fc_reg=run_args['fc_reg'])
-    if stage == 'proto':
-        common.update(proto_div_reg=run_args['proto_div_reg'], proto_ent_reg=run_args['proto_ent_reg'],
-                      mask_reg=run_args.get('mask_reg', 0.0), vocab_reg=run_args.get('vocab_reg') or 0.0)
-    train_epoch = task_epoch if a.task_only else train_epoch_proto if stage == 'proto' else train_epoch_logic
-    if a.task_only and stage != 'proto':
-        common.pop('proto_div_reg', None)
-    lr = a.lr or run_args['lr']
-
-    # 1. Hoyer fine-tuning
-    opt = torch.optim.AdamW(model_proto.parameters(), lr=lr, weight_decay=run_args['l2'])
-    row_pen = hoyer_penalty(model_proto, a.hoyer_reg, a.hoyer_fc)
-    unit_pen = unit_hoyer_penalty(model_proto, a.unit_hoyer) if a.unit_hoyer else None
-    penalty = (lambda m: row_pen(m) + unit_pen(m)) if unit_pen else row_pen
-    t0 = time.time()
-    for epoch in range(a.epochs):
-        loss, _ = train_epoch(teacher, model_proto, train_loader, device, opt, num_classes,
-                              extra_loss=penalty, **common)
-        v = test_epoch(model_proto, val_loader, device)
-        with torch.no_grad():
-            h = [float(hoyer(ll.weight).mean()) for ll in logical_layers(model_proto)]
-        names = [f'L{i}' for i in range(len(h) - 1)] + ['head']
-        tracking.log_metrics({'hoyer_phase/val_acc': v, 'hoyer_phase/train_loss': loss[-1],
-                              **{f'hoyer_phase/hoyer_{n}': x for n, x in zip(names, h)}}, step=epoch)
-        if epoch % 25 == 0 or epoch == a.epochs - 1:
-            print(f'hoyer epoch {epoch:4d}  val {v:.4f}  mean Hoyer per layer '
-                  f'{np.round(h, 3).tolist()}  ({time.time() - t0:.0f}s)', flush=True)
-
-    # 2. pruning, in one cut or along the fan-in schedule
-    frac = prune(model_proto, a.prune_eps, a.max_fanin, a.fc_fanin if not schedule else None)
-    after_prune = test_epoch(model_proto, val_loader, device)
-    tracking.log_metrics({'pruned_fraction': frac, 'val_acc_after_prune': after_prune})
-    print(f'\npruned {frac:.1%} of the weights at eps {a.prune_eps}: val {after_prune:.4f}')
-    step = a.epochs
-    for si, k in enumerate(schedule):
-        fc_k = max(k, a.fc_fanin) if a.fc_fanin else None
-        frac = prune(model_proto, a.prune_eps, k, fc_k)
-        cut = test_epoch(model_proto, val_loader, device)
-        last = si == len(schedule) - 1
-        opt = torch.optim.AdamW(model_proto.parameters(), lr=lr, weight_decay=run_args['l2'])
-        for epoch in range(0 if last else a.step_epochs):      # the last step trains in phase 3
-            loss, _ = train_epoch(teacher, model_proto, train_loader, device, opt, num_classes,
-                                  extra_loss=unit_pen, **common)
-            v = test_epoch(model_proto, val_loader, device)
-            tracking.log_metrics({'schedule_phase/val_acc': v, 'schedule_phase/fanin': k,
-                                  'schedule_phase/train_loss': loss[-1]}, step=step)
-            step += 1
-        print(f'fan-in {k:3d}: pruned {frac:.1%}, val right after the cut {cut:.4f}'
-              + ('' if last else f', after {a.step_epochs} epochs {v:.4f}')
-              + f', lower units used {used_units(model_proto)}', flush=True)
-        tracking.log_metrics({f'schedule/k{k}_val_after_cut': cut})
-    if schedule:
-        after_prune = test_epoch(model_proto, val_loader, device)
-        tracking.log_metrics({'pruned_fraction': frac, 'val_acc_after_prune': after_prune})
-
-    # 3. recovery, masks frozen, keep the best validation epoch
-    step = max(step, a.epochs)
-    opt = torch.optim.AdamW(model_proto.parameters(), lr=lr, weight_decay=run_args['l2'])
-    best = after_prune
-    torch.save(model_proto, os.path.join(out_dir, 'best.pt'))
-    for epoch in range(a.recover_epochs):
-        loss, _ = train_epoch(teacher, model_proto, train_loader, device, opt, num_classes, **common)
-        v = test_epoch(model_proto, val_loader, device)
-        if v >= best:
-            best = v
-            torch.save(model_proto, os.path.join(out_dir, 'best.pt'))
-        tracking.log_metrics({'recover_phase/val_acc': v, 'recover_phase/best_val_acc': best,
-                              'recover_phase/train_loss': loss[-1]}, step=step + epoch)
-        if epoch % 25 == 0 or epoch == a.recover_epochs - 1:
-            print(f'recover epoch {epoch:4d}  val {v:.4f}  best {best:.4f}', flush=True)
-    return frac, after_prune
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__.split('\n')[0])
     ap.add_argument('--run_path', required=True, help='a trained seed directory holding best.pt')
     ap.add_argument('--dataset', default=None, help='default: read from run_path')
-    ap.add_argument('--hoyer_reg', type=float, default=1.0, help='Hoyer weight on the conv layers')
-    ap.add_argument('--hoyer_fc', type=float, default=1.0, help='Hoyer weight on the head')
-    ap.add_argument('--epochs', type=int, default=300, help='Hoyer fine-tuning epochs')
-    ap.add_argument('--prune_eps', type=float, default=1e-2, help='weights <= this are pruned to 0')
-    ap.add_argument('--max_fanin', type=int, default=None,
-                    help='keep at most this many weights per unit (caps every rule at this many literals)')
-    ap.add_argument('--fanin_schedule', default=None,
-                    help='comma-separated decreasing fan-in caps applied one after the other, e.g. 12,8,6,4')
-    ap.add_argument('--step_epochs', type=int, default=50, help='training epochs after each schedule step')
-    ap.add_argument('--fc_fanin', type=int, default=None,
-                    help='final fan-in cap of the head (default: same schedule as the conv layers)')
-    ap.add_argument('--unit_hoyer', type=float, default=0.0,
-                    help='penalty leaving lower units unused (Hoyer phase and schedule steps)')
-    ap.add_argument('--task_only', action='store_true',
-                    help='train on the class loss only, without layer-wise distillation from the teacher')
-    ap.add_argument('--hard', action='store_true',
-                    help='fine-tune and save in hard mode: the network computes exactly its rules (prototype runs)')
-    ap.add_argument('--recover_epochs', type=int, default=100, help='fine-tuning after pruning')
-    ap.add_argument('--layerwise', action='store_true',
-                    help='layer-by-layer Hoyer of the notebook instead of phases 1-3 (see the docstring)')
-    ap.add_argument('--lw_max_epochs', type=int, default=1000, help='--layerwise: max epochs per layer')
-    ap.add_argument('--lw_tol', type=float, default=0.99, help='--layerwise: keep sparser models down to this x val acc')
-    ap.add_argument('--lr', type=float, default=None, help='default: the run\'s lr')
+    ap.add_argument('--lw_max_epochs', type=int, default=1000, help='max epochs per layer')
+    ap.add_argument('--lw_tol', type=float, default=0.99, help='keep sparser models down to this x val acc')
     ap.add_argument('--batch_size', type=int, default=None, help='default: the run\'s batch size')
     ap.add_argument('--seed', type=int, default=0)
     ap.add_argument('--out_dir', default=None, help='default: <run_path>/sparse/<config>')
     ap.add_argument('--stats_only', action='store_true', help='print the run\'s rule statistics and exit')
     a = ap.parse_args()
-    if a.hard and not a.task_only:
-        ap.error('--hard needs --task_only')
 
     set_seed(a.seed)
     device = torch.device('cuda') if torch.cuda.is_available() else torch.device('cpu')
@@ -459,7 +218,7 @@ def main():
     run_args = json.load(open(os.path.join(a.run_path, 'args.json')))
     split = pickle.load(open(os.path.join(a.run_path, 'data.pkl'), 'rb'))
     dataset = get_dataset(ds_name)
-    num_classes, num_features = dataset.num_classes, dataset.num_features or 10
+    num_classes = dataset.num_classes
     bs = a.batch_size or run_args['batch_size']
     train_loader = DataLoader(dataset[split['train_indices']], batch_size=bs, shuffle=True)
     val_loader = DataLoader(dataset[split['val_indices']], batch_size=64, shuffle=False)
@@ -473,21 +232,10 @@ def main():
     print_stats('before', before['metrics'], before['rules'])
     if a.stats_only:
         return
-    if a.hard:
-        if not hasattr(model_proto, 'set_hard'):
-            ap.error('--hard needs a prototype run (models_proto)')
-        model_proto.set_hard(True)
 
-    sp_args = {k: v for k, v in vars(a).items() if k not in ('stats_only', 'out_dir', 'run_path', 'dataset')}
-    schedule = [int(k) for k in a.fanin_schedule.split(',')] if a.fanin_schedule else []
-    if a.fanin_schedule:
-        sp_args['fanin_schedule'] = '-'.join(map(str, schedule))
-    keys = ('epochs', 'hoyer_fc', 'hoyer_reg') + (('max_fanin',) if a.max_fanin else ()) \
-        + (('fanin_schedule', 'step_epochs') if schedule else ()) + (('fc_fanin',) if a.fc_fanin else ()) + (('unit_hoyer',) if a.unit_hoyer else ()) + (('task_only',) if a.task_only else ()) + (('hard',) if a.hard else ()) \
-        + ('prune_eps', 'recover_epochs')
-    if a.layerwise:
-        keys = ('layerwise', 'lw_max_epochs', 'lw_tol')
-    cfg = '|'.join(f'{k}={sp_args[k]}' for k in keys)
+    sp_args = {'layerwise': True, 'lw_max_epochs': a.lw_max_epochs, 'lw_tol': a.lw_tol,
+               'batch_size': a.batch_size, 'seed': a.seed}
+    cfg = '|'.join(f'{k}={sp_args[k]}' for k in ('layerwise', 'lw_max_epochs', 'lw_tol'))
     out_dir = a.out_dir or os.path.join(a.run_path, 'sparse', cfg)
     os.makedirs(out_dir, exist_ok=True)
     level = run_args.get('proto_level', 'logic')
@@ -502,22 +250,14 @@ def main():
         tracking.log_metrics({f'before/{k}': v for k, v in before['metrics'].items()})
         tracking.log_metrics(rule_metrics(before['rules'], prefix='before/rules/'))
 
-        if a.layerwise:
-            model_proto, history = layerwise_sparsify(model_proto, train_loader, val_loader, device, num_classes,
-                                                      a.lw_max_epochs, a.lw_tol, log=tracking.log_metrics)
-            torch.save(model_proto, os.path.join(out_dir, 'best.pt'))
-            after_prune = test_epoch(model_proto, val_loader, device)
-            n = sum(ll.weight.numel() for ll in logical_layers(model_proto))
-            frac = sum(int((ll.weight <= 1e-4).sum()) for ll in logical_layers(model_proto)) / n
-        else:
-            frac, after_prune = joint_phases(a, model_proto, run_args, stage, train_loader, val_loader, device,
-                                             num_classes, num_features, schedule, out_dir)
-        model_proto = torch.load(os.path.join(out_dir, 'best.pt'), map_location=device, weights_only=False)
+        model_proto, history = layerwise_sparsify(model_proto, train_loader, val_loader, device, num_classes,
+                                                  a.lw_max_epochs, a.lw_tol, log=tracking.log_metrics)
+        torch.save(model_proto, os.path.join(out_dir, 'best.pt'))
+        n = sum(ll.weight.numel() for ll in logical_layers(model_proto))
+        frac = sum(int((ll.weight <= 1e-4).sum()) for ll in logical_layers(model_proto)) / n
         after = {'metrics': full_eval(model_proto, loaders, device),
                  'rules': rule_stats(model_proto, val_loader, device),
-                 'pruned_fraction': frac, 'val_after_prune_before_recovery': after_prune}
-        if a.layerwise:
-            after['layerwise_steps'] = history
+                 'pruned_fraction': frac, 'layerwise_steps': history}
         print_stats('before', before['metrics'], before['rules'])
         print_stats('after', after['metrics'], after['rules'])
         after['used_units'] = used_units(model_proto)
