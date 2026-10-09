@@ -59,6 +59,7 @@ import pickle
 import json
 from models.model import GIN
 from models_proto.model_proto import get_model
+from train_logic import get_best_baseline_path, test_epoch
 from torch.optim.lr_scheduler import ReduceLROnPlateau
 from utils import tracking
 from utils.evaluation import evaluate
@@ -85,19 +86,6 @@ def create_folder_proto(dataset_name, args, baseline_args, seed=None, root='resu
         with open(f'{root}/{dataset_name}/{args_s}/config.txt', 'w') as f:
             f.write(full_args_s + '\n')
     return path
-
-
-def get_best_baseline_path(dataset_name):
-    l = glob.glob(f'results/{dataset_name}/*/results.json')
-    fl = [json.load(open(f)) for f in l]
-    df = pd.DataFrame(fl)
-    if df.shape[0] == 0: return None
-    df['fname'] = l
-    df = df.sort_values(by=['val_acc_mean', 'val_acc_std', 'test_acc_std'], ascending=[True,False,False])
-    df = df[df.fname.str.contains('nogumbel=False')]
-    fname = df.iloc[-1]['fname']
-    fname = fname.replace('/results.json', '')
-    return fname
 
 
 def train_epoch(model, model_proto, loader, device, optimizer, num_classes, train_full=True,
@@ -200,23 +188,6 @@ def train_epoch(model, model_proto, loader, device, optimizer, num_classes, trai
 
 
 @torch.no_grad()
-def test_epoch(model, loader, device):
-    model.eval()
-    total_correct = 0
-    for data in loader:
-        if data.x is None:
-            data.x = torch.ones((data.num_nodes, model.num_features))
-        if data.y.numel() == 0: continue
-        if data.x.isnan().any(): continue
-        if data.y.isnan().any(): continue
-        y = data.y.reshape(-1).to(device)
-        pred = model(data.x.float().to(device), data.edge_index.to(device), data.batch.to(device), tau=1000).argmax(-1)
-        total_correct += pred.eq(y).sum().item()
-    val_acc = total_correct / len(loader.dataset)
-
-    return val_acc
-
-
 def build_proto_model(args, baseline_args, num_features, num_classes, device):
     """The student. num_layers/hidden_dim must match the teacher: the trunk is
     distilled layer by layer, so the shapes have to line up."""
