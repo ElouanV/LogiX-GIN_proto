@@ -94,8 +94,10 @@ def create_folder_proto(dataset_name, args, baseline_args, seed=None, root='resu
 
 def train_epoch(model, model_proto, loader, device, optimizer, num_classes, train_full=True,
                 conv_reg=0.001, fc_reg=0.01, proto_div_reg=0.0, proto_ent_reg=0.0,
-                mask_reg=0.0, vocab_reg=0.0):
-    """One epoch of distillation + task loss."""
+                mask_reg=0.0, vocab_reg=0.0, quant=None):
+    """One epoch of distillation + task loss. ``quant`` (QAT, qat_proto.py): applied to a
+    layer's output before the next layer reads it in the chained (train_full) term; the
+    layer's own loss stays on its soft output."""
     model.train()
     model_proto.train()
 
@@ -131,7 +133,7 @@ def train_epoch(model, model_proto, loader, device, optimizer, num_classes, trai
                     layer_out = layer(torch.hstack([layer_x, 1-layer_x]), data.edge_index.to(device))
                     layer_loss = F.binary_cross_entropy(layer_out.reshape(-1), layer_y.reshape(-1)) + conv_reg* (layer.nn[0].reg_loss + layer.nn[0].phi_in.entropy)
                     loss += layer_loss
-                last_layer_out = layer_out
+                last_layer_out = layer_out if quant is None else quant(layer_out)
                 total_loss[i] += layer_loss.item() / len(loader.dataset)
                 total_correct[i] += ((layer_out >= 0.5).long() == layer_y).sum().item() / (layer_y.shape[-2]*layer_y.shape[-1]*len(loader))
 

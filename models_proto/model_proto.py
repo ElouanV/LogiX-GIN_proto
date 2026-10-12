@@ -35,7 +35,7 @@ import torch
 from torch import nn
 from torch_geometric.nn import GINConv, global_mean_pool, global_max_pool, global_add_pool
 
-from models_proto.tell import LogicalLayer, Phi, sharpen
+from models_proto.tell import LogicalLayer, Phi, quant_noise, sharpen
 from models_proto.proto import PrototypeLayer
 
 POOLS = {'mean': global_mean_pool, 'max': global_max_pool, 'sum': global_add_pool}
@@ -133,6 +133,7 @@ class GINTELLProtoBase(nn.Module):
                     z = sharpen(z, self.sharpness)
                 if symbolic or getattr(self, 'hard', False):
                     z = z + ((z >= 0.5).float() - z).detach()
+                z = quant_noise(z, getattr(self, 'quant_rate', 0.0), self.training)    # QAT
             blocks.append(z)
         return torch.hstack(blocks)
 
@@ -178,6 +179,21 @@ class GINTELLProtoBase(nn.Module):
         self.fc.sharpness = beta
         self.sharpness = beta
 
+    def set_quant_noise(self, rate):
+        """QAT (qat_proto.py): Quant-Noise (tell.quant_noise) at ``rate`` on every bit the
+        rules read: the literals of every conv unit and of the head, the conv unit outputs
+        (quant_out, between layers) and phi_sum. rate = 1 is set_hard's exact rule model
+        (without its in-layer output binarisation); 0 = off. The head keeps a graded output."""
+        rate = float(rate)
+        for c in self.convs:
+            c.nn[0].quant_rate = rate
+        self.fc.quant_rate = rate
+        self.quant_rate = rate
+
+    def quant_out(self, x):
+        """A conv layer's output as the next layer / the readout sees it under set_quant_noise."""
+        return quant_noise(x, getattr(self, 'quant_rate', 0.0), self.training)
+
     def set_mask_layer_cost(self, cost):
         """Weight the cared-bit penalty of every prototype layer by the conv layer each bit
         reads: cost[l] for bits from layer l (see PrototypeLayer.set_bit_cost)."""
@@ -215,7 +231,7 @@ class GINTELLProtoBase(nn.Module):
         xs = []
         for i, conv in enumerate(self.convs):
             if i != 0: self.dropout(x)
-            x = conv(torch.hstack([x, 1 - x]), edge_index)
+            x = self.quant_out(conv(torch.hstack([x, 1 - x]), edge_index))      # QAT: identity when off
             xs.append(x)
         s = self.readout(xs, batch)
         return self.head(s)

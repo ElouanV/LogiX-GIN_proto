@@ -9,6 +9,22 @@ def sigmoid(x, tau=10):
     return 1/(1+torch.exp(-tau*x))
 
 
+def quant_noise(p, rate, training=True):
+    """QAT by Quant-Noise (Fan et al., ICLR 2021, arXiv:2004.07320) for values in [0, 1] read
+    as bits: in training, each entry is binarised at 0.5 with probability ``rate`` (forward:
+    the bit, backward: straight-through, Bengio et al. 2013) and the others stay soft, so
+    exact gradients still flow through them. rate = 1 (or eval mode with rate = 1): every
+    entry binarised, the layer computes exactly its rules; eval with rate < 1: soft."""
+    if rate <= 0:
+        return p
+    hard = p + ((p >= 0.5).float() - p).detach()
+    if rate >= 1:
+        return hard
+    if not training:
+        return p
+    return torch.where(torch.rand_like(p) < rate, hard, p)
+
+
 def sharpen(p, beta):
     """p in [0, 1] pushed towards {0, 1} around 0.5: sigmoid(beta * logit(p)). beta = 1 is
     the identity, beta -> inf the step p >= 0.5 the rules read; gradients stay real."""
@@ -242,6 +258,10 @@ class LogicalLayer(nn.Module):
         # layer computes exactly its rules (pickles from before have neither attribute)
         if getattr(self, 'hard_in', False):
             x = x + ((x >= 0.5).float() - x).detach()
+        # QAT (GINTELLProtoBase.set_quant_noise): a random share quant_rate of the literals
+        # binarised; the unit outputs are binarised by the caller, between layers, so the
+        # per-layer distillation loss stays on the soft output (pickles: no attribute = off)
+        x = quant_noise(x, getattr(self, 'quant_rate', 0.0), self.training)
         self.max_in, _ = x.max(0)
         reg_loss = 0
         entropy_loss = 0
