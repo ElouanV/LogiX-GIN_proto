@@ -121,7 +121,7 @@ Compute has a carbon cost. Spend it deliberately.
 - **Experiments are YAML configs** run by `run_experiment.py <config> run --datasets ...`
   (`utils/experiment.py`): per dataset, on one machine, k-fold teachers -> one Optuna study
   per model -> every fold re-trained with the best set (`results_final/<exp>/<ds>/`) ->
-  interp_metrics.py on every final fold (`interp.json`, MLflow `interp/*`) -> summary.csv. Fold indices are committed in `splits/<dataset>_kfold.json` (the reference
+  interp_metrics.py on every final fold (`interp.json`, MLflow `interp/*`) -> summary.csv. Controlled ablations: `params_from` (a model trained with another model's best set) and `best_sets` (a hand set for a dataset without a study), e.g. `configs/experiments/sum_ablation_ctrl.yaml`. Fold indices are committed in `splits/<dataset>_kfold.json` (the reference
   for every model and baseline; `utils/splits.py`, final runs check them). Units resume from disk; progress goes to `utils/progress.py` (local JSONL +
   optional Notion). New experiment = new YAML, not a new launcher script.
 - `optimize_optuna.py` + `utils/hps.py`: Optuna search of the six students of the

@@ -12,6 +12,12 @@ Units of a dataset D (key ``<experiment>/<D>/<stage>[/<model>][/fold<k>]``):
                                and test), only for the k-fold final runs, never for hps trials
     summary                    mean ± std per model over the final folds (CPU)
 
+Two optional config keys replace a model's study (controlled ablations):
+``params_from: {<model>: <source model>}`` trains <model> with the best set of <source
+model>'s study (no study of its own), so a pair differs only by its ``fixed`` arguments;
+``best_sets: {<dataset>: {<model>: {<param>: <value>}}}`` gives the set by hand for a
+dataset without a study (final.json records ``study: config:best_sets``).
+
 A unit runs when the units it needs are done (an hps study needs only its teacher fold),
 each in its own process (``run_experiment.py <config> unit ...``), ``jobs`` at a time.
 Units already done on disk are skipped, so a run resumes where it stopped. Outputs:
@@ -67,6 +73,9 @@ class Experiment:
         unknown = set(self.cfg['models']) - set(hps.MODELS)
         if unknown:
             raise ValueError(f'models not in configs/models.yaml: {sorted(unknown)}')
+        missing = set(self.cfg.get('params_from', {}).values()) - set(self.cfg['models'])
+        if missing:
+            raise ValueError(f'params_from sources not in models: {sorted(missing)}')
         self.folds = list(self.cfg['folds'])
         self.tune_folds = list(self.cfg['hps']['tune_folds'])
 
@@ -101,6 +110,26 @@ class Experiment:
     def source_study(self, fold):
         return fold if fold in self.tune_folds else self.tune_folds[0]
 
+    def params_model(self, model):
+        """The model whose study gives ``model`` its parameters (itself unless params_from)."""
+        return self.cfg.get('params_from', {}).get(model, model)
+
+    def hand_set(self, dataset, model):
+        return self.cfg.get('best_sets', {}).get(dataset, {}).get(self.params_model(model))
+
+    def has_study(self, dataset, model):
+        return self.params_model(model) == model and self.hand_set(dataset, model) is None
+
+    def best_set(self, dataset, model, fold):
+        """(params, study, trial number) a final run of ``model`` on ``fold`` is trained with."""
+        hand = self.hand_set(dataset, model)
+        if hand is not None:
+            return dict(hand), 'config:best_sets', None
+        src = self.params_model(model)
+        best = json.load(open(os.path.join(hps.study_dir(dataset, src, self.source_study(fold), self.cfg['hps']['root']),
+                                           'best.json')))
+        return best['params'], best['study'], best['number']
+
     # ---- plan ----
     def units(self, datasets):
         out = []
@@ -109,11 +138,12 @@ class Experiment:
             out += teach
             out.append(Unit('teacher_summary', ds, deps=[u.key for u in teach]))
             for m in self.cfg['models']:
-                studies = [Unit('hps', ds, m, t, deps=[Unit('teacher', ds, fold=t).key]) for t in self.tune_folds]
-                out += studies
+                if self.has_study(ds, m):
+                    out += [Unit('hps', ds, m, t, deps=[Unit('teacher', ds, fold=t).key]) for t in self.tune_folds]
                 for k in self.folds:
-                    src = Unit('hps', ds, m, self.source_study(k)).key
-                    final = Unit('final', ds, m, k, deps=[src, Unit('teacher', ds, fold=k).key])
+                    src = [] if self.hand_set(ds, m) is not None else \
+                        [Unit('hps', ds, self.params_model(m), self.source_study(k)).key]
+                    final = Unit('final', ds, m, k, deps=[*src, Unit('teacher', ds, fold=k).key])
                     out += [final, Unit('interp', ds, m, k, deps=[final.key])]
             out.append(Unit('summary', ds, deps=[u.key for u in out if u.dataset == ds
                                                  and u.stage in ('final', 'interp')]))
@@ -199,9 +229,8 @@ class Experiment:
 
     def _unit_final(self, dataset, model, fold, rep):
         import torch
-        src = self.source_study(fold)
-        best = json.load(open(os.path.join(hps.study_dir(dataset, model, src, self.cfg['hps']['root']), 'best.json')))
-        argv = hps.to_argv(dataset, model, best['params'], fold, self.teacher_dir(dataset))
+        params, study, number = self.best_set(dataset, model, fold)
+        argv = hps.to_argv(dataset, model, params, fold, self.teacher_dir(dataset))
         d = self.final_dir(dataset, model, fold)
         if os.path.exists(os.path.join(d, 'run')):
             shutil.rmtree(os.path.join(d, 'run'))          # an interrupted attempt
@@ -212,8 +241,8 @@ class Experiment:
         split_sha = same_split(dataset, fold, pickle.load(open(os.path.join(path, 'data.pkl'), 'rb')))
         with open(os.path.join(d, 'final.json'), 'w') as f:
             json.dump({'experiment': self.name, 'dataset': dataset, 'model': model, 'fold': fold,
-                       'metrics': metrics, 'argv': argv, 'params': best['params'], 'run_dir': path,
-                       'study': best['study'], 'study_trial': best['number'], 'git_commit': hps.git_commit(),
+                       'metrics': metrics, 'argv': argv, 'params': params, 'run_dir': path,
+                       'study': study, 'study_trial': number, 'git_commit': hps.git_commit(),
                        'split_file': os.path.relpath(split_file(dataset), REPO), 'split_sha256': split_sha},
                       f, indent=1)
         return metrics, None

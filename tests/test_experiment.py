@@ -62,6 +62,49 @@ class TestExperiment(unittest.TestCase):
             os.unlink(f.name)
 
 
+class TestControlledAblation(unittest.TestCase):
+    """params_from / best_sets (configs/experiments/sum_ablation_ctrl.yaml)."""
+
+    def setUp(self):
+        self.exp = Experiment(CFG.replace('sum_ablation.yaml', 'sum_ablation_ctrl.yaml'))
+
+    def test_sum_twin_has_no_study_and_waits_for_the_no_sum_one(self):
+        units = {u.key: u for u in self.exp.units(['PROTEINS'])}
+        self.assertNotIn('PROTEINS/hps/node_mask_push_sum/fold0', units)
+        self.assertEqual(set(units['PROTEINS/final/node_mask_push_sum/fold4'].deps),
+                         {'PROTEINS/hps/node_mask_push/fold0', 'PROTEINS/teacher/fold4'})
+
+    def test_sum_twin_gets_the_no_sum_params_and_its_own_fixed_args(self):
+        with tempfile.TemporaryDirectory() as d:
+            sd = os.path.join(d, 'PROTEINS', 'graph', 'fold0')
+            os.makedirs(sd)
+            json.dump({'study': 'PROTEINS/graph/fold0', 'number': 3, 'params': {'lr': 0.003}},
+                      open(os.path.join(sd, 'best.json'), 'w'))
+            self.exp.cfg['hps']['root'] = d
+            params, study, number = self.exp.best_set('PROTEINS', 'graph_sum', 5)
+        self.assertEqual((params, study, number), ({'lr': 0.003}, 'PROTEINS/graph/fold0', 3))
+        argv = hps.to_argv('PROTEINS', 'graph_sum', params, 5)
+        self.assertEqual(argv[argv.index('--pool_ops') + 1], 'mean,max,sum')
+
+    def test_hand_set_replaces_the_study(self):
+        units = {u.key: u for u in self.exp.units(['Mutagenicity'])}
+        self.assertFalse(any(u.stage == 'hps' for u in units.values()))
+        self.assertEqual(units['Mutagenicity/final/node_mask_push_sum/fold2'].deps, ('Mutagenicity/teacher/fold2',))
+        p_sum, study, _ = self.exp.best_set('Mutagenicity', 'node_mask_push_sum', 2)
+        self.assertEqual(p_sum, self.exp.best_set('Mutagenicity', 'node_mask_push', 2)[0])
+        self.assertEqual(study, 'config:best_sets')
+
+    def test_unknown_source_model_raises(self):
+        cfg = dict(self.exp.cfg, params_from={'graph_sum': 'classic'})
+        with tempfile.NamedTemporaryFile('w', suffix='.yaml', delete=False) as f:
+            yaml.safe_dump(cfg, f)
+        try:
+            with self.assertRaises(ValueError):
+                Experiment(f.name)
+        finally:
+            os.unlink(f.name)
+
+
 class TestProgress(unittest.TestCase):
 
     def test_local_record_and_latest(self):

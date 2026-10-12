@@ -1,0 +1,52 @@
+# Controlled sum-pooling ablation of the prototype students (W41 question: why does sum
+# pooling *reduce* their performance?). In sum_ablation every model had its own Optuna
+# study, so with / without sum differed by their hyper-parameters too. Here each *_sum
+# model is trained with the best set of its no-sum twin (params_from): the pair differs
+# only by --pool_ops. MUTAG is left out (unstable, many runs collapse).
+#   python run_experiment.py configs/experiments/sum_ablation_ctrl.yaml run --datasets PROTEINS BaMultiShapes Mutagenicity
+# PROTEINS / BaMultiShapes reuse the studies of sum_ablation (results_hps/, fold 0); their
+# no-sum final folds are the sum_ablation ones (results_final/sum_ablation_ctrl/<D>/<model>
+# links to results_final/sum_ablation/<D>/<model>). Mutagenicity has no study: both twins
+# take the hand-tuned set of the earlier Mutagenicity runs (results_proto/Mutagenicity/
+# node-facbe6d14f72, graph-855fcd0ed213), on the k-fold teachers.
+name: sum_ablation_ctrl
+description: >
+  Sum pooling at equal hyper-parameters: NMP and graph-level prototypes, the *_sum twin
+  trained with the no-sum best set, 10 folds.
+datasets: [PROTEINS, BaMultiShapes, Mutagenicity]
+models: [node_mask_push, node_mask_push_sum, graph, graph_sum]
+folds: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]
+
+params_from:
+  node_mask_push_sum: node_mask_push
+  graph_sum: graph
+
+best_sets:
+  Mutagenicity:
+    node_mask_push: {lr: 0.001, batch_size: 128, l2: 0.0, conv_reg: 0.001, fc_reg: 0.01, epochs: 3000,
+                     warmup_epochs: 1000, num_prototypes: 16, proto_div_reg: 0.01, proto_ent_reg: 0.01,
+                     mask_reg: 0.5, push_every: 200}
+    graph: {lr: 0.001, batch_size: 128, l2: 0.0, conv_reg: 0.001, fc_reg: 0.01, epochs: 3000,
+            warmup_epochs: 1000, num_prototypes: 16, proto_div_reg: 0.01, proto_ent_reg: 0.01}
+
+teacher:                                 # same k-fold teachers as sum_ablation
+  epochs: 500
+  hidden_dim: 64
+  num_layers: 3
+  batch_size: 128
+  lr: 0.001
+  l2: 1.0e-5
+  dropout: 0.15
+  split: kfold
+
+hps:
+  root: results_hps
+  tune_folds: [0]
+  n_trials: 25
+  sampler_seed: 0
+  report_every: 50
+
+final:
+  root: results_final
+
+jobs: 6
