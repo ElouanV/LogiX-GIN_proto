@@ -124,3 +124,19 @@ The number to beat is the **rule-model test accuracy**: 0.727 for the trained mo
 for the hard fine-tune, both at fidelity 1 once the network is the rule model.
 `interp_metrics.py --run_path <out_dir>` gives the full report (fidelity, explanation size,
 NO2/NH2 precision).
+
+**Evaluate QAT runs with this branch's code.** The checkpoints are full pickles. If
+`interp_metrics.py` is run from a checkout without the QAT hooks, the network runs soft and
+the reported network accuracy and fidelity are wrong.
+
+## Result of step 1 (2026-10-12)
+
+Mutagenicity NMP, seeds 0-2, test split, 300 epochs, rate 0 → 1.
+
+| | network acc | fidelity | rule-model acc | NO2/NH2 precision |
+|---|---|---|---|---|
+| trained model | 0.812 | 0.80 | 0.727 | 0.71 |
+| hard fine-tune | 0.697 | 1.00 | 0.697 | |
+| QAT (Quant-Noise) | 0.742 ± 0.057 | 1.00 | 0.742 ± 0.057 | 0.57 |
+
+Per seed, rule-model accuracy goes from 0.726 / 0.774 / 0.680 to 0.767 / 0.783 / 0.677.
