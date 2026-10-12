@@ -35,6 +35,9 @@ Extra knobs over train_logic.py:
                                       checkpoints are kept only at sharpness B, so the kept
                                       network is close to the rules it is read as. Off by
                                       default (no harden_* entry in the results path).
+    --optimizer muon [--muon_lr]      Muon on the conv weight matrices, AdamW on the rest
+                                      (utils/optim.py). Default AdamW, upstream; the
+                                      optimizer only enters the results path when set.
 
 Results go to results_proto/ so they never collide with results_logic/.
 """
@@ -63,6 +66,7 @@ from train_logic import get_best_baseline_path, test_epoch
 from torch.optim.lr_scheduler import ReduceLROnPlateau
 from utils import tracking
 from utils.evaluation import evaluate
+from utils.optim import build_optimizer
 
 SEEDS = 10
 
@@ -306,7 +310,8 @@ def _train_seed(dataset_name, baseline_path, args, seed, device, root='results_p
     if args.get('mask_layer_cost'):
         model_proto.set_mask_layer_cost([float(c) for c in args['mask_layer_cost'].split(',')])
 
-    optimizer = torch.optim.AdamW(model_proto.parameters(), lr=args['lr'], weight_decay=args['l2'])
+    optimizer = build_optimizer(model_proto, args.get('optimizer'), args['lr'], args['l2'],
+                                **({'muon_lr': args['muon_lr']} if args.get('muon_lr') is not None else {}))
 
     scheduler = ReduceLROnPlateau(optimizer, mode='max', factor=0.99, patience=300, min_lr=1e-5, verbose=True)
 
@@ -550,6 +555,8 @@ def get_parser():
     parser.add_argument('--harden_to',      default=None,       type=float, help='Gradual hardening: final sharpness of literals and conv units (default: off)')
     parser.add_argument('--harden_start_frac', default=None,    type=float, help='Fraction of the epochs where hardening starts (default: end of warmup, with --harden_to)')
     parser.add_argument('--harden_end_frac', default=None,      type=float, help='Fraction of the epochs where the final sharpness is reached (default 0.9, with --harden_to)')
+    parser.add_argument('--optimizer',      default=None,       choices=['adamw', 'muon'], help='Default adamw (upstream); muon: Muon on the conv weights (utils/optim.py)')
+    parser.add_argument('--muon_lr',        default=None,       type=float, help='Muon learning rate (default 0.02, with --optimizer muon)')
     parser.add_argument('--pool_ops',       default=None,       type=str,   help='Comma-separated readout pooling, e.g. mean,max,sum (default mean,max; sum: see models_proto/model_proto.py)')
     parser.add_argument('--only_eval',     action='store_true',             help='Only evaluate')
     parser.add_argument('--seed',           default=None,       type=int,   help='Single seed to run')
@@ -571,6 +578,10 @@ def parse_cli(argv=None):
     for k in ('harden_to', 'harden_start_frac', 'harden_end_frac'):     # off: results paths unchanged
         if args[k] is None or not hardened:
             args.pop(k)
+    if args['optimizer'] in (None, 'adamw'):                         # default: results paths unchanged
+        args.pop('optimizer')
+    if args['muon_lr'] is None or 'optimizer' not in args:
+        args.pop('muon_lr')
     if args.get('harden_to') is not None and args['harden_to'] < 1:
         parser.error('--harden_to must be >= 1 (1 = no hardening)')
     if args.get('mask_ckpt_temp') is not None and args['mask_ckpt_temp'] < args['mask_temp_end']:
