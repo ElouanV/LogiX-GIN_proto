@@ -110,7 +110,7 @@ Compute has a carbon cost. Spend it deliberately.
 3. Prototype student: `train_proto.py` (`--proto_level node|graph|both`, `--num_prototypes`,
    `--push_every`, `--proto_mask`, `--seed`) writes to `results_proto/`. It uses the same
    distillation as `train_logic.py` and differs only in the head.
-4. Post-hoc: `sparsify_proto.py` (layer-by-layer Hoyer fine-tune of the notebook, head then
+4. Post-hoc: `harden_proto.py` (gradual sharpening fine-tune), `qat_proto.py` (quantization-aware fine-tune by Quant-Noise, docs/QAT.md), `sparsify_proto.py` (layer-by-layer Hoyer fine-tune of the notebook, head then
    convs last to first; works on base and proto runs; the joint variant was removed), `unpack_rules.py` (all rules as readable predicates), `rule_eval.py`
    (rules/unit + fidelity), `explain_proto.py` (prototype-level explanations),
    `interp_metrics.py` (interpretability metrics of the symbolic model: fidelity, explanation
