@@ -16,10 +16,13 @@ exact soft gradients, and ``rate`` grows linearly from 0 to ``--rate_to`` over
 Quantization, Zhou et al., ICLR 2017, arXiv:1702.03044), then is held. Unit outputs are
 binarised where the next layer reads them, never inside a layer's own distillation loss
 (train_proto.train_epoch ``quant``), as QAT quantises activations on the forward path while
-the loss stays on real values. The objective is the run's own (train_full distillation
-against the frozen teacher + task loss + its regularisers). The epoch with the best
-validation accuracy of the rule model (every bit binarised) at rate = rate_to is kept;
-saved with rate_to = 1, the network computes exactly its rules. See docs/QAT.md.
+the loss stays on real values. The objective is ``--base_weight`` x the run's own
+(train_full distillation against the frozen teacher + task loss + its regularisers), plus
+optional terms on the rule model itself (rule_losses): ``--task_weight`` (cross-entropy of
+the rule margins) and ``--distill_weight`` (self-distillation from the frozen starting
+student). The epoch with the best validation accuracy of the rule model (every bit
+binarised) at rate = rate_to is kept, or the starting model if none beats it; saved with
+rate_to = 1, the network computes exactly its rules. See docs/QAT.md.
 
 Output: ``<run_path>/qat/<config>/`` (best.pt, args.json with 'qat', a link to data.pkl,
 qat.json with before / after / per-epoch history), a regular run directory for
@@ -32,10 +35,12 @@ qat/grad_L<l>, qat/grad_head (gradient norm of the weight logits, last batch).
     python qat_proto.py --run_path "results_proto/Mutagenicity/<cfg>/<baseline cfg>/0"
 """
 import argparse
+import copy
 import os
 import time
 
 import torch
+import torch.nn.functional as F
 
 from harden_proto import load_run, write_run
 from interp_metrics import symbolic_head
@@ -104,34 +109,77 @@ def grad_norms(model):
     return {k: float(v.norm()) if v is not None else 0.0 for k, v in g.items()}
 
 
+def rule_losses(model, frozen, task_weight, distill_weight, T=1.0):
+    """Extra loss on the rule model itself, whatever the current Quant-Noise rate: the
+    forward pass at rate 1 (every bit binarised, straight-through gradients) read as the rule
+    margins W.lit + b. task_weight: cross-entropy of the margins against the labels (the run's
+    own task term is on the graded head output at the current rate, among six distillation
+    terms). distill_weight: self-distillation (Polino et al., ICLR 2018, arXiv:1802.05668),
+    T^2 KL from the frozen starting student's soft margins (every bit soft) to the rule
+    margins, at temperature T. Returns a callable for train_proto.train_epoch(extra_loss=)."""
+    def extra(x, edge_index, batch, y):
+        if not (task_weight or distill_weight):
+            return 0.0
+        rate = model.quant_rate
+        model.set_quant_noise(1.0)
+        m = model(x, edge_index, batch, margin=True)
+        model.set_quant_noise(rate)
+        loss = task_weight * F.cross_entropy(m, y) if task_weight else 0.0
+        if distill_weight:
+            with torch.no_grad():
+                t = frozen(x, edge_index, batch, margin=True)
+            loss = loss + distill_weight * T * T * F.kl_div(F.log_softmax(m / T, -1), F.log_softmax(t / T, -1),
+                                                            log_target=True, reduction='batchmean')
+        return loss
+    return extra
+
+
 def qat(teacher, model, run_args, train_loader, val_loader, device, num_classes, rate_to, epochs, ramp_frac,
-        optimizer, out_path, log=lambda metrics, step: None):
-    """Fine-tune ``model`` along the Quant-Noise ramp; saves the best rule-model val epoch at
-    rate = rate_to to ``out_path`` and returns the per-epoch history."""
+        optimizer, out_path, base_weight=1.0, task_weight=0.0, distill_weight=0.0, distill_T=1.0,
+        log=lambda metrics, step: None):
+    """Fine-tune ``model`` along the Quant-Noise ramp and return the per-epoch history.
+
+    Saved to ``out_path``: the epoch with the best rule-model val accuracy at rate = rate_to,
+    or the starting model (epoch -1, saved at rate_to) when no QAT epoch beats its rules, so
+    the fine-tune never returns a worse rule model than the one it starts from on val.
+    Objective: base_weight x the run's own (train_full) + rule_losses(task_weight, distill_weight)."""
     common = dict(train_full=True, conv_reg=run_args['conv_reg'], fc_reg=run_args['fc_reg'],
                   proto_div_reg=run_args['proto_div_reg'], proto_ent_reg=run_args['proto_ent_reg'],
                   mask_reg=run_args.get('mask_reg', 0.0), vocab_reg=run_args.get('vocab_reg') or 0.0)
-    history, best, t0 = [], -1.0, time.time()
+    frozen = copy.deepcopy(model).eval()
+    frozen.set_quant_noise(0.0)
+    for p in frozen.parameters():
+        p.requires_grad_(False)
+    extra = rule_losses(model, frozen, task_weight, distill_weight, distill_T)
+
+    start = diagnostics(model, val_loader, device)
+    best, selected = start['val_acc_rules'], -1
+    model.set_quant_noise(rate_to)
+    torch.save(model, out_path)
+    history, qat_saved, t0 = [], False, time.time()
     for epoch in range(epochs):
         rate = ramp_rate(epoch, epochs, rate_to, ramp_frac)
         model.set_quant_noise(rate)
         loss, _ = train_epoch(teacher, model, train_loader, device, optimizer, num_classes, quant=model.quant_out,
-                              **common)
+                              base_weight=base_weight, extra_loss=extra, **common)
         rec = {'epoch': epoch, 'rate': rate, 'train_loss': loss[-1], **grad_norms(model),
                **diagnostics(model, val_loader, device)}
+        report = epoch % 25 == 0 or epoch == epochs - 1
+        if report:
+            rec['train_acc_rules'] = diagnostics(model, train_loader, device)['val_acc_rules']    # under- vs over-fit
         if rate >= rate_to - 1e-9 and rec['val_acc_rules'] >= best:
-            best = rec['val_acc_rules']
+            best, selected, qat_saved = rec['val_acc_rules'], epoch, True
             torch.save(model, out_path)
-        elif epoch == epochs - 1 and best < 0:             # the ramp never reached rate_to
-            print(f'warning: rate_to not reached, saving the last epoch (rate {rate:.3f})', flush=True)
-            torch.save(model, out_path)
+        elif epoch == epochs - 1 and rate < rate_to - 1e-9 and not qat_saved:
+            print(f'warning: rate_to not reached (rate {rate:.3f}), the starting model is kept', flush=True)
         history.append(rec)
-        log({f'qat/{k}': v for k, v in rec.items() if k != 'epoch'} | {'qat/best_val_acc_rules': max(best, 0.0)}, epoch)
-        if epoch % 25 == 0 or epoch == epochs - 1:
+        log({f'qat/{k}': v for k, v in rec.items() if k != 'epoch'}
+            | {'qat/best_val_acc_rules': best, 'qat/selected_epoch': selected}, epoch)
+        if report:
             print(f"epoch {epoch:4d}  rate {rate:.3f}  loss {loss[-1]:.4f}  val soft {rec['val_acc_soft']:.4f}  "
-                  f"rules {rec['val_acc_rules']:.4f}  fid {rec['val_fidelity']:.4f}  best@R {best:.4f}  "
-                  f"({time.time() - t0:.0f}s)", flush=True)
-    return history
+                  f"rules {rec['val_acc_rules']:.4f} (train {rec['train_acc_rules']:.4f})  fid {rec['val_fidelity']:.4f}  "
+                  f"best {best:.4f}@{selected}  ({time.time() - t0:.0f}s)", flush=True)
+    return {'start_val': start, 'selected_epoch': selected, 'history': history}
 
 
 def evaluate(model, loaders, device):
@@ -156,6 +204,11 @@ def main():
     ap.add_argument('--epochs', type=int, default=300, help='fine-tuning epochs')
     ap.add_argument('--ramp_frac', type=float, default=2 / 3, help='fraction of the epochs over which rate goes 0 -> rate_to')
     ap.add_argument('--lr', type=float, default=None, help="default: the run's lr")
+    ap.add_argument('--base_weight', type=float, default=1.0, help="weight of the run's own objective (0 = drop it)")
+    ap.add_argument('--task_weight', type=float, default=0.0, help='cross-entropy of the rule margins (rate 1) vs the labels')
+    ap.add_argument('--distill_weight', type=float, default=0.0,
+                    help="self-distillation: KL from the frozen starting student's soft margins to the rule margins")
+    ap.add_argument('--distill_T', type=float, default=1.0, help='self-distillation temperature')
     ap.add_argument('--seed', type=int, default=0)
     ap.add_argument('--out_dir', default=None, help='default: <run_path>/qat/<config>')
     a = ap.parse_args()
@@ -169,8 +222,11 @@ def main():
     before = evaluate(model, eval_loaders, device)
 
     q_args = {'method': 'quant_noise', 'rate_to': a.rate_to, 'epochs': a.epochs, 'ramp_frac': round(a.ramp_frac, 4),
-              'lr': a.lr or run_args['lr'], 'seed': a.seed}
-    keys = ['rate_to', 'epochs', 'ramp_frac'] + (['lr'] if a.lr else [])
+              'lr': a.lr or run_args['lr'], 'base_weight': a.base_weight, 'task_weight': a.task_weight,
+              'distill_weight': a.distill_weight, 'distill_T': a.distill_T, 'select': 'keep_start', 'seed': a.seed}
+    # step-1 runs (before rule_losses / keep_start) have none of the last keys in their directory name
+    keys = ['rate_to', 'epochs', 'ramp_frac'] + (['lr'] if a.lr else []) + ['base_weight', 'task_weight', 'distill_weight'] \
+        + (['distill_T'] if a.distill_weight and a.distill_T != 1 else []) + ['select']
     cfg = '|'.join(f'{k}={q_args[k]}' for k in keys)
     out_dir = a.out_dir or os.path.join(a.run_path, 'qat', cfg)
     os.makedirs(out_dir, exist_ok=True)
@@ -182,15 +238,17 @@ def main():
                             'kind': 'seed', 'dataset': run['dataset'], 'proto_level': run_args['proto_level'],
                             'source_run_path': a.run_path, 'out_dir': out_dir}):
         tracking.log_metrics({f'before/{m}/{k}': v for m, r in before.items() for k, v in r.items()})
-        history = qat(run['teacher'], model, run_args, loaders['train'], loaders['val'], device, run['num_classes'],
-                      a.rate_to, a.epochs, a.ramp_frac, optimizer, os.path.join(out_dir, 'best.pt'),
-                      log=tracking.log_metrics)
+        fit = qat(run['teacher'], model, run_args, loaders['train'], loaders['val'], device, run['num_classes'],
+                  a.rate_to, a.epochs, a.ramp_frac, optimizer, os.path.join(out_dir, 'best.pt'),
+                  base_weight=a.base_weight, task_weight=a.task_weight, distill_weight=a.distill_weight,
+                  distill_T=a.distill_T, log=tracking.log_metrics)
         model = torch.load(os.path.join(out_dir, 'best.pt'), map_location=device, weights_only=False)
         after = evaluate(model, eval_loaders, device)
         for name, res in (('before', before), ('after', after)):
             for m, r in res.items():
                 print(f'{name:6s} {m:5s}', {k: round(v, 4) for k, v in r.items() if k.startswith('test_')})
-        path = write_run(out_dir, run, 'qat', q_args, {'before': before, 'after': after, 'history': history})
+        print(f"selected epoch {fit['selected_epoch']} (-1 = the starting model)")
+        path = write_run(out_dir, run, 'qat', q_args, {'before': before, 'after': after, **fit})
         tracking.log_metrics({f'after/{m}/{k}': v for m, r in after.items() for k, v in r.items()})
         tracking.log_artifact(path)
         print(f'\nwritten: {out_dir}')

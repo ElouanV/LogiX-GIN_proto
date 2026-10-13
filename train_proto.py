@@ -94,10 +94,11 @@ def create_folder_proto(dataset_name, args, baseline_args, seed=None, root='resu
 
 def train_epoch(model, model_proto, loader, device, optimizer, num_classes, train_full=True,
                 conv_reg=0.001, fc_reg=0.01, proto_div_reg=0.0, proto_ent_reg=0.0,
-                mask_reg=0.0, vocab_reg=0.0, quant=None):
-    """One epoch of distillation + task loss. ``quant`` (QAT, qat_proto.py): applied to a
-    layer's output before the next layer reads it in the chained (train_full) term; the
-    layer's own loss stays on its soft output."""
+                mask_reg=0.0, vocab_reg=0.0, quant=None, base_weight=1.0, extra_loss=None):
+    """One epoch of distillation + task loss. QAT (qat_proto.py): ``quant`` is applied to a
+    layer's output before the next layer reads it in the chained (train_full) term, the
+    layer's own loss stays on its soft output; the loss is ``base_weight`` x this objective
+    + ``extra_loss(x, edge_index, batch, y)`` when given."""
     model.train()
     model_proto.train()
 
@@ -169,6 +170,8 @@ def train_epoch(model, model_proto, loader, device, optimizer, num_classes, trai
                     loss = loss + mask_reg * p.mask_size
             if vocab_reg:
                 loss = loss + vocab_reg * model_proto.vocab_penalty()
+            if extra_loss is not None:
+                loss = base_weight * loss + extra_loss(data.x.float().to(device), data.edge_index.to(device), batch, y)
 
             loss.backward()
             zero_nan_gradients(model_proto)

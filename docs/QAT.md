@@ -140,3 +140,65 @@ Mutagenicity NMP, seeds 0-2, test split, 300 epochs, rate 0 → 1.
 | QAT (Quant-Noise) | 0.742 ± 0.057 | 1.00 | 0.742 ± 0.057 | 0.57 |
 
 Per seed, rule-model accuracy goes from 0.726 / 0.774 / 0.680 to 0.767 / 0.783 / 0.677.
+
+### Why step 1 stays far below the network (diagnosis, 2026-10-13)
+
+The bar for an interesting result is a rule model at ≥ 0.80 test accuracy on Mutagenicity,
+about what the soft network reaches.
+
+- **It underfits; it does not overfit.** The step-1 rule model reaches 0.759 / 0.754 / 0.681
+  on the *training* split, about its val and test accuracy. The binarised model does not fit
+  the task.
+- **The head is not saturated on Mutagenicity.** The median o(1 − o) of the graded head output
+  is 0.16–0.23 before and after, with no ties, so the task gradient gets through the head.
+- **The gradients do not vanish** (`qat/grad_*` stay at 1–4).
+- **The objective is mostly not about the task, and not about the rule model.** It has six
+  per-layer distillation terms (each conv, alone and chained) and a head term trained on the
+  teacher's states. The only end-to-end term is computed on the graded head output, at the
+  current Quant-Noise rate.
+- **Training length is not the main cause.** The val rule accuracy reaches its level by epoch
+  25 (seed 0: 0.687 → 0.747) and then drifts by about +2 points over the last 100 epochs.
+
+## Step 2: losses on the rule model and keep-start selection
+
+- `--task_weight λ`: cross-entropy of the **rule margins** W·lit + b against the labels. The
+  margins come from a forward pass at rate 1 (every bit binarised, straight-through
+  gradients), at every batch and whatever the current rate. `forward(..., margin=True)` returns
+  the head pre-activation, which at rate 1 equals `interp_metrics.symbolic_head`'s margins
+  (tested).
+- `--distill_weight μ` (`--distill_T`): self-distillation, T²·KL from the frozen starting
+  student's soft margins to the rule margins (Polino 2018, ref. 6). The 0.81 soft network is the
+  target, not the labels.
+- `--base_weight`: weight of the run's own objective; 0 drops the distillation to the teacher.
+- **Selection** (all step-2 runs): the starting model is a candidate (epoch −1), so the
+  fine-tune never returns a rule model worse on val than the one it starts from. In step 1,
+  seed 2 would have kept its start (val 0.726 vs 0.710 for the best QAT epoch).
+- `train_acc_rules` is logged every 25 epochs (underfitting check).
+
+Step-2 directories carry `base_weight`, `task_weight`, `distill_weight` and `select` in their
+name, so they never overwrite the step-1 runs.
+
+### Ablation plan
+
+Same source runs (Mutagenicity NMP `node-facbe6d14f72`, seeds 0-2), rate 0 → 1 over 2/3 of
+the epochs, lr of the run. Go/no-go: rule-model **test** accuracy ≥ 0.80 (mean of 3 seeds),
+with the epoch selected on val.
+
+| arm | base | task λ | distill μ | question |
+|---|---|---|---|---|
+| A0 | 1 | 0 | 0 | step 1 (exists, keep-start applied post hoc) |
+| A1 | 1 | 1 | 0 | does a task loss on the rule model help? |
+| A2 | 1 | 0 | 1 | does matching the soft student help? |
+| A3 | 1 | 1 | 1 | both |
+| A4 | 0 | 1 | 0 | capacity probe: can the binary model fit train ≥ 0.80 at all? |
+| A5 | 0 | 1 | 1 | rule model trained only toward labels + soft student |
+
+- Stage A: A1–A5 at 300 epochs, 15 runs of about 50 min each, 5 in parallel, so about 3 h of
+  wall time.
+- Stage B: the best arm at 1000 epochs, 3 runs of about 2.8 h. This tests whether length matters
+  once the loss is right.
+- Stage C, only if Stage B reaches 0.80: λ / μ ∈ {0.3, 3}, then 10 k-fold folds on Mutagenicity
+  and PROTEINS.
+
+If A4 cannot fit the training set beyond ~0.78, the limit is the binary model's capacity
+(trunk width, 16 prototypes), not the training, and the next step is architectural.

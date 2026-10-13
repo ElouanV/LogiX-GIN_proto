@@ -222,19 +222,21 @@ class GINTELLProtoBase(nn.Module):
         neg = range(R) if b is None else torch.nonzero(b.cpu()).flatten().tolist()
         return [(i, True) for i in range(R)] + [(i, False) for i in neg]
 
-    def head(self, s, discrete_output=False):
+    def head(self, s, discrete_output=False, margin=False):
         if self.task == 'classification':
-            return self.fc(self.head_input(s), discrete_output=discrete_output)
+            return self.fc(self.head_input(s), discrete_output=discrete_output, margin=margin)
         return self.fc(s)
 
-    def forward(self, x, edge_index, batch, discrete=False, *args, **kwargs):
+    def forward(self, x, edge_index, batch, discrete=False, *args, margin=False, **kwargs):
+        """Class scores; margin=True (QAT): the head's pre-activation W.lit + b instead, which
+        at quant rate 1 are the rule margins interp_metrics.symbolic_head reads."""
         xs = []
         for i, conv in enumerate(self.convs):
             if i != 0: self.dropout(x)
             x = self.quant_out(conv(torch.hstack([x, 1 - x]), edge_index))      # QAT: identity when off
             xs.append(x)
         s = self.readout(xs, batch)
-        return self.head(s)
+        return self.head(s, margin=margin)
 
     def forward_e(self, x, edge_index, batch, discrete=False, *args, **kwargs):
         ret_x = []

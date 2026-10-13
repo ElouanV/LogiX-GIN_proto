@@ -245,7 +245,7 @@ class LogicalLayer(nn.Module):
         return rules
 
     
-    def forward(self, x, discrete_output=False):
+    def forward(self, x, discrete_output=False, margin=False):
         # x = self.phi_in(torch.hstack([x, 1-x]))
         x = self.phi_in(x)
         # sharpness / sharpness_out (set by GINTELLProtoBase.set_sharpness): gradual
@@ -275,6 +275,8 @@ class LogicalLayer(nn.Module):
         self.reg_loss = reg_loss
         
         w = self.weight
+        if margin:          # QAT (qat_proto.py): the pre-activation W.lit + b, the rule margins at rate 1
+            return x @ w.t() + self.b
         o = sigmoid(x @ w.t() + self.b, tau=10 * beta_out)
         if discrete_output or getattr(self, 'hard_out', False):
             o = hard_sigmoid(x @ w.t() + self.b)

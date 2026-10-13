@@ -15,7 +15,7 @@ try:
     from interp_metrics import symbolic_head, trunk_states
     from models_proto.model_proto import get_model
     from models_proto.tell import quant_noise
-    from qat_proto import _trunk, diagnostics, ramp_rate
+    from qat_proto import _trunk, diagnostics, ramp_rate, rule_losses
 except Exception as e:                                   # torch_geometric missing etc.
     raise unittest.SkipTest(f'qat modules not importable: {e}')
 
@@ -98,6 +98,33 @@ class TestModel(unittest.TestCase):
         self.assertEqual((m.quant_rate, m.training), (0.4, True))
         self.assertTrue(0 <= d['val_fidelity'] <= 1)
         self.assertEqual({k for k in d if k.startswith('val_flip_L')}, {'val_flip_L0', 'val_flip_L1'})
+
+    def test_margin_forward_at_rate_one_is_symbolic_head(self):
+        """The rule-model loss is computed on forward(margin=True) at rate 1, in training
+        mode: it must be the margins interp_metrics reads, with gradients."""
+        b = batch()
+        for level in ('node', 'graph'):
+            m = model(level).train()
+            m.set_quant_noise(1.0)
+            out = m(b.x, b.edge_index, b.batch, margin=True)
+            with torch.no_grad():
+                margin, _, _ = symbolic_head(m, trunk_states(m, b.x, b.edge_index), b.batch)
+            self.assertTrue(torch.allclose(out, margin, atol=1e-5), level)
+            out.sum().backward()
+            self.assertGreater(m.convs[0].nn[0].weight_sigma.grad.abs().sum().item(), 0, level)
+
+    def test_rule_losses_restore_the_rate_and_are_zero_when_off(self):
+        import copy
+        b = batch()
+        m = model().train()
+        frozen = copy.deepcopy(m).eval()
+        frozen.set_quant_noise(0.0)
+        m.set_quant_noise(0.3)
+        y = b.y.view(-1).long()
+        self.assertEqual(rule_losses(m, frozen, 0.0, 0.0)(b.x, b.edge_index, b.batch, y), 0.0)
+        loss = rule_losses(m, frozen, 1.0, 1.0)(b.x, b.edge_index, b.batch, y)
+        self.assertEqual(m.quant_rate, 0.3)
+        self.assertTrue(torch.isfinite(loss) and loss.requires_grad)
 
 
 if __name__ == '__main__':
