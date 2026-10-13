@@ -202,3 +202,44 @@ with the epoch selected on val.
 
 If A4 cannot fit the training set beyond ~0.78, the limit is the binary model's capacity
 (trunk width, 16 prototypes), not the training, and the next step is architectural.
+
+## Result of step 2, stage A + lr check (2026-10-13)
+
+Mutagenicity NMP, seeds 0-2, 300 epochs; rule-model accuracy (epoch selected on val).
+
+| arm | lr | val | test | test per seed | max train |
+|---|---|---|---|---|---|
+| start | | | 0.727 | 0.726 / 0.774 / 0.680 | |
+| A0 step 1 | 1e-3 | 0.751 | 0.743 ± 0.057 | 0.767 / 0.783 / 0.677 | |
+| **A1 base + task** | 1e-3 | 0.789 | **0.772 ± 0.049** | 0.790 / 0.809 / 0.717 | 0.776 |
+| A1 | 3e-4 | 0.778 | 0.759 ± 0.025 | 0.786 / 0.756 / 0.735 | 0.772 |
+| A1 | 1e-4 | 0.783 | 0.753 ± 0.036 | 0.772 / 0.776 / 0.712 | 0.769 |
+| A2 base + distill | 1e-3 | 0.772 | 0.764 ± 0.062 | 0.811 / 0.788 / 0.694 | 0.775 |
+| A3 base + task + distill | 1e-3 | 0.768 | 0.758 ± 0.026 | 0.774 / 0.772 / 0.728 | 0.774 |
+| A4 task only | 1e-3 | 0.756 | 0.725 ± 0.031 | 0.742 / 0.744 / 0.689 | 0.747 |
+| A4 | 1e-4 | 0.762 | 0.747 ± 0.068 | 0.800 / 0.770 / 0.671 | 0.757 |
+| A5 task + distill | 1e-3 | 0.763 | 0.709 ± 0.061 | 0.756 / 0.730 / 0.641 | 0.754 |
+
+No arm reaches the 0.80 bar. "Max train" is the training rule accuracy (every 25 epochs): no
+arm fits the training split beyond 0.78, at any lr, so neither training length nor lr is the
+limit. The keep-start candidate was never selected.
+
+### Where the ceiling is
+
+The teacher GIN (binary node states) reaches 0.823 / 0.802 / 0.790 test on these seeds.
+Scratch diagnostics, rule-model accuracy:
+
+- **The rule head on the teacher's own binary states** (a perfect trunk): train 0.790 / 0.763 /
+  0.770 and test 0.800 / 0.776 / 0.772 for the starting models. A1's own-trunk rules reach
+  about this (test 0.790 / 0.809 / 0.717). QAT has removed most of the trunk's loss, and the
+  head is the remaining ceiling.
+- **Retraining only the head as a rule model on teacher states** (STE, lr 1e-3 / 1e-2, 200
+  epochs): test 0.751-0.786, train at most 0.805.
+- **A fresh binary node-prototype head** (no mask) with K prototypes on teacher states:
+  - K 16: train 0.753, test 0.748.
+  - K 32: train 0.764, test 0.738.
+  - K 64: train 0.783, test 0.768.
+
+  More prototypes help slowly. The binary prototype readout (Hamming similarity → mean/max
+  pooling → thresholded literals) loses information that the teacher's head keeps from the
+  same states (train 0.82-0.84).
