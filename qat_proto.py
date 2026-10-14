@@ -196,6 +196,56 @@ def evaluate(model, loaders, device):
     return res
 
 
+def run_qat(run_path, dataset=None, rate_to=1.0, epochs=300, ramp_frac=2 / 3, lr=None, base_weight=1.0,
+            task_weight=0.0, distill_weight=0.0, distill_T=1.0, seed=0, out_dir=None, tags=None):
+    """QAT fine-tune of the trained run at ``run_path`` (see the module docstring). Writes a
+    regular run directory (default ``<run_path>/qat/<config>``) and an MLflow run in
+    ``qat/<dataset>``; returns (out_dir, record with before / after / start_val /
+    selected_epoch / history). Used by main() and by utils/hps.py / utils/experiment.py
+    for models with a ``qat`` spec (configs/models.yaml)."""
+    if not 0 < rate_to <= 1:
+        raise ValueError('rate_to must be in (0, 1]')
+    set_seed(seed)
+    run = load_run(run_path, dataset)
+    run_args, model, device, loaders = run['args'], run['model'], run['device'], run['loaders']
+    eval_loaders = {'val': loaders['val'], 'test': loaders['test']}
+    before = evaluate(model, eval_loaders, device)
+
+    q_args = {'method': 'quant_noise', 'rate_to': rate_to, 'epochs': epochs, 'ramp_frac': round(ramp_frac, 4),
+              'lr': lr or run_args['lr'], 'base_weight': base_weight, 'task_weight': task_weight,
+              'distill_weight': distill_weight, 'distill_T': distill_T, 'select': 'keep_start', 'seed': seed}
+    # step-1 runs (before rule_losses / keep_start) have none of the last keys in their directory name
+    keys = ['rate_to', 'epochs', 'ramp_frac'] + (['lr'] if lr else []) + ['base_weight', 'task_weight', 'distill_weight'] \
+        + (['distill_T'] if distill_weight and distill_T != 1 else []) + ['select']
+    cfg = '|'.join(f'{k}={q_args[k]}' for k in keys)
+    out_dir = out_dir or os.path.join(run_path, 'qat', cfg)
+    os.makedirs(out_dir, exist_ok=True)
+    optimizer = build_optimizer(model, 'adamw', q_args['lr'], run_args['l2'])
+
+    with tracking.run(f"qat/{run['dataset']}", run_name=f"{run_args['proto_level']}|{cfg}/seed{run['seed']}",
+                      params={**q_args, **{f'source/{k}': v for k, v in run_args.items()}},
+                      tags={'config': cfg, 'source_config': f"{run['proto_cfg']}/{run['base_cfg']}", 'seed': run['seed'],
+                            'kind': 'seed', 'dataset': run['dataset'], 'proto_level': run_args['proto_level'],
+                            'source_run_path': run_path, 'out_dir': out_dir, **(tags or {})}):
+        tracking.log_metrics({f'before/{m}/{k}': v for m, r in before.items() for k, v in r.items()})
+        fit = qat(run['teacher'], model, run_args, loaders['train'], loaders['val'], device, run['num_classes'],
+                  rate_to, epochs, ramp_frac, optimizer, os.path.join(out_dir, 'best.pt'),
+                  base_weight=base_weight, task_weight=task_weight, distill_weight=distill_weight,
+                  distill_T=distill_T, log=tracking.log_metrics)
+        model = torch.load(os.path.join(out_dir, 'best.pt'), map_location=device, weights_only=False)
+        after = evaluate(model, eval_loaders, device)
+        for name, res in (('before', before), ('after', after)):
+            for m, r in res.items():
+                print(f'{name:6s} {m:5s}', {k: round(v, 4) for k, v in r.items() if k.startswith('test_')})
+        print(f"selected epoch {fit['selected_epoch']} (-1 = the starting model)")
+        record = {'before': before, 'after': after, **fit}
+        path = write_run(out_dir, run, 'qat', q_args, record)
+        tracking.log_metrics({f'after/{m}/{k}': v for m, r in after.items() for k, v in r.items()})
+        tracking.log_artifact(path)
+        print(f'\nwritten: {out_dir}')
+    return out_dir, record
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__.split('\n')[0])
     ap.add_argument('--run_path', required=True, help='a trained prototype seed directory holding best.pt')
@@ -214,44 +264,8 @@ def main():
     a = ap.parse_args()
     if not 0 < a.rate_to <= 1:
         ap.error('--rate_to must be in (0, 1]')
-
-    set_seed(a.seed)
-    run = load_run(a.run_path, a.dataset)
-    run_args, model, device, loaders = run['args'], run['model'], run['device'], run['loaders']
-    eval_loaders = {'val': loaders['val'], 'test': loaders['test']}
-    before = evaluate(model, eval_loaders, device)
-
-    q_args = {'method': 'quant_noise', 'rate_to': a.rate_to, 'epochs': a.epochs, 'ramp_frac': round(a.ramp_frac, 4),
-              'lr': a.lr or run_args['lr'], 'base_weight': a.base_weight, 'task_weight': a.task_weight,
-              'distill_weight': a.distill_weight, 'distill_T': a.distill_T, 'select': 'keep_start', 'seed': a.seed}
-    # step-1 runs (before rule_losses / keep_start) have none of the last keys in their directory name
-    keys = ['rate_to', 'epochs', 'ramp_frac'] + (['lr'] if a.lr else []) + ['base_weight', 'task_weight', 'distill_weight'] \
-        + (['distill_T'] if a.distill_weight and a.distill_T != 1 else []) + ['select']
-    cfg = '|'.join(f'{k}={q_args[k]}' for k in keys)
-    out_dir = a.out_dir or os.path.join(a.run_path, 'qat', cfg)
-    os.makedirs(out_dir, exist_ok=True)
-    optimizer = build_optimizer(model, 'adamw', q_args['lr'], run_args['l2'])
-
-    with tracking.run(f"qat/{run['dataset']}", run_name=f"{run_args['proto_level']}|{cfg}/seed{run['seed']}",
-                      params={**q_args, **{f'source/{k}': v for k, v in run_args.items()}},
-                      tags={'config': cfg, 'source_config': f"{run['proto_cfg']}/{run['base_cfg']}", 'seed': run['seed'],
-                            'kind': 'seed', 'dataset': run['dataset'], 'proto_level': run_args['proto_level'],
-                            'source_run_path': a.run_path, 'out_dir': out_dir}):
-        tracking.log_metrics({f'before/{m}/{k}': v for m, r in before.items() for k, v in r.items()})
-        fit = qat(run['teacher'], model, run_args, loaders['train'], loaders['val'], device, run['num_classes'],
-                  a.rate_to, a.epochs, a.ramp_frac, optimizer, os.path.join(out_dir, 'best.pt'),
-                  base_weight=a.base_weight, task_weight=a.task_weight, distill_weight=a.distill_weight,
-                  distill_T=a.distill_T, log=tracking.log_metrics)
-        model = torch.load(os.path.join(out_dir, 'best.pt'), map_location=device, weights_only=False)
-        after = evaluate(model, eval_loaders, device)
-        for name, res in (('before', before), ('after', after)):
-            for m, r in res.items():
-                print(f'{name:6s} {m:5s}', {k: round(v, 4) for k, v in r.items() if k.startswith('test_')})
-        print(f"selected epoch {fit['selected_epoch']} (-1 = the starting model)")
-        path = write_run(out_dir, run, 'qat', q_args, {'before': before, 'after': after, **fit})
-        tracking.log_metrics({f'after/{m}/{k}': v for m, r in after.items() for k, v in r.items()})
-        tracking.log_artifact(path)
-        print(f'\nwritten: {out_dir}')
+    run_qat(a.run_path, a.dataset, a.rate_to, a.epochs, a.ramp_frac, a.lr, a.base_weight, a.task_weight,
+            a.distill_weight, a.distill_T, a.seed, a.out_dir)
 
 
 if __name__ == '__main__':

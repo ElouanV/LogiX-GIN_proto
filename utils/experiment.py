@@ -7,7 +7,9 @@ Units of a dataset D (key ``<experiment>/<D>/<stage>[/<model>][/fold<k>]``):
     teacher_summary            train_baseline.py --only_eval (results.json, total_results.csv)
     hps/<model>/fold<t>        one Optuna study per tuning fold t (utils/hps.py)
     final/<model>/fold<k>      fold k re-trained with the best set of its study (the study of
-                               fold k if k is a tuning fold, else of the first tuning fold)
+                               fold k if k is a tuning fold, else of the first tuning fold); a
+                               model with a ``qat`` spec is then QAT fine-tuned and kept as its
+                               rule model (final.json: student_run_dir, student_metrics)
     interp/<model>/fold<k>     interpretability of that final checkpoint (interp_metrics.py, val
                                and test), only for the k-fold final runs, never for hps trials
     summary                    mean ± std per model over the final folds (CPU)
@@ -235,15 +237,19 @@ class Experiment:
         if os.path.exists(os.path.join(d, 'run')):
             shutil.rmtree(os.path.join(d, 'run'))          # an interrupted attempt
         device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-        path, _ = hps.train_from_argv(model, argv, os.path.join(d, 'run'), device,
-                                      tags={'experiment': self.name, 'kind': 'final', 'model_name': model})
+        tags = {'experiment': self.name, 'kind': 'final', 'model_name': model}
+        student, _ = hps.train_from_argv(model, argv, os.path.join(d, 'run'), device, tags=tags)
+        path = hps.finish_run(model, student, params, fold, tags)        # QAT models: the rule model
         metrics = hps.evaluate_run(path, device)
+        extra = {} if path == student else {'student_run_dir': student,
+                                            'student_metrics': hps.evaluate_run(student, device)}
         split_sha = same_split(dataset, fold, pickle.load(open(os.path.join(path, 'data.pkl'), 'rb')))
         with open(os.path.join(d, 'final.json'), 'w') as f:
             json.dump({'experiment': self.name, 'dataset': dataset, 'model': model, 'fold': fold,
                        'metrics': metrics, 'argv': argv, 'params': params, 'run_dir': path,
                        'study': study, 'study_trial': number, 'git_commit': hps.git_commit(),
-                       'split_file': os.path.relpath(split_file(dataset), REPO), 'split_sha256': split_sha},
+                       'split_file': os.path.relpath(split_file(dataset), REPO), 'split_sha256': split_sha,
+                       **extra},
                       f, indent=1)
         return metrics, None
 

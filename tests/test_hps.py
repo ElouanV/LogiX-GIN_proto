@@ -44,6 +44,20 @@ class TestHPS(unittest.TestCase):
                 self.assertTrue(args['proto_mask'])
                 self.assertEqual(args['proto_level'], 'node')
 
+    def test_qat_parameters_go_to_run_qat_not_to_the_training_script(self):
+        params = some_params('node_mask_push_qat')
+        self.assertTrue(any(k.startswith(hps.QAT_PREFIX) for k in params))
+        argv = hps.to_argv('MUTAG', 'node_mask_push_qat', params, 0)
+        self.assertFalse(any(a.startswith('--qat_') for a in argv))
+        q = hps.qat_args('node_mask_push_qat', params)
+        self.assertEqual(q['rate_to'], 1.0)
+        self.assertEqual(q['lr'], params['qat_lr'])
+        import inspect
+        from qat_proto import run_qat
+        self.assertLessEqual(set(q), set(inspect.signature(run_qat).parameters))
+        self.assertEqual(hps.study_attrs('MUTAG', 'node_mask_push_qat', 0)['objective'], hps.OBJECTIVE_QAT)
+        self.assertEqual(hps.finish_run('node_mask_push', '/some/run', params, 0), '/some/run')
+
     def test_study_refuses_another_space(self):
         with tempfile.TemporaryDirectory() as root:
             hps.open_study('MUTAG', 'graph', 0, root)

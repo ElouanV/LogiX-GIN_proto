@@ -182,13 +182,19 @@ def layerwise_sparsify(model, train_loader, val_loader, device, num_classes, max
 
 
 def split_run_path(run_path):
-    """results_{proto,logic}/<ds>/<cfg>/<baseline cfg>/<seed> -> (stage, ds, cfg, baseline cfg, seed)."""
+    """results_{proto,logic}/<ds>/<cfg>/<baseline cfg>/<seed> -> (stage, ds, cfg, baseline cfg, seed).
+    A run directory under another root (hps trials, k-fold final runs: <root>/<ds>/<cfg>/
+    <baseline cfg>/<seed>) is read from its last four components, its stage from its args.json."""
     parts = os.path.normpath(run_path).split(os.sep)
     for stage in ('results_proto', 'results_logic'):
         if stage in parts:
             i = parts.index(stage)
             return stage.split('_')[1], parts[i + 1], parts[i + 2], parts[i + 3], parts[i + 4]
-    raise ValueError(f'{run_path} is neither under results_proto/ nor results_logic/')
+    args_file = os.path.join(run_path, 'args.json')
+    if len(parts) < 4 or not os.path.exists(args_file):
+        raise ValueError(f'{run_path} is not a run directory (<ds>/<cfg>/<baseline cfg>/<seed> with args.json)')
+    stage = 'proto' if 'proto_level' in json.load(open(args_file)) else 'logic'
+    return (stage, *parts[-4:])
 
 
 def full_eval(model, loaders, device):

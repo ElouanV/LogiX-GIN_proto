@@ -26,3 +26,8 @@ graph_sum:
   script: proto
   fixed: {proto_level: graph, push_every: 0, pool_ops: "mean,max,sum"}
   space: proto
+node_mask_push_qat:                 # NMP student, then the QAT fine-tune (qat_proto.run_qat, docs/QAT.md):
+  script: proto                     # the run is scored and kept as its rule model (every bit binarised)
+  fixed: {proto_level: node, proto_mask: true, mask_anneal_frac: 0.8, mask_ckpt_temp: 1.0}
+  space: nmp_qat
+  qat: {rate_to: 1.0, ramp_frac: 0.6667, base_weight: 1.0}   # fixed QAT arguments; qat_* in the space

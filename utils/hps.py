@@ -74,7 +74,7 @@ def load_models():
     spaces = yaml.safe_load(open(os.path.join(CONFIGS, 'search_spaces.yaml')))
     models = yaml.safe_load(open(os.path.join(CONFIGS, 'models.yaml')))
     return {m: {'script': spec['script'], 'fixed': spec.get('fixed') or {},
-                'space': load_space(spec['space'], spaces), 'space_name': spec['space']}
+                'space': load_space(spec['space'], spaces), 'space_name': spec['space'], 'qat': spec.get('qat')}
             for m, spec in models.items()}
 
 
@@ -83,6 +83,8 @@ MODELS = load_models()
 SAMPLER = {'name': 'TPESampler', 'multivariate': True, 'n_startup_trials': 10}
 PRUNER = {'name': 'MedianPruner', 'n_startup_trials': 8, 'n_warmup_steps': 0}
 OBJECTIVE = 'val_balanced_acc of the checkpoint kept by validation accuracy (maximise)'
+OBJECTIVE_QAT = ('val_balanced_acc of the rule model after the QAT fine-tune (qat_proto.run_qat) of the checkpoint '
+                 'kept by validation accuracy (maximise)')
 
 
 def git_commit():
@@ -118,7 +120,7 @@ def suggest(trial, space):
 def to_argv(dataset, model, params, fold, teacher=None):
     """The training script's command line for a parameter set (what best.json stores)."""
     spec = MODELS[model]
-    p = dict(params)
+    p = {k: v for k, v in params.items() if not k.startswith(QAT_PREFIX)}
     if 'warmup_frac' in p:
         p['warmup_epochs'] = int(round(p.pop('warmup_frac') * p['epochs']))
     argv = ['--dataset', dataset, '--baseline_path', teacher_path(dataset, teacher), '--seed', str(fold)]
@@ -128,6 +130,25 @@ def to_argv(dataset, model, params, fold, teacher=None):
         elif v is not False and v is not None:
             argv += [f'--{k}', str(v)]
     return argv
+
+
+QAT_PREFIX = 'qat_'
+
+
+def qat_args(model, params):
+    """qat_proto.run_qat arguments of a model with a ``qat`` spec: its fixed ones, then the
+    qat_<arg> parameters of the set."""
+    return {**MODELS[model]['qat'], **{k[len(QAT_PREFIX):]: v for k, v in params.items() if k.startswith(QAT_PREFIX)}}
+
+
+def finish_run(model, path, params, fold, tags=None):
+    """The run directory a trained run is scored and kept as: itself, or for a model with a
+    ``qat`` spec the QAT fine-tune of it (its rule model, seeded with the fold)."""
+    if not MODELS[model].get('qat'):
+        return path
+    from qat_proto import run_qat
+    out, _ = run_qat(path, seed=fold, tags=tags, **qat_args(model, params))
+    return out
 
 
 def script_module(model):
@@ -151,7 +172,9 @@ def run_dir(model, dataset, args, teacher_fold_path, seed, root):
 def study_attrs(dataset, model, fold, teacher=None):
     return {'dataset': dataset, 'model': model, 'fold': fold, 'script': f"train_{MODELS[model]['script']}.py",
             'fixed': MODELS[model]['fixed'], 'search_space': MODELS[model]['space'],
-            'sampler': SAMPLER, 'pruner': PRUNER, 'objective': OBJECTIVE,
+            'sampler': SAMPLER, 'pruner': PRUNER,
+            'objective': OBJECTIVE_QAT if MODELS[model].get('qat') else OBJECTIVE,
+            **({'qat': MODELS[model]['qat']} if MODELS[model].get('qat') else {}),
             'teacher': os.path.join(teacher_path(dataset, teacher), str(fold)), 'split': 'kfold'}
 
 
@@ -238,6 +261,7 @@ def objective(trial, dataset, model, fold, root, device, report_every=50, teache
     tags = {'hps_study': f'{dataset}/{model}/fold{fold}', 'hps_trial': trial.number, 'kind': 'hps'}
     path, _ = train_from_argv(model, argv, out_root, device, tags=tags,
                               epoch_callback=lambda a: PruneCallback(trial, a['warmup_epochs'], device, report_every))
+    path = finish_run(model, path, params, fold, tags)
     trial.set_user_attr('run_dir', path)
     metrics = evaluate_run(path, device)
     for k, v in metrics.items():
