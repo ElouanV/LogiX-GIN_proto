@@ -2,7 +2,8 @@
 outputs: utils/hps.py).
 
 One process is one worker of one study (dataset, model, fold); start several on the same
-study to run its trials in parallel. Whole experiments (teachers, studies, final folds)
+study to run its trials in parallel, each with its own --sampler_seed: workers sharing a
+seed propose the same parameters (identical trials). Whole experiments (teachers, studies, final folds)
 run through run_experiment.py.
 
     python optimize_optuna.py --dataset MUTAG --model node_mask_push --fold 0 --n_trials 30
@@ -19,7 +20,7 @@ def main():
     ap.add_argument('--model', choices=sorted(hps.MODELS))
     ap.add_argument('--fold', type=int, default=0, help='k-fold split whose train/val the study tunes on')
     ap.add_argument('--n_trials', type=int, default=30, help='finished trials the study stops at (all workers)')
-    ap.add_argument('--sampler_seed', type=int, default=0)
+    ap.add_argument('--sampler_seed', type=int, default=0, help='distinct per parallel worker')
     ap.add_argument('--report_every', type=int, default=50, help='epochs between pruning checks after warmup')
     ap.add_argument('--root', default=hps.ROOT, help='a new root for a new search space')
     ap.add_argument('--export', action='store_true', help='only export every study under --root')
