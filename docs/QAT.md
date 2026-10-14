@@ -243,3 +243,63 @@ Scratch diagnostics, rule-model accuracy:
   More prototypes help slowly. The binary prototype readout (Hamming similarity → mean/max
   pooling → thresholded literals) loses information that the teacher's head keeps from the
   same states (train 0.82-0.84).
+
+## What limits the rule model (diagnostics, 2026-10-14)
+
+Mutagenicity NMP seed runs 0-9 (the A1 runs), test split, scratch probes; a probe head is
+selected on val over weight decay {0, 1e-4, 1e-3} and epochs. Correction to the section
+above: `GIN.forward_e` ignores `deterministic`, so those probes read *sampled* (stochastic
+Gumbel) teacher states. Here the teacher's states are deterministic (bit = logit > 0), which
+is what a student thresholded at 0.5 imitates.
+
+**1. Binarising the trunk is what costs accuracy, not binarising the head.** Quant rate 0/1
+set separately on the trunk and on the head (soft = S, hard = H):
+
+| model | trunk S, head S | trunk S, head H | trunk H, head S | trunk H, head H (rule model) |
+|---|---|---|---|---|
+| start | 0.820 ± 0.017 | 0.812 ± 0.014 | 0.699 ± 0.062 | 0.687 ± 0.067 |
+| A1 | 0.692 ± 0.040 | 0.685 ± 0.038 | 0.761 ± 0.035 | 0.763 ± 0.031 |
+
+The teacher is affected in the same way: 0.801 ± 0.028 on sampled states and 0.772 ± 0.022 on
+deterministic states. A1's rule model (0.763) is at the deterministic teacher's level.
+
+**2. The hard bits still carry the information; the readout literals do not.** These are
+fresh heads trained on the pooled hard node bits (all 192 trunk units, no prototypes). The
+literals are:
+
+- `mm05`: [mean ≥ 0.5, max], the literal type of the current head.
+- `thermo`: count ≥ t for t in {1, 2, 3, 4, 6, 8, 12}, and mean ≥ f for f in {.1, .25, .5, .75}.
+
+`rule1` is one threshold layer (one LogicalLayer over [b, 1 − b]). `rule2` adds a hidden
+layer of binarised threshold units. Test accuracy:
+
+| head on bits of | teacher (det.) | start, hard trunk | A1, hard trunk |
+|---|---|---|---|
+| MLP, mean/max/log-sum (real) | 0.815 ± 0.016 | 0.810 ± 0.020 | 0.814 ± 0.013 |
+| linear, mean/max/log-sum (real) | 0.806 ± 0.015 | 0.782 ± 0.018 | 0.801 ± 0.023 |
+| rule1, mm05 | 0.773 ± 0.024 | 0.767 ± 0.027 | 0.772 ± 0.015 |
+| **rule1, thermo** | 0.793 ± 0.023 | 0.792 ± 0.016 | **0.797 ± 0.022** |
+| rule2 h32, mm05 | 0.771 ± 0.015 | 0.781 ± 0.021 | 0.775 ± 0.017 |
+| **rule2 h32, thermo** | 0.799 ± 0.017 | 0.792 ± 0.022 | **0.802 ± 0.021** |
+| rule2 h128, thermo | 0.802 ± 0.018 | 0.793 ± 0.021 | 0.799 ± 0.016 |
+
+Paired against A1's rule model on A1's own bits:
+
+- rule1 thermo: +0.035 (9/10 seeds, Wilcoxon p = 0.006).
+- rule2 h32 thermo: +0.040 (10/10, p = 0.002).
+- rule1 mm05: +0.009 (p = 0.38).
+
+So with [mean ≥ 0.5, max] literals, one threshold layer is capped at about 0.77 whatever the
+trunk. Count thresholds ("at least t nodes have bit j") lift a one-layer rule head to about
+0.80. A second rule layer helps only with count literals. The node-prototype heads measured
+above (0.74-0.77) sit at or below the mm05 cap.
+
+Caveats:
+
+- One split per seed (not the k-fold).
+- 192 × 11 thermometer literals: explanation size is not controlled yet, and neither the
+  prototypes nor the mask are in these heads.
+- Selection over wd × epochs on val is mildly optimistic.
+
+Scripts are in the session scratchpad (not kept). They should become a proper head option
+if they are kept.
