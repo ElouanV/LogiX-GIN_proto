@@ -1,0 +1,35 @@
+# qat_nmp (NMP student + QAT fine-tune, tuned jointly; docs/QAT.md) on more datasets at a
+# lower cost: 15 Optuna trials on fold 0 instead of 25, then folds 0-2 only. Control on the
+# same folds: sum_ablation_ctrl/node_mask_push.
+#   python run_experiment.py configs/experiments/qat_nmp_3fold.yaml run --datasets PROTEINS
+# Extra workers on the study (distinct sampler seeds, see optimize_optuna.py):
+#   python optimize_optuna.py --dataset PROTEINS --model node_mask_push_qat --fold 0 --n_trials 15 --sampler_seed 1
+name: qat_nmp_3fold
+description: >
+  NMP prototype LogiX-GIN with a QAT fine-tune, student and QAT hyper-parameters tuned
+  jointly on fold 0 (15 trials, objective = rule-model val balanced accuracy), then folds 0-2.
+datasets: [PROTEINS]
+models: [node_mask_push_qat]
+folds: [0, 1, 2]
+
+teacher:                                 # same k-fold teachers as sum_ablation
+  epochs: 500
+  hidden_dim: 64
+  num_layers: 3
+  batch_size: 128
+  lr: 0.001
+  l2: 1.0e-5
+  dropout: 0.15
+  split: kfold
+
+hps:
+  root: results_hps
+  tune_folds: [0]
+  n_trials: 15
+  sampler_seed: 0
+  report_every: 50
+
+final:
+  root: results_final
+
+jobs: 3
