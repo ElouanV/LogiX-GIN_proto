@@ -17,18 +17,28 @@ import json
 from models.model import GIN
 from torch.optim.lr_scheduler import ReduceLROnPlateau
 from utils import tracking
-from utils.evaluation import evaluate
+from utils.evaluation import evaluate, held_out
 from utils.splits import split_indices, SPLITS
 SEEDS = 10
 
 def train_epoch(model, loader, device, optimizer, num_classes):
-    model.train()
+    """One training epoch; optimizer=None: the same loss on loader without training (eval
+    mode, no gradient, RNG untouched, utils.evaluation.held_out), i.e. the val loss."""
+    if optimizer is None:
+        with held_out():
+            return _epoch(model.eval(), loader, device, None, num_classes)
+    return _epoch(model.train(), loader, device, optimizer, num_classes)
+
+
+def _epoch(model, loader, device, optimizer, num_classes):
+    train = optimizer is not None
     total_loss = 0
     total_correct = 0
     for data in loader:
         mask = [i in data.batch for i in range(data.y.shape[0])]
         y = data.y.squeeze(-1).to(device).long()
-        optimizer.zero_grad()
+        if train:
+            optimizer.zero_grad()
         if data.x is None:
             data.x = torch.ones((data.num_nodes, model.num_features))
         out = model(data.x.float().to(device), data.edge_index.to(device), data.batch.to(device), tau=1)
@@ -37,13 +47,15 @@ def train_epoch(model, loader, device, optimizer, num_classes):
             loss = F.binary_cross_entropy(out.reshape(-1), torch.nn.functional.one_hot(y, num_classes=num_classes).float().reshape(-1))
             nll_loss = F.nll_loss(F.log_softmax(out, dim=-1), y.long())
             loss = nll_loss + loss
-            loss.backward()
-            zero_nan_gradients(model)
-            # torch.nn.utils.clip_grad_norm(model.parameters(), 1)
-            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+            if train:
+                loss.backward()
+                zero_nan_gradients(model)
+                # torch.nn.utils.clip_grad_norm(model.parameters(), 1)
+                torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
 
         except: continue
-        optimizer.step()
+        if train:
+            optimizer.step()
         total_loss += loss.item() * data.num_graphs
         total_correct += pred.eq(y).sum().item()
     train_loss = total_loss / len(loader.dataset)
@@ -130,6 +142,7 @@ def _train_seed(dataset_name, args, seed, device):
     patience = 0
     for epoch in range(args['epochs']):
         train_loss, train_acc = train_epoch(model, train_loader, device, optimizer, num_classes)
+        val_loss, _ = train_epoch(model, val_loader, device, None, num_classes)
         val_acc = test_epoch(model, val_loader, device)
         test_acc = test_epoch(model, test_loader, device)
         scheduler.step(val_acc)
@@ -141,7 +154,7 @@ def _train_seed(dataset_name, args, seed, device):
             best_test_acc = test_acc
         elif epoch > args['epochs']//2: patience += 1
 
-        tracking.log_metrics({'train_loss': train_loss, 'train_acc': train_acc, 'val_acc': val_acc,
+        tracking.log_metrics({'train_loss': train_loss, 'val_loss': val_loss, 'train_acc': train_acc, 'val_acc': val_acc,
                               'test_acc': test_acc, 'best_val_acc': best_val_acc,
                               'best_test_acc': best_test_acc, 'lr': optimizer.param_groups[0]['lr']},
                              step=epoch)

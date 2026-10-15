@@ -65,7 +65,7 @@ from models_proto.model_proto import get_model
 from train_logic import get_best_baseline_path, test_epoch
 from torch.optim.lr_scheduler import ReduceLROnPlateau
 from utils import tracking
-from utils.evaluation import evaluate
+from utils.evaluation import evaluate, held_out
 from utils.optim import build_optimizer
 
 SEEDS = 10
@@ -98,9 +98,25 @@ def train_epoch(model, model_proto, loader, device, optimizer, num_classes, trai
     """One epoch of distillation + task loss. QAT (qat_proto.py): ``quant`` is applied to a
     layer's output before the next layer reads it in the chained (train_full) term, the
     layer's own loss stays on its soft output; the loss is ``base_weight`` x this objective
-    + ``extra_loss(x, edge_index, batch, y)`` when given."""
+    + ``extra_loss(x, edge_index, batch, y)`` when given.
+
+    optimizer=None: the same loss on loader without training (the val loss): student in
+    eval mode and without input dropout, teacher sampled as in training, no gradient, RNG
+    untouched (utils.evaluation.held_out)."""
+    kw = dict(train_full=train_full, conv_reg=conv_reg, fc_reg=fc_reg, proto_div_reg=proto_div_reg,
+              proto_ent_reg=proto_ent_reg, mask_reg=mask_reg, vocab_reg=vocab_reg, quant=quant,
+              base_weight=base_weight, extra_loss=extra_loss)
+    if optimizer is None:
+        with held_out():
+            return _epoch(model, model_proto, loader, device, None, num_classes, **kw)
+    return _epoch(model, model_proto, loader, device, optimizer, num_classes, **kw)
+
+
+def _epoch(model, model_proto, loader, device, optimizer, num_classes, train_full, conv_reg, fc_reg,
+           proto_div_reg, proto_ent_reg, mask_reg, vocab_reg, quant, base_weight, extra_loss):
+    train = optimizer is not None
     model.train()
-    model_proto.train()
+    model_proto.train(train)
 
     total_loss = [0]*(len(model_proto.convs)+1)
     total_correct = [0]*(len(model_proto.convs)+1)
@@ -115,7 +131,8 @@ def train_epoch(model, model_proto, loader, device, optimizer, num_classes, trai
             if data.y.isnan().any(): continue
             y = data.y.reshape(-1).to(device).long()
             batch = data.batch.to(device)
-            optimizer.zero_grad()
+            if train:
+                optimizer.zero_grad()
             # Frozen teacher. layers_y[i] = node states after conv i (binary, gumbel
             # hard=True); layers_x[i] = the input that produced them.
             with torch.no_grad():
@@ -125,7 +142,7 @@ def train_epoch(model, model_proto, loader, device, optimizer, num_classes, trai
             # ---- trunk: identical to train_logic.py, the prototypes change nothing here ----
             for i, (layer, layer_x, layer_y) in enumerate(zip(model_proto.convs, layers_x[:-1], layers_y[:-1])):
                 if train_full: layer.nn[0].phi_in.tau = 10
-                if i !=0: layer_x = F.dropout(layer_x, p=0.2)*(1-0.2)
+                if i !=0 and train: layer_x = F.dropout(layer_x, p=0.2)*(1-0.2)
                 layer_out = layer(torch.hstack([layer_x, 1-layer_x]), data.edge_index.to(device))
                 layer_loss = F.binary_cross_entropy(layer_out.reshape(-1), layer_y.reshape(-1)) + conv_reg* (layer.nn[0].reg_loss + layer.nn[0].phi_in.entropy)
                 loss += layer_loss
@@ -173,14 +190,15 @@ def train_epoch(model, model_proto, loader, device, optimizer, num_classes, trai
             if extra_loss is not None:
                 loss = base_weight * loss + extra_loss(data.x.float().to(device), data.edge_index.to(device), batch, y)
 
-            loss.backward()
-            zero_nan_gradients(model_proto)
-            # NOTE kept verbatim from train_logic.py, including the fact that it clips
-            # `model` (the frozen teacher), not `model_proto`. As written this is a no-op
-            # and the student is effectively trained unclipped. Change to
-            # model_proto.parameters() if you want the clipping the line intends.
-            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
-            optimizer.step()
+            if train:
+                loss.backward()
+                zero_nan_gradients(model_proto)
+                # NOTE kept verbatim from train_logic.py, including the fact that it clips
+                # `model` (the frozen teacher), not `model_proto`. As written this is a no-op
+                # and the student is effectively trained unclipped. Change to
+                # model_proto.parameters() if you want the clipping the line intends.
+                torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+                optimizer.step()
             total_loss[-1] += loss.item() * data.num_graphs / len(loader.dataset)
             total_correct[-1] += pred.eq(y).sum().item() / len(loader.dataset)
         except Exception as e:
@@ -347,6 +365,10 @@ def _train_seed(dataset_name, baseline_path, args, seed, device, root='results_p
             idxs = model_proto.project_prototypes(push_loader, device)
             push_log.append({'epoch': epoch, 'indices': [i.cpu().tolist() for i in idxs]})
 
+        val_loss, _ = train_epoch(model, model_proto, val_loader, device, None, num_classes,
+                                  train_full=epoch>args['warmup_epochs'], conv_reg=args['conv_reg'], fc_reg=args['fc_reg'],
+                                  proto_div_reg=args['proto_div_reg'], proto_ent_reg=args['proto_ent_reg'],
+                                  mask_reg=args.get('mask_reg', 0.0), vocab_reg=args.get('vocab_reg', 0.0))
         val_acc = test_epoch(model_proto, val_loader, device)
         test_acc = test_epoch(model_proto, test_loader, device)
 
@@ -364,10 +386,11 @@ def _train_seed(dataset_name, baseline_path, args, seed, device, root='results_p
 
         # train_loss / train_acc: one entry per conv layer (distillation), then the head
         tracking.log_metrics({'val_acc': val_acc, 'test_acc': test_acc, 'best_val_acc': best_val_acc,
-                              'best_test_acc': best_test_acc, 'train_loss': train_loss[-1],
+                              'best_test_acc': best_test_acc, 'train_loss': train_loss[-1], 'val_loss': val_loss[-1],
                               'train_acc': train_acc[-1], 'lr': optimizer.param_groups[0]['lr'],
                               'phase_full': float(epoch > args['warmup_epochs']), 'sharpness': beta,
                               **{f'distill/L{i}_loss': l for i, l in enumerate(train_loss[:-1])},
+                              **{f'distill/L{i}_val_loss': l for i, l in enumerate(val_loss[:-1])},
                               **{f'distill/L{i}_acc': c for i, c in enumerate(train_acc[:-1])}},
                              step=epoch)
         if epoch_callback is not None:

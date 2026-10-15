@@ -65,12 +65,13 @@ def harden(teacher, model, run_args, train_loader, val_loader, device, num_class
         beta = ramp(epoch, epochs, harden_to, ramp_frac)
         model.set_sharpness(beta)
         loss, _ = train_epoch(teacher, model, train_loader, device, optimizer, num_classes, **common)
+        val_loss, _ = train_epoch(teacher, model, val_loader, device, None, num_classes, **common)
         val = test_epoch(model, val_loader, device)
         if beta >= harden_to - 1e-9 and val >= best:
             best = val
             torch.save(model, out_path)
-        history.append({'epoch': epoch, 'sharpness': beta, 'val_acc': val, 'train_loss': loss[-1]})
-        log({'harden/val_acc': val, 'harden/sharpness': beta, 'harden/train_loss': loss[-1],
+        history.append({'epoch': epoch, 'sharpness': beta, 'val_acc': val, 'train_loss': loss[-1], 'val_loss': val_loss[-1]})
+        log({'harden/val_acc': val, 'harden/sharpness': beta, 'harden/train_loss': loss[-1], 'harden/val_loss': val_loss[-1],
              'harden/best_val_acc': max(best, 0.0)}, epoch)
         if epoch % 25 == 0 or epoch == epochs - 1:
             print(f'epoch {epoch:4d}  beta {beta:6.2f}  loss {loss[-1]:.4f}  val {val:.4f}  best@B {best:.4f}  '

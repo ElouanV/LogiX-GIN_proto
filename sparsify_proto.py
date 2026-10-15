@@ -55,7 +55,7 @@ from torch_geometric.loader import DataLoader
 from rule_eval import logical_layers, print_stats, rule_metrics, rule_stats
 from train_proto import test_epoch
 from utils import tracking
-from utils.evaluation import evaluate
+from utils.evaluation import evaluate, held_out
 from utils.utils import get_dataset, set_seed, zero_nan_gradients
 
 
@@ -100,8 +100,17 @@ def notebook_hoyer_loss(weights, lambda_=1.0, epsilon=1e-12):
 
 
 def notebook_sparsity_epoch(model, loader, device, optimizer, num_classes, conv_reg=1, fc_reg=1):
-    """train_sparsity_epoch of the notebook (cell 11): task loss + sqrt penalties + head Hoyer."""
-    model.train()
+    """train_sparsity_epoch of the notebook (cell 11): task loss + sqrt penalties + head Hoyer.
+    optimizer=None: the same loss on loader without training (eval mode, no gradient, RNG
+    untouched, utils.evaluation.held_out), i.e. the val loss."""
+    if optimizer is None:
+        with held_out():
+            return _sparsity_epoch(model.eval(), loader, device, None, num_classes, conv_reg, fc_reg)
+    return _sparsity_epoch(model.train(), loader, device, optimizer, num_classes, conv_reg, fc_reg)
+
+
+def _sparsity_epoch(model, loader, device, optimizer, num_classes, conv_reg, fc_reg):
+    train = optimizer is not None
     total_loss = total_correct = 0
     for data in loader:
         if data.x is None:
@@ -109,7 +118,8 @@ def notebook_sparsity_epoch(model, loader, device, optimizer, num_classes, conv_
         if data.y.numel() == 0 or data.x.isnan().any() or data.y.isnan().any():
             continue
         y = data.y.reshape(-1).to(device).long()
-        optimizer.zero_grad()
+        if train:
+            optimizer.zero_grad()
         model.fc.phi_in.tau = 10
         out = model(data.x.float().to(device), data.edge_index.to(device), data.batch.to(device))
         pred = out.argmax(-1)
@@ -121,9 +131,10 @@ def notebook_sparsity_epoch(model, loader, device, optimizer, num_classes, conv_
         fc = model.fc
         loss = loss + (notebook_hoyer_loss(torch.clamp(fc.weight, min=1e-5)) + fc.reg_loss + fc.phi_in.entropy) \
             + fc_reg * (torch.sqrt(torch.clamp(fc.weight, min=1e-5)).sum(-1).mean() + fc.phi_in.entropy)
-        loss.backward()
-        zero_nan_gradients(model)
-        optimizer.step()
+        if train:
+            loss.backward()
+            zero_nan_gradients(model)
+            optimizer.step()
         total_loss += loss.item() * data.num_graphs / len(loader.dataset)
         total_correct += pred.eq(y).sum().item() / len(loader.dataset)
     return total_loss, total_correct
@@ -170,12 +181,14 @@ def layerwise_sparsify(model, train_loader, val_loader, device, num_classes, max
         t0 = time.time()
         for epoch in range(max_epochs):
             loss, _ = notebook_sparsity_epoch(model, train_loader, device, optimizer, num_classes, conv_reg, fc_reg)
+            val_loss, _ = notebook_sparsity_epoch(model, val_loader, device, None, num_classes, conv_reg, fc_reg)
             val, n = test_epoch(model, val_loader, device), nonzero_weights(layer)
             if (val, -n) > best or (-n > best[1] and val >= tol * best[0]):
                 best_model, left, best, keeps = copy.deepcopy(model), patience, (val, -n), keeps + 1
             left -= 1
             log({f'layerwise/{name}/val_acc': val, f'layerwise/{name}/nonzero': n,
-                 f'layerwise/{name}/train_loss': loss, 'layerwise/val_acc': val}, step_no)
+                 f'layerwise/{name}/train_loss': loss, f'layerwise/{name}/val_loss': val_loss,
+                 'layerwise/train_loss': loss, 'layerwise/val_loss': val_loss, 'layerwise/val_acc': val}, step_no)
             step_no += 1
             if epoch % 25 == 0:
                 print(f'{name} epoch {epoch:4d}  loss {loss:.4f}  val {val:.4f}  nonzero {n}  kept {best}  '

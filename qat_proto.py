@@ -162,7 +162,10 @@ def qat(teacher, model, run_args, train_loader, val_loader, device, num_classes,
         model.set_quant_noise(rate)
         loss, _ = train_epoch(teacher, model, train_loader, device, optimizer, num_classes, quant=model.quant_out,
                               base_weight=base_weight, extra_loss=extra, **common)
-        rec = {'epoch': epoch, 'rate': rate, 'train_loss': loss[-1], **grad_norms(model),
+        grads = grad_norms(model)
+        val_loss, _ = train_epoch(teacher, model, val_loader, device, None, num_classes, quant=model.quant_out,
+                                  base_weight=base_weight, extra_loss=extra, **common)
+        rec = {'epoch': epoch, 'rate': rate, 'train_loss': loss[-1], 'val_loss': val_loss[-1], **grads,
                **diagnostics(model, val_loader, device)}
         report = epoch % 25 == 0 or epoch == epochs - 1
         if report:

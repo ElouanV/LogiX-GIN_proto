@@ -19,7 +19,7 @@ from models.model import GIN, GINTELL
 from models_proto.gintell import GINTELLPool
 from torch.optim.lr_scheduler import ReduceLROnPlateau
 from utils import tracking
-from utils.evaluation import evaluate
+from utils.evaluation import evaluate, held_out
 
 SEEDS = 10
 
@@ -45,8 +45,19 @@ def build_logic_model(args, baseline_args, num_features, num_classes, device):
 
 
 def train_epoch(model, model_tell, loader, device, optimizer, num_classes, train_full=True, conv_reg=0.001, fc_reg=0.01):
+    """One distillation epoch; optimizer=None: the same loss on loader without training (the
+    val loss): student in eval mode and without input dropout, teacher sampled as in
+    training, no gradient, RNG untouched (utils.evaluation.held_out)."""
+    if optimizer is None:
+        with held_out():
+            return _epoch(model, model_tell, loader, device, None, num_classes, train_full, conv_reg, fc_reg)
+    return _epoch(model, model_tell, loader, device, optimizer, num_classes, train_full, conv_reg, fc_reg)
+
+
+def _epoch(model, model_tell, loader, device, optimizer, num_classes, train_full, conv_reg, fc_reg):
+    train = optimizer is not None
     model.train()
-    model_tell.train()
+    model_tell.train(train)
     
     total_loss = [0]*(len(model_tell.convs)+1)
     total_correct = [0]*(len(model_tell.convs)+1)
@@ -59,14 +70,15 @@ def train_epoch(model, model_tell, loader, device, optimizer, num_classes, train
             if data.x.isnan().any(): continue
             if data.y.isnan().any(): continue
             y = data.y.reshape(-1).to(device).long()
-            optimizer.zero_grad()
+            if train:
+                optimizer.zero_grad()
             with torch.no_grad():
                 layers_x, layers_y = model.forward_e(data.x.float().to(device), data.edge_index.to(device), data.batch.to(device))
             loss = 0
             last_layer_out = None
             for i, (layer, layer_x, layer_y) in enumerate(zip(model_tell.convs, layers_x[:-1], layers_y[:-1])):
                 if train_full: layer.nn[0].phi_in.tau = 10
-                if i !=0: layer_x = F.dropout(layer_x, p=0.2)*(1-0.2)
+                if i !=0 and train: layer_x = F.dropout(layer_x, p=0.2)*(1-0.2)
                 layer_out = layer(torch.hstack([layer_x, 1-layer_x]), data.edge_index.to(device))
                 layer_loss = F.binary_cross_entropy(layer_out.reshape(-1), layer_y.reshape(-1)) + conv_reg* (layer.nn[0].reg_loss + layer.nn[0].phi_in.entropy)
                 loss += layer_loss
@@ -94,10 +106,11 @@ def train_epoch(model, model_tell, loader, device, optimizer, num_classes, train
                
             loss += fc_reg*(model_tell.fc.reg_loss + model_tell.fc.phi_in.entropy)
 
-            loss.backward()
-            zero_nan_gradients(model_tell)
-            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
-            optimizer.step()
+            if train:
+                loss.backward()
+                zero_nan_gradients(model_tell)
+                torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+                optimizer.step()
             total_loss[-1] += loss.item() * data.num_graphs / len(loader.dataset)
             total_correct[-1] += pred.eq(y).sum().item() / len(loader.dataset)
         except Exception as e:
@@ -206,6 +219,7 @@ def _train_seed(dataset_name, baseline_path, args, seed, device, root='results_l
     test_accs = []
     for epoch in range(args['epochs']):
         train_loss, train_acc = train_epoch(model, model_tell, train_loader, device, optimizer, num_classes, train_full=epoch>args['warmup_epochs'], conv_reg=args['conv_reg'], fc_reg=args['fc_reg'])
+        val_loss, _ = train_epoch(model, model_tell, val_loader, device, None, num_classes, train_full=epoch>args['warmup_epochs'], conv_reg=args['conv_reg'], fc_reg=args['fc_reg'])
         val_acc = test_epoch(model_tell, val_loader, device)
         test_acc = test_epoch(model_tell, test_loader, device)
 
@@ -218,10 +232,11 @@ def _train_seed(dataset_name, baseline_path, args, seed, device, root='results_l
 
         # train_loss / train_acc: one entry per conv layer (distillation), then the head
         tracking.log_metrics({'val_acc': val_acc, 'test_acc': test_acc, 'best_val_acc': best_val_acc,
-                              'best_test_acc': best_test_acc, 'train_loss': train_loss[-1],
+                              'best_test_acc': best_test_acc, 'train_loss': train_loss[-1], 'val_loss': val_loss[-1],
                               'train_acc': train_acc[-1], 'lr': optimizer.param_groups[0]['lr'],
                               'phase_full': float(epoch > args['warmup_epochs']),
                               **{f'distill/L{i}_loss': l for i, l in enumerate(train_loss[:-1])},
+                              **{f'distill/L{i}_val_loss': l for i, l in enumerate(val_loss[:-1])},
                               **{f'distill/L{i}_acc': c for i, c in enumerate(train_acc[:-1])}},
                              step=epoch)
         if epoch_callback is not None:

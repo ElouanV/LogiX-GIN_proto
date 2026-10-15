@@ -5,9 +5,22 @@ evaluation of every run also reports balanced accuracy, F1 of the minority class
 ROC-AUC. The models output one sigmoid per class; for two classes the ranking score
 is ``out[:, 1] - out[:, 0]``.
 """
+import contextlib
+
 import numpy as np
 import torch
 from sklearn.metrics import balanced_accuracy_score, f1_score, roc_auc_score
+
+
+@contextlib.contextmanager
+def held_out():
+    """A loss pass on held-out data that leaves training unchanged: no gradient, and the
+    torch RNG streams (CPU and CUDA) forked, so the sampling it does (Gumbel teacher states,
+    Quant-Noise) does not shift the draws of the training that follows. Used for the
+    val_loss every training loop logs (tests/test_val_loss.py checks the weights match)."""
+    devices = list(range(torch.cuda.device_count())) if torch.cuda.is_available() else []
+    with torch.random.fork_rng(devices=devices), torch.no_grad():
+        yield
 
 
 @torch.no_grad()
