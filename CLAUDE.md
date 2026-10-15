@@ -113,7 +113,7 @@ Compute has a carbon cost. Spend it deliberately.
 4. Post-hoc: `harden_proto.py` (gradual sharpening fine-tune), `qat_proto.py` (quantization-aware fine-tune by Quant-Noise, docs/QAT.md), `sparsify_proto.py` (layer-by-layer Hoyer fine-tune of the notebook, head then
    convs last to first; works on base and proto runs; the joint variant was removed), `unpack_rules.py` (all rules as readable predicates), `rule_eval.py`
    (rules/unit + fidelity), `explain_proto.py` (prototype-level explanations),
-   `interp_metrics.py` (interpretability metrics of the symbolic model: fidelity, explanation
+   `binarise_ablation.py` (accuracy with one part binarised at a time: head, trunk, each layer), `interp_metrics.py` (interpretability metrics of the symbolic model: fidelity, explanation
    size per prediction, prototype purity, NO2/NH2 ground truth), to compare methods beside acc/AUC.
 5. Rule-extraction core: `latent_logic.py` (port of `nbs/LayerWiseRules.ipynb`, the
    canonical reading; keep its logic unchanged) and `min_covers.py` (exact DNF of a unit =

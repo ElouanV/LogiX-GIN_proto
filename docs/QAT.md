@@ -341,3 +341,35 @@ study), on the same folds; differences are paired (Wilcoxon):
 
 Below the 0.80 bar: the search lands where the diagnostics put the [mean ≥ 0.5, max] literal
 cap (about 0.77).
+
+## Binarising the trunk, not the head, costs accuracy (2026-10-15)
+
+`binarise_ablation.py` binarises one part of a trained model at a time, everything else
+soft, and reports test accuracy (argmax of the head margins). Δ is paired against the soft
+network of the same model; "worse" counts the runs where the condition is worse, p is the
+Wilcoxon signed-rank test (smallest possible p for n = 10: 0.002). The all-binary condition
+equals `interp_metrics` `logic_acc` on every fold.
+
+- (A) `sum_ablation_ctrl/node_mask_push`, 10 k-fold folds.
+- (B) `qat_nmp` students before their QAT fine-tune (`<fold>/best.pt`), 10 folds.
+- (C) `results_proto/Mutagenicity/node-facbe6d14f72` (64 × 3 teacher), seeds 0-9, one random split each.
+
+| binarised | (A) | (B) | (C) |
+|---|---|---|---|
+| nothing (soft network) | 0.804 | 0.793 | 0.820 |
+| head literals only | −0.015 (7/10, p 0.07) | −0.011 (8/10, p 0.03) | −0.007 (8/10, p 0.06) |
+| whole trunk only | −0.136 (10/10, p 0.002) | −0.088 (10/10, p 0.002) | −0.120 (10/10, p 0.002) |
+| trunk unit outputs only | −0.110 (10/10) | −0.089 (10/10) | −0.108 (10/10) |
+| trunk literals only | −0.049 (10/10) | +0.001 (3/10) | −0.086 (10/10) |
+| conv layer 0 / 1 / 2 only | −0.110 / −0.043 / −0.045 | −0.072 / −0.026 / −0.025 | −0.114 / −0.044 / −0.026 |
+| everything (rule model) | −0.135 (0.668) | −0.102 (0.691) | −0.133 (0.687) |
+
+Share of soft values in (0.1, 0.9), layers 0 / 1 / 2: unit outputs 42–50 % / 19–21 % / 19–20 %,
+literals 0–3 % / 3.5–4 % / 3 %. The literals are almost binary already; the node states
+between layers are graded, and the network uses that information.
+
+After QAT the picture reverses: the soft network falls to 0.646 (k-fold) / 0.692 (seeds, A1)
+and binarising the trunk *raises* accuracy to the rule model's 0.766 / 0.762.
+
+    python binarise_ablation.py --run_path <fold dirs ...> --split test
+    python binarise_ablation.py --run_path <qat dirs ...> --split test     # QAT: <fold>/qat/<cfg>/
