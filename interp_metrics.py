@@ -35,10 +35,14 @@ not the network.
                              decode to short rules (CLAUDE.md, rule-extraction limits)
     literal_purity           class purity of the graphs where a cited head literal holds,
                              weighted by how often it is cited
-    gt_precision / gt_chance Mutagenicity, node prototypes only: share of the best-matching
-                             nodes of the cited positive prototype literals that lie within
-                             one hop of an NO2 / NH2 group, on mutagens that contain one,
-                             and the same share for a uniformly random node (the baseline)
+    gt_precision / gt_chance datasets with a node-level ground truth (GROUND_TRUTH), node
+                             prototypes and classic models: share of the best-matching nodes of
+                             the cited positive prototype literals that lie in the ground-truth
+                             region, on correctly predicted graphs of the scored classes that
+                             contain one, and the same share for a uniformly random node (the
+                             baseline). Regions: Mutagenicity mutagens, within one hop of an
+                             NO2 / NH2 group; BA2Motifs, the planted house / 5-cycle (both
+                             classes); BAMultiShapes class 1, its two planted motifs
     mask_temp                temperature stored in the checkpoint (1 = strict AND)
 
 Per-prediction metrics are over rule-backed graphs, as mean and median.
@@ -53,6 +57,7 @@ import os
 import pickle
 from collections import Counter
 
+import networkx as nx
 import numpy as np
 import pandas as pd
 import torch
@@ -173,6 +178,31 @@ def toxicophore_nodes(x, edge_index, hops=1):
     return region
 
 
+def motif_nodes(x, edge_index):
+    """Nodes on a cycle (biconnected components of >= 3 nodes). The BA bases of BA2Motifs and
+    BAMultiShapes are trees (m = 1), so these are exactly the planted motifs: nodes 20-24 of
+    BA2Motifs, the house / 3x3 grid / wheel of BAMultiShapes."""
+    g = nx.Graph()
+    g.add_nodes_from(range(len(x)))
+    g.add_edges_from(edge_index.t().tolist())
+    region = torch.zeros(len(x), dtype=torch.bool)
+    for comp in nx.biconnected_components(g):
+        if len(comp) > 2:
+            region[list(comp)] = True
+    return region
+
+
+# dataset -> (classes whose explanations are scored, node region of the ground truth)
+GROUND_TRUTH = {'Mutagenicity': ((MUTAGEN,), toxicophore_nodes),
+                'BA2Motifs': ((0, 1), motif_nodes),       # 0 = 5-cycle, 1 = house, on nodes 20-24
+                'BaMultiShapes': ((1,), motif_nodes)}     # 1 = exactly two of house, grid, wheel
+
+
+def ground_truth_region(ds_name, x, edge_index):
+    """The ground-truth node region of one graph [N] (bool), or None without ground truth."""
+    return GROUND_TRUTH[ds_name][1](x, edge_index) if ds_name in GROUND_TRUTH else None
+
+
 def prototype_table(model):
     """Per prototype layer: cared bits [K × d], and the trunk unit (layer·h + unit) of every bit."""
     level = level_of(model)
@@ -224,7 +254,8 @@ def interp_metrics(model, dataset, device, ds_name=None):
     base = level_of(model) == 'base'
     lit_map = base_literal_map(model) if base else head_literal_map(model)
     protos = None if base else prototype_table(model)
-    gt = ds_name == 'Mutagenicity' and level_of(model) in ('node', 'both', 'base')
+    gt = ds_name in GROUND_TRUTH and level_of(model) in ('node', 'both', 'base')
+    gt_classes = GROUND_TRUTH[ds_name][0] if gt else ()
 
     margins, lits, head_pred, bit_agree, n_nodes = [], [], [], [], []
     gt_hits, gt_chance = [], []
@@ -244,10 +275,10 @@ def interp_metrics(model, dataset, device, ds_name=None):
             c = int(margin[g].argmax())
             e = shortest_explanation(W[c], S[c], head_lit[g])
             expl.append(e)
-            if not gt or e is None or c != MUTAGEN or int(y[g0 + g]) != MUTAGEN:
+            if not gt or e is None or c not in gt_classes or int(y[g0 + g]) != c:
                 continue
             nodes = torch.nonzero(data.batch == g).flatten()
-            region = toxicophore_nodes(xf[nodes].cpu(), _subgraph_edges(data.edge_index, nodes).cpu())
+            region = ground_truth_region(ds_name, xf[nodes].cpu(), _subgraph_edges(data.edge_index, nodes).cpu())
             if not region.any():
                 continue
             for i in e:

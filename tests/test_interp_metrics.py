@@ -12,7 +12,7 @@ import torch
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from interp_metrics import (base_literal_map, head_literal_map, interp_metrics, readout_values,  # noqa: E402
+from interp_metrics import (base_literal_map, head_literal_map, interp_metrics, motif_nodes, readout_values,  # noqa: E402
                             shortest_explanation, symbolic_head, toxicophore_nodes, trunk_states)
 from latent_logic import ATOMS  # noqa: E402
 from models.model import GINTELL  # noqa: E402
@@ -66,6 +66,20 @@ class TestToxicophore(unittest.TestCase):
     def test_single_o_is_not_nitro(self):
         e = undirected([(0, 1), (1, 2)])
         self.assertFalse(toxicophore_nodes(one_hot(['C', 'N', 'O']), e).any())
+
+
+class TestMotifGroundTruth(unittest.TestCase):
+    def test_cycles_on_a_tree_are_the_motif(self):
+        """A tree (the BA base, m = 1) with a house on nodes 4-8 hung from node 3: the region
+        is exactly the house, not the tree nor the attaching edge."""
+        tree = [(0, 1), (1, 2), (1, 3)]
+        house = [(4, 5), (5, 6), (6, 7), (7, 4), (4, 8), (5, 8)]
+        e = undirected(tree + house + [(3, 4)])
+        region = motif_nodes(torch.ones(9, 10), e)
+        self.assertEqual(torch.nonzero(region).flatten().tolist(), [4, 5, 6, 7, 8])
+
+    def test_a_tree_has_no_motif(self):
+        self.assertFalse(motif_nodes(torch.ones(4, 1), undirected([(0, 1), (1, 2), (2, 3)])).any())
 
 
 class TestSymbolicForward(unittest.TestCase):
