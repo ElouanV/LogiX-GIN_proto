@@ -65,6 +65,19 @@ class TestLayerwise(unittest.TestCase):
         model = get_model('node', num_features=3, num_classes=2, num_layers=3, hidden_dim=4, num_prototypes=2)
         self.assertEqual([s[0] for s in layerwise_steps(model)], ['head', 'L2', 'L1', 'L0'])
 
+    def test_lr_and_patience_overrides(self):
+        model = get_model('node', num_features=3, num_classes=2, num_layers=3, hidden_dim=4, num_prototypes=2)
+        default = layerwise_steps(model)
+        self.assertEqual(default[0][2:], (0.01, 100, 0.1, 0.1))
+        self.assertTrue(all(s[2:] == (0.005, 50, 0.1, 0.01) for s in default[1:]))
+        steps = {s[0]: s for s in layerwise_steps(model, head_lr=1e-3, conv_lr=[1e-4, 2e-4, 5e-3], conv_patience=200)}
+        self.assertEqual(steps['head'][2:4], (1e-3, 100))
+        self.assertEqual([steps[f'L{l}'][2] for l in range(3)], [1e-4, 2e-4, 5e-3])
+        self.assertTrue(all(steps[f'L{l}'][3] == 200 for l in range(3)))
+        self.assertTrue(all(s[2] == 1e-4 for s in layerwise_steps(model, conv_lr=[1e-4])[1:]))
+        with self.assertRaises(ValueError):
+            layerwise_steps(model, conv_lr=[1e-4, 1e-4])
+
     def test_each_step_trains_only_its_layer(self):
         from torch_geometric.data import Data
         from torch_geometric.loader import DataLoader

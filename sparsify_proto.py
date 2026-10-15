@@ -18,7 +18,9 @@ head; its ``train_sparsity_epoch``). After every epoch the model is kept if (val
 (> 1e-4) at no less than ``--lw_tol`` x the kept val acc; a step ends after ``patience``
 epochs without a keep (at most ``--lw_max_epochs``) and the next one starts from the kept
 model. Head: lr 0.01, patience 100, conv_reg 0.1, fc_reg 0.1; convs: lr 0.005, patience
-50, conv_reg 0.1, fc_reg 0.01 (the notebook's). The tolerance is relative to the last
+50, conv_reg 0.1, fc_reg 0.01 (the notebook's). ``--head_lr``, ``--conv_lr`` (one value or
+one per conv layer) and ``--{head,conv}_patience`` override them; on Mutagenicity NMP the
+notebook's values never keep a head, L1 or L0 step. The tolerance is relative to the last
 kept model, so val accuracy can drift down by up to 1% per keep (notebook behaviour,
 kept; the step history in sparsity.json shows it). No pruning afterwards, as in the
 notebook. Deviation: an exception in a batch is raised instead of printed and skipped.
@@ -132,10 +134,18 @@ LAYERWISE_HEAD = (0.01, 100, 0.1, 0.1)
 LAYERWISE_CONV = (0.005, 50, 0.1, 0.01)
 
 
-def layerwise_steps(model):
-    """[(name, 'head' or conv index, lr, patience, conv_reg, fc_reg)] in the notebook's order."""
-    return [('head', 'head', *LAYERWISE_HEAD)] + \
-        [(f'L{l}', l, *LAYERWISE_CONV) for l in reversed(range(len(model.convs)))]
+def layerwise_steps(model, head_lr=None, head_patience=None, conv_lr=None, conv_patience=None):
+    """[(name, 'head' or conv index, lr, patience, conv_reg, fc_reg)] in the notebook's order.
+    None keeps the notebook's value; conv_lr is one lr for every conv layer or one per layer
+    (L0 first)."""
+    L = len(model.convs)
+    lr0, pat0, *regs = LAYERWISE_HEAD
+    head = ('head', 'head', head_lr or lr0, head_patience or pat0, *regs)
+    lr0, pat0, *regs = LAYERWISE_CONV
+    lrs = [lr0] * L if not conv_lr else list(conv_lr) * L if len(conv_lr) == 1 else list(conv_lr)
+    if len(lrs) != L:
+        raise ValueError(f'conv_lr: one value or one per conv layer ({L}), got {len(conv_lr)}')
+    return [head] + [(f'L{l}', l, lrs[l], conv_patience or pat0, *regs) for l in reversed(range(L))]
 
 
 def _layer(model, which):
@@ -147,10 +157,11 @@ def nonzero_weights(layer, eps=1e-4):
 
 
 def layerwise_sparsify(model, train_loader, val_loader, device, num_classes, max_epochs=1000, tol=0.99,
-                       log=lambda metrics, step: None):
-    """The notebook's layer-by-layer Hoyer fine-tune. Returns (model, per-step history)."""
+                       log=lambda metrics, step: None, **step_args):
+    """The notebook's layer-by-layer Hoyer fine-tune (step_args: layerwise_steps' lr and
+    patience overrides). Returns (model, per-step history)."""
     history, step_no = [], 0
-    for name, which, lr, patience, conv_reg, fc_reg in layerwise_steps(model):
+    for name, which, lr, patience, conv_reg, fc_reg in layerwise_steps(model, **step_args):
         layer = _layer(model, which)
         optimizer = torch.optim.Adam([layer.weight_sigma, layer.weight_exp], lr=lr)
         val = test_epoch(model, val_loader, device)
@@ -172,7 +183,7 @@ def layerwise_sparsify(model, train_loader, val_loader, device, num_classes, max
             if left == 0:
                 break
         model = copy.deepcopy(best_model)
-        rec = {'step': name, 'epochs': epoch + 1, 'keeps': keeps, 'start_val_acc': start[0],
+        rec = {'step': name, 'lr': lr, 'patience': patience, 'epochs': epoch + 1, 'keeps': keeps, 'start_val_acc': start[0],
                'start_nonzero': -start[1], 'val_acc': best[0], 'nonzero': -best[1],
                'n_weights': _layer(model, which).weight.numel()}
         print(f'{name}: val {start[0]:.4f} -> {best[0]:.4f}, nonzero {-start[1]} -> {-best[1]} of '
@@ -211,6 +222,11 @@ def main():
     ap.add_argument('--dataset', default=None, help='default: read from run_path')
     ap.add_argument('--lw_max_epochs', type=int, default=1000, help='max epochs per layer')
     ap.add_argument('--lw_tol', type=float, default=0.99, help='keep sparser models down to this x val acc')
+    ap.add_argument('--head_lr', type=float, default=None, help=f'head step lr (default {LAYERWISE_HEAD[0]})')
+    ap.add_argument('--head_patience', type=int, default=None, help=f'default {LAYERWISE_HEAD[1]}')
+    ap.add_argument('--conv_lr', type=float, nargs='+', default=None,
+                    help=f'conv step lr: one value, or one per conv layer, L0 first (default {LAYERWISE_CONV[0]})')
+    ap.add_argument('--conv_patience', type=int, default=None, help=f'default {LAYERWISE_CONV[1]}')
     ap.add_argument('--batch_size', type=int, default=None, help='default: the run\'s batch size')
     ap.add_argument('--seed', type=int, default=0)
     ap.add_argument('--out_dir', default=None, help='default: <run_path>/sparse/<config>')
@@ -239,9 +255,13 @@ def main():
     if a.stats_only:
         return
 
+    step_args = {'head_lr': a.head_lr, 'head_patience': a.head_patience,
+                 'conv_lr': a.conv_lr, 'conv_patience': a.conv_patience}
     sp_args = {'layerwise': True, 'lw_max_epochs': a.lw_max_epochs, 'lw_tol': a.lw_tol,
-               'batch_size': a.batch_size, 'seed': a.seed}
-    cfg = '|'.join(f'{k}={sp_args[k]}' for k in ('layerwise', 'lw_max_epochs', 'lw_tol'))
+               'batch_size': a.batch_size, 'seed': a.seed, **step_args}
+    # overrides only appear in the name when set, so default runs keep their directory
+    cfg = '|'.join([f'{k}={sp_args[k]}' for k in ('layerwise', 'lw_max_epochs', 'lw_tol')] +
+                   [f'{k}={",".join(map(str, v)) if isinstance(v, list) else v}' for k, v in step_args.items() if v is not None])
     out_dir = a.out_dir or os.path.join(a.run_path, 'sparse', cfg)
     os.makedirs(out_dir, exist_ok=True)
     level = run_args.get('proto_level', 'logic')
@@ -257,7 +277,8 @@ def main():
         tracking.log_metrics(rule_metrics(before['rules'], prefix='before/rules/'))
 
         model_proto, history = layerwise_sparsify(model_proto, train_loader, val_loader, device, num_classes,
-                                                  a.lw_max_epochs, a.lw_tol, log=tracking.log_metrics)
+                                                  a.lw_max_epochs, a.lw_tol, log=tracking.log_metrics,
+                                                  **step_args)
         torch.save(model_proto, os.path.join(out_dir, 'best.pt'))
         n = sum(ll.weight.numel() for ll in logical_layers(model_proto))
         frac = sum(int((ll.weight <= 1e-4).sum()) for ll in logical_layers(model_proto)) / n
