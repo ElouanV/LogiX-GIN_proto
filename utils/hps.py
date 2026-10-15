@@ -259,9 +259,12 @@ def objective(trial, dataset, model, fold, root, device, report_every=50, teache
     trial.set_user_attr('git_commit', git_commit())
     out_root = os.path.join(study_dir(dataset, model, fold, root), 'runs', f'trial{trial.number:03d}')
     tags = {'hps_study': f'{dataset}/{model}/fold{fold}', 'hps_trial': trial.number, 'kind': 'hps'}
-    path, _ = train_from_argv(model, argv, out_root, device, tags=tags,
-                              epoch_callback=lambda a: PruneCallback(trial, a['warmup_epochs'], device, report_every))
-    path = finish_run(model, path, params, fold, tags)
+    from utils import tracking
+    with tracking.pipeline(dataset, f'hps/{model}/fold{fold}/trial{trial.number:03d}', params=params,
+                           tags={**tags, 'model_name': model}):
+        path, _ = train_from_argv(model, argv, out_root, device, tags=tags,
+                                  epoch_callback=lambda a: PruneCallback(trial, a['warmup_epochs'], device, report_every))
+        path = finish_run(model, path, params, fold, tags)
     trial.set_user_attr('run_dir', path)
     metrics = evaluate_run(path, device)
     for k, v in metrics.items():

@@ -283,9 +283,10 @@ def main():
 
     with tracking.run(f'sparsify/{ds_name}', run_name=f'{level}|{cfg}/seed{run_seed}',
                       params={**sp_args, **{f'source/{k}': v for k, v in run_args.items()}},
-                      tags={'config': cfg, 'source_config': f'{proto_cfg}/{base_cfg}', 'seed': run_seed, 'stage': stage,
-                            'kind': 'seed', 'dataset': ds_name, 'proto_level': level,
-                            'source_run_path': a.run_path, 'out_dir': out_dir}):
+                      tags={'config': cfg, 'source_config': f'{proto_cfg}/{base_cfg}', 'seed': run_seed,
+                            'source_stage': stage, 'kind': 'seed', 'dataset': ds_name, 'proto_level': level,
+                            'source_run_path': a.run_path, 'out_dir': out_dir},
+                      stage='finetune/hoyer', dataset=ds_name, parent_run_id=tracking.fine_tune_parent(a.run_path)):
         tracking.log_metrics({f'before/{k}': v for k, v in before['metrics'].items()})
         tracking.log_metrics(rule_metrics(before['rules'], prefix='before/rules/'))
 
@@ -293,6 +294,7 @@ def main():
                                                   a.lw_max_epochs, a.lw_tol, log=tracking.log_metrics,
                                                   **step_args)
         torch.save(model_proto, os.path.join(out_dir, 'best.pt'))
+        tracking.write_pipeline(out_dir)
         n = sum(ll.weight.numel() for ll in logical_layers(model_proto))
         frac = sum(int((ll.weight <= 1e-4).sum()) for ll in logical_layers(model_proto)) / n
         after = {'metrics': full_eval(model_proto, loaders, device),

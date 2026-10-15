@@ -144,6 +144,17 @@ Compute has a carbon cost. Spend it deliberately.
   server already runs on 5000 and a client pointed there logs into it silently. Scripts set
   `MLFLOW_TRACKING_URI=http://127.0.0.1:5055`. Store: `mlflow.db` + `mlartifacts/`
   (gitignored).
+- **Nested runs:** experiment `pipeline/<dataset>`, one parent run per trained model
+  (`kind=pipeline`: each Optuna trial, each final fold, or a training script run alone) with
+  one nested run per stage (tag `stage`): `teacher` (a reference to the teacher's own training
+  run, which is never repeated), `distillation`, `finetune/{qat,hoyer,harden}`. A stage writes
+  `mlflow_run.json` into its run directory; a fine-tune started later from that directory
+  nests under the same parent. New stages go through `tracking.run(..., stage=, dataset=)`.
+  Runs from before 2026-10-15 stay in the per-stage experiments (`proto/<ds>`, `qat/<ds>`, ...).
+- **Every training loop logs `train_loss` and `val_loss`** per epoch: the same objective on
+  the val split, computed with `optimizer=None` (no gradient, RNG forked by
+  `utils.evaluation.held_out`, so training is bit-identical with or without it;
+  `tests/test_val_loss.py`). A new training loop must do the same.
 - `utils/evaluation.py` reports acc, balanced acc, minority F1 and ROC-AUC. Use more than
   accuracy on AIDS (80/20) and BBBP (76/24).
 

@@ -229,13 +229,15 @@ def run_qat(run_path, dataset=None, rate_to=1.0, epochs=300, ramp_frac=2 / 3, lr
                       params={**q_args, **{f'source/{k}': v for k, v in run_args.items()}},
                       tags={'config': cfg, 'source_config': f"{run['proto_cfg']}/{run['base_cfg']}", 'seed': run['seed'],
                             'kind': 'seed', 'dataset': run['dataset'], 'proto_level': run_args['proto_level'],
-                            'source_run_path': run_path, 'out_dir': out_dir, **(tags or {})}):
+                            'source_run_path': run_path, 'out_dir': out_dir, **(tags or {})},
+                      stage='finetune/qat', dataset=run['dataset'], parent_run_id=tracking.fine_tune_parent(run_path)):
         tracking.log_metrics({f'before/{m}/{k}': v for m, r in before.items() for k, v in r.items()})
         fit = qat(run['teacher'], model, run_args, loaders['train'], loaders['val'], device, run['num_classes'],
                   rate_to, epochs, ramp_frac, optimizer, os.path.join(out_dir, 'best.pt'),
                   base_weight=base_weight, task_weight=task_weight, distill_weight=distill_weight,
                   distill_T=distill_T, log=tracking.log_metrics)
         model = torch.load(os.path.join(out_dir, 'best.pt'), map_location=device, weights_only=False)
+        tracking.write_pipeline(out_dir)
         after = evaluate(model, eval_loaders, device)
         for name, res in (('before', before), ('after', after)):
             for m, r in res.items():

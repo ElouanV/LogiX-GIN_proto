@@ -78,12 +78,17 @@ def test_epoch(model, loader, device):
     return val_acc
 
 def train_seed(dataset_name, args, seed, device):
-    """One seed, logged as one MLflow run of experiment baseline/<dataset> (utils/tracking.py)."""
-    cfg = os.path.relpath(os.path.dirname(create_folder(dataset_name, args, seed=seed)), f'results/{dataset_name}')
-    with tracking.run(f'baseline/{dataset_name}', run_name=f'seed{seed}',
+    """One seed, logged as the teacher stage of its own pipeline run (utils/tracking.py);
+    student pipelines refer to it (tracking.teacher_reference)."""
+    path = create_folder(dataset_name, args, seed=seed)
+    cfg = os.path.relpath(os.path.dirname(path), f'results/{dataset_name}')
+    with tracking.run(f'baseline/{dataset_name}', run_name=f'teacher/seed{seed}',
                       params={**args, 'seed': seed, 'dataset': dataset_name},
-                      tags={'config': cfg, 'seed': seed, 'kind': 'seed', 'dataset': dataset_name}):
-        return _train_seed(dataset_name, args, seed, device)
+                      tags={'config': cfg, 'seed': seed, 'kind': 'seed', 'dataset': dataset_name},
+                      stage='teacher', dataset=dataset_name):
+        res = _train_seed(dataset_name, args, seed, device)
+        tracking.write_pipeline(path)
+        return res
 
 
 def _train_seed(dataset_name, args, seed, device):
@@ -301,7 +306,7 @@ def train_eval(dataset_name,  args):
     # only a full or --only_eval pass writes the summary run (parallel single-seed
     # processes would each write one otherwise)
     if only_eval or seed_todo is None:
-        with tracking.run(f'baseline/{dataset_name}', run_name='summary',
+        with tracking.run(tracking.pipeline_experiment(dataset_name), run_name='teacher/summary',
                           params={**args, 'n_seeds': len(df)},
                           tags={'config': os.path.relpath(path, f'results/{dataset_name}'),
                                 'kind': 'summary', 'dataset': dataset_name}):

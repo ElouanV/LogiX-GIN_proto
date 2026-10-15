@@ -35,8 +35,8 @@ def graphs(labels_scores):
                  y=torch.tensor([y])) for y, s in labels_scores]
 
 
-@unittest.skipIf(tracking.mlflow is None, 'mlflow not installed')
-class TestTracking(unittest.TestCase):
+class TmpStore(unittest.TestCase):
+    """A throwaway sqlite store per test."""
 
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
@@ -55,6 +55,10 @@ class TestTracking(unittest.TestCase):
             else:
                 os.environ[k] = v
         self.tmp.cleanup()
+
+
+@unittest.skipIf(tracking.mlflow is None, 'mlflow not installed')
+class TestTracking(TmpStore):
 
     def test_log_to_run_adds_metrics_to_the_latest_matching_run(self):
         for i in range(2):
@@ -159,3 +163,77 @@ class TestEvaluation(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+@unittest.skipIf(tracking.mlflow is None, 'mlflow not installed')
+class TestNestedPipelines(TmpStore):
+    """One parent run per trained model, one nested run per stage (teacher, distillation,
+    finetune/<method>), in experiment pipeline/<dataset>."""
+
+    def _runs(self, dataset='D'):
+        c = self.client()
+        exp = c.get_experiment_by_name(f'pipeline/{dataset}')
+        return {r.info.run_name: r for r in c.search_runs([exp.experiment_id])}
+
+    def test_stages_nest_under_the_open_pipeline(self):
+        with tracking.pipeline('D', 'trial000', tags={'kind': 'hps'}):
+            with tracking.run('proto/D', 'proto/node/seed0', stage='distillation', dataset='D'):
+                tracking.log_metrics({'train_loss': 1.0, 'val_loss': 2.0}, step=0)
+            with tracking.run('qat/D', 'qat', stage='finetune/qat', dataset='D'):
+                tracking.log_metrics({'val_loss': 3.0}, step=0)
+        runs = self._runs()
+        parent = runs['trial000']
+        self.assertEqual(parent.data.tags['kind'], 'pipeline')
+        self.assertEqual(parent.data.tags['pipeline_kind'], 'hps')
+        for name, stage in (('distillation', 'distillation'), ('finetune/qat', 'finetune/qat')):
+            self.assertEqual(runs[name].data.tags['mlflow.parentRunId'], parent.info.run_id)
+            self.assertEqual(runs[name].data.tags['stage'], stage)
+        self.assertEqual(runs['distillation'].data.tags['stage_experiment'], 'proto/D')
+        self.assertEqual(runs['distillation'].data.metrics['val_loss'], 2.0)
+
+    def test_stage_alone_opens_its_own_pipeline(self):
+        with tracking.run('proto/D', 'proto/node/seed3', stage='distillation', dataset='D'):
+            pass
+        runs = self._runs()
+        self.assertEqual(runs['distillation'].data.tags['mlflow.parentRunId'], runs['proto/node/seed3'].info.run_id)
+        self.assertFalse(tracking.in_pipeline())
+
+    def test_later_fine_tune_nests_under_the_recorded_parent(self):
+        run_dir = os.path.join(self.tmp.name, 'run')
+        os.makedirs(run_dir)
+        with tracking.run('proto/D', 'proto/node/seed0', stage='distillation', dataset='D'):
+            tracking.write_pipeline(run_dir)
+        rec = tracking.read_pipeline(run_dir)
+        self.assertEqual(tracking.fine_tune_parent(run_dir), rec['parent_run_id'])
+        with tracking.run('sparsify/D', 'hoyer', stage='finetune/hoyer', dataset='D',
+                          parent_run_id=tracking.fine_tune_parent(run_dir)):
+            pass
+        runs = self._runs()
+        self.assertEqual(runs['finetune/hoyer'].data.tags['mlflow.parentRunId'], rec['parent_run_id'])
+        self.assertEqual(len([r for r in runs.values() if r.data.tags.get('kind') == 'pipeline']), 1)
+
+    def test_teacher_reference_once_per_pipeline_with_the_teacher_metrics(self):
+        teacher_dir = os.path.join(self.tmp.name, 'results', 'D', 'cfg', '0')
+        os.makedirs(teacher_dir)
+        with tracking.run('baseline/D', 'teacher/seed0', stage='teacher', dataset='D'):
+            tracking.log_metrics({'final/test_acc': 0.8})
+            tracking.write_pipeline(teacher_dir)
+        with tracking.pipeline('D', 'trial001'):
+            tracking.teacher_reference(teacher_dir, 'D', 0)
+            tracking.teacher_reference(teacher_dir, 'D', 0)
+        c = self.client()
+        exp = c.get_experiment_by_name('pipeline/D')
+        refs = c.search_runs([exp.experiment_id], "tags.kind = 'reference'")
+        self.assertEqual(len(refs), 1)
+        self.assertEqual(refs[0].data.metrics['final/test_acc'], 0.8)
+        self.assertEqual(refs[0].data.tags['teacher_run_id'], tracking.read_pipeline(teacher_dir)['run_id'])
+
+    def test_failed_stage_marks_both_runs_failed_and_closes_the_pipeline(self):
+        with self.assertRaises(RuntimeError):
+            with tracking.pipeline('D', 'trial002'):
+                with tracking.run('proto/D', 'x', stage='distillation', dataset='D'):
+                    raise RuntimeError('boom')
+        runs = self._runs()
+        self.assertEqual(runs['distillation'].info.status, 'FAILED')
+        self.assertEqual(runs['trial002'].info.status, 'FAILED')
+        self.assertIsNone(tracking.mlflow.active_run())

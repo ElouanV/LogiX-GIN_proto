@@ -152,12 +152,14 @@ def main():
                       params={**h_args, **{f'source/{k}': v for k, v in run_args.items()}},
                       tags={'config': cfg, 'source_config': f"{run['proto_cfg']}/{run['base_cfg']}", 'seed': run['seed'],
                             'kind': 'seed', 'dataset': run['dataset'], 'proto_level': run_args['proto_level'],
-                            'source_run_path': a.run_path, 'out_dir': out_dir}):
+                            'source_run_path': a.run_path, 'out_dir': out_dir},
+                      stage='finetune/harden', dataset=run['dataset'], parent_run_id=tracking.fine_tune_parent(a.run_path)):
         tracking.log_metrics({f'before/{k}': v for k, v in before.items()})
         history = harden(run['teacher'], model, run_args, loaders['train'], loaders['val'], device, run['num_classes'],
                          a.harden_to, a.epochs, a.ramp_frac, optimizer, os.path.join(out_dir, 'best.pt'),
                          log=tracking.log_metrics)
         model = torch.load(os.path.join(out_dir, 'best.pt'), map_location=device, weights_only=False)
+        tracking.write_pipeline(out_dir)
         after = full_eval(model, eval_loaders, device)
         print('before', {k: round(v, 4) for k, v in before.items() if 'acc' in k or 'auc' in k})
         print('after ', {k: round(v, 4) for k, v in after.items() if 'acc' in k or 'auc' in k})

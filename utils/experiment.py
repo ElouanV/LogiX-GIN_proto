@@ -238,8 +238,10 @@ class Experiment:
             shutil.rmtree(os.path.join(d, 'run'))          # an interrupted attempt
         device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
         tags = {'experiment': self.name, 'kind': 'final', 'model_name': model}
-        student, _ = hps.train_from_argv(model, argv, os.path.join(d, 'run'), device, tags=tags)
-        path = hps.finish_run(model, student, params, fold, tags)        # QAT models: the rule model
+        from utils import tracking
+        with tracking.pipeline(dataset, f'{self.name}/{model}/fold{fold}', params=params, tags={**tags, 'fold': fold}):
+            student, _ = hps.train_from_argv(model, argv, os.path.join(d, 'run'), device, tags=tags)
+            path = hps.finish_run(model, student, params, fold, tags)    # QAT models: the rule model
         metrics = hps.evaluate_run(path, device)
         extra = {} if path == student else {'student_run_dir': student,
                                             'student_metrics': hps.evaluate_run(student, device)}
@@ -268,12 +270,15 @@ class Experiment:
         res = {s: interp_metrics.run(rec['run_dir'], s, 'best.pt', device, dataset) for s in self.INTERP_SPLITS}
         res = {s: {k: v for k, v in r.items() if k not in self.NETWORK_KEYS} for s, r in res.items()}
         flat = {f'{s}_interp_{k}': v for s, r in res.items() for k, v in r.items() if isinstance(v, (int, float))}
-        run_id = tracking.log_to_run([f"{hps.MODELS[model]['script']}/{dataset}"],
-                                     {'experiment': self.name, 'kind': 'final', 'model_name': model,
-                                      'dataset': dataset, 'seed': fold},
-                                     {f'interp/{s}/{k}': v for s, r in res.items() for k, v in r.items()
-                                      if isinstance(v, (int, float))},
-                                     [os.path.join(rec['run_dir'], f'interp_{s}.json') for s in self.INTERP_SPLITS])
+        metrics = {f'interp/{s}/{k}': v for s, r in res.items() for k, v in r.items() if isinstance(v, (int, float))}
+        files = [os.path.join(rec['run_dir'], f'interp_{s}.json') for s in self.INTERP_SPLITS]
+        stage = tracking.read_pipeline(rec['run_dir'])     # the stage that produced the checkpoint
+        if stage:
+            run_id = tracking.log_to_run_id(stage['run_id'], metrics, files)
+        else:                                              # runs from before nested tracking
+            run_id = tracking.log_to_run([f"{hps.MODELS[model]['script']}/{dataset}"],
+                                         {'experiment': self.name, 'kind': 'final', 'model_name': model,
+                                          'dataset': dataset, 'seed': fold}, metrics, files)
         with open(os.path.join(d, 'interp.json'), 'w') as f:
             json.dump({'experiment': self.name, 'dataset': dataset, 'model': model, 'fold': fold,
                        'metrics': flat, 'run_dir': rec['run_dir'], 'mlflow_run_id': run_id,

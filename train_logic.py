@@ -145,14 +145,20 @@ def train_seed(dataset_name, baseline_path, args, seed, device, out_root=None, e
     """
     root = out_root or 'results_logic'
     baseline_args = json.load(open(os.path.join(baseline_path, 'args.json'), 'r'))
-    cfg = os.path.relpath(os.path.dirname(create_folder_logic(dataset_name, args, baseline_args, seed=seed, root=root)),
-                          f'{root}/{dataset_name}')
+    path = create_folder_logic(dataset_name, args, baseline_args, seed=seed, root=root)
+    cfg = os.path.relpath(os.path.dirname(path), f'{root}/{dataset_name}')
     params = {**args, **{f'teacher/{k}': v for k, v in baseline_args.items()},
               'seed': seed, 'dataset': dataset_name, 'teacher_path': baseline_path}
-    with tracking.run(f'logic/{dataset_name}', run_name=f"h{baseline_args['hidden_dim']}/seed{seed}", params=params,
-                      tags={'config': cfg, 'seed': seed, 'kind': 'seed', 'dataset': dataset_name,
-                            'hidden_dim': baseline_args['hidden_dim'], **(tags or {})}):
-        return _train_seed(dataset_name, baseline_path, args, seed, device, root, epoch_callback)
+    name = f"logic/h{baseline_args['hidden_dim']}/seed{seed}"
+    tags = {'config': cfg, 'seed': seed, 'kind': 'seed', 'dataset': dataset_name,
+            'hidden_dim': baseline_args['hidden_dim'], **(tags or {})}
+    with tracking.ensure_pipeline(dataset_name, name, tags=tags):      # one per seed when run alone
+        tracking.teacher_reference(baseline_path, dataset_name, seed)
+        with tracking.run(f'logic/{dataset_name}', run_name=name, params=params, tags=tags,
+                          stage='distillation', dataset=dataset_name):
+            res = _train_seed(dataset_name, baseline_path, args, seed, device, root, epoch_callback)
+            tracking.write_pipeline(path)
+            return res
 
 
 def _train_seed(dataset_name, baseline_path, args, seed, device, root='results_logic', epoch_callback=None):
@@ -371,7 +377,7 @@ def train_eval(dataset_name, baseline_path, args):
     # parallel single-seed processes each re-evaluate every seed; only a full or
     # --only_eval pass writes the summary run
     if only_eval or seed_todo is None:
-        with tracking.run(f'logic/{dataset_name}', run_name=f"h{baseline_args['hidden_dim']}/summary",
+        with tracking.run(tracking.pipeline_experiment(dataset_name), run_name=f"logic/h{baseline_args['hidden_dim']}/summary",
                           params={**args, 'n_seeds': len(df)},
                           tags={'config': os.path.relpath(path, f'results_logic/{dataset_name}'), 'kind': 'summary',
                                 'dataset': dataset_name, 'hidden_dim': baseline_args['hidden_dim']}):

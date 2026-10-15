@@ -265,14 +265,20 @@ def train_seed(dataset_name, baseline_path, args, seed, device, out_root=None, e
     """
     root = out_root or 'results_proto'
     baseline_args = json.load(open(os.path.join(baseline_path, 'args.json'), 'r'))
-    cfg = os.path.relpath(os.path.dirname(create_folder_proto(dataset_name, args, baseline_args, seed=seed, root=root)),
-                          f'{root}/{dataset_name}')
+    path = create_folder_proto(dataset_name, args, baseline_args, seed=seed, root=root)
+    cfg = os.path.relpath(os.path.dirname(path), f'{root}/{dataset_name}')
     params = {**args, **{f'teacher/{k}': v for k, v in baseline_args.items()},
               'seed': seed, 'dataset': dataset_name, 'teacher_path': baseline_path}
-    with tracking.run(f'proto/{dataset_name}', run_name=f"{args['proto_level']}/seed{seed}", params=params,
-                      tags={'config': cfg, 'seed': seed, 'kind': 'seed', 'dataset': dataset_name,
-                            'proto_level': args['proto_level'], **(tags or {})}):
-        return _train_seed(dataset_name, baseline_path, args, seed, device, root, epoch_callback)
+    name = f"proto/{args['proto_level']}/seed{seed}"
+    tags = {'config': cfg, 'seed': seed, 'kind': 'seed', 'dataset': dataset_name,
+            'proto_level': args['proto_level'], **(tags or {})}
+    with tracking.ensure_pipeline(dataset_name, name, tags=tags):      # one per seed when run alone
+        tracking.teacher_reference(baseline_path, dataset_name, seed)
+        with tracking.run(f'proto/{dataset_name}', run_name=name, params=params, tags=tags,
+                          stage='distillation', dataset=dataset_name):
+            res = _train_seed(dataset_name, baseline_path, args, seed, device, root, epoch_callback)
+            tracking.write_pipeline(path)
+            return res
 
 
 def _train_seed(dataset_name, baseline_path, args, seed, device, root='results_proto', epoch_callback=None):
@@ -446,7 +452,7 @@ def _train_seed(dataset_name, baseline_path, args, seed, device, root='results_p
 def log_summary(dataset_name, args, df, path):
     """Mean/std over seeds as a kind=summary run next to the seed runs."""
     cfg = os.path.relpath(path, f'results_proto/{dataset_name}')
-    with tracking.run(f'proto/{dataset_name}', run_name=f"{args['proto_level']}/summary",
+    with tracking.run(tracking.pipeline_experiment(dataset_name), run_name=f"proto/{args['proto_level']}/summary",
                       params={**args, 'n_seeds': len(df)},
                       tags={'config': cfg, 'kind': 'summary', 'dataset': dataset_name,
                             'proto_level': args['proto_level']}):
