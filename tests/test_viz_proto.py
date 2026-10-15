@@ -3,9 +3,11 @@ import unittest
 import torch
 from torch_geometric.data import Data
 
+from interp_metrics import trunk_states
 from models_proto.model_proto import get_model
-from utils.viz_proto import (citations, explain_graphs, head_literal_text, literal_kind, plot_examples,
-                             plot_prototypes, plot_vocabulary, prototype_rule)
+from utils.viz_proto import (citations, explain_graphs, head_literal_text, layer_literals, literal_kind,
+                             plot_examples, plot_prototypes, plot_trunk_match, plot_unfolding, plot_vocabulary,
+                             prototype_rule)
 
 
 def graphs(n=24, f=14, seed=0):
@@ -46,6 +48,23 @@ class TestVizProto(unittest.TestCase):
         self.assertTrue(plot_vocabulary({'m': self.model}).axes)
         if citations(self.model, recs)[0]:
             self.assertTrue(plot_prototypes(self.model, recs, self.data, ds='synthetic').axes)
+
+    def test_layer_literals_rebuild_the_trunk(self):
+        """A unit is 1 exactly when its true literals reach the threshold: the literals the
+        unfolding reads give back the symbolic trunk."""
+        d = self.data[0]
+        xs, lits = layer_literals(self.model, d.x, d.edge_index)
+        for l, (conv, (_, true)) in enumerate(zip(self.model.convs, lits)):
+            ll = conv.nn[0]
+            self.assertTrue(torch.equal(((true.float() @ ll.weight.t() + ll.b) >= 0).float(), xs[l]))
+        self.assertTrue(all(torch.equal(a, b) for a, b in zip(xs, trunk_states(self.model, d.x, d.edge_index))))
+
+    def test_inside_figures(self):
+        recs = explain_graphs(self.model, self.data)
+        care = (self.model.proto.care.detach() > 0.5).any(1)
+        k = int(torch.nonzero(care)[0])
+        self.assertTrue(plot_trunk_match(self.model, recs[0], k, ds='synthetic').axes)
+        self.assertTrue(plot_unfolding(self.model, recs[0], ds='synthetic', k=k).axes)
 
 
 if __name__ == '__main__':
