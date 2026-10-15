@@ -233,7 +233,7 @@ def eval_seed(dataset_name, baseline_path, args, seed, device):
 
 
 def train_eval(dataset_name, baseline_path, args):
-    device = torch.device('cuda') if torch.cuda.is_available else torch.device('cpu')
+    device = torch.device('cuda') if torch.cuda.is_available() else torch.device('cpu')
     baseline_args = json.load(open(os.path.join(baseline_path, '0', 'args.json'), 'r'))
     
     seed_todo = args.pop('seed', None)

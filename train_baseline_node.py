@@ -137,7 +137,7 @@ def train_seed(dataset_name, args, seed, device):
 
 
 def train(dataset_name, args):
-    device = torch.device('cuda') if torch.cuda.is_available else torch.device('cpu')
+    device = torch.device('cuda') if torch.cuda.is_available() else torch.device('cpu')
     path = create_folder(dataset_name, args)
 
     results = []

@@ -235,7 +235,7 @@ def eval_seed(dataset_name, args, seed, device):
 
 
 def train(dataset_name, args):
-    device = torch.device('cuda') if torch.cuda.is_available else torch.device('cpu')
+    device = torch.device('cuda') if torch.cuda.is_available() else torch.device('cpu')
 
     path = create_folder(dataset_name, args)
 
@@ -260,7 +260,7 @@ def train(dataset_name, args):
 
 
 def train_eval(dataset_name,  args):
-    device = torch.device('cuda') if torch.cuda.is_available else torch.device('cpu')
+    device = torch.device('cuda') if torch.cuda.is_available() else torch.device('cpu')
     
     seed_todo = args.pop('seed', None)
     only_eval = args.pop('only_eval', False)
