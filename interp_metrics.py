@@ -95,6 +95,8 @@ def trunk_states(model, x, edge_index, symbolic=True):
             x = (lit @ ll.weight.t() + ll.b >= 0).float()
         else:
             x = conv(torch.hstack([x, 1 - x]), edge_index)
+            if hasattr(model, 'quant_out'):     # QAT: the binarisation the network's forward applies
+                x = model.quant_out(x)
         xs.append(x)
     return xs
 

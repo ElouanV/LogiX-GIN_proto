@@ -116,6 +116,17 @@ class TestSymbolicForward(unittest.TestCase):
                 out = m(self.x, self.e, self.batch)
                 torch.testing.assert_close(out, torch.sigmoid(10 * margin))
 
+    def test_full_quant_noise_network_states_are_the_rules(self):
+        """QAT at rate 1: the network's own trunk (with quant_out between layers, as forward
+        applies it) is exactly the symbolic one, so head fidelity is 1."""
+        torch.manual_seed(4)
+        for level, cls in MODELS.items():
+            m = cls(len(ATOMS), 2, num_layers=2, hidden_dim=8, num_prototypes=4, proto_mask=True).eval()
+            m.set_quant_noise(1.0)
+            net = trunk_states(m, self.x, self.e, symbolic=False)
+            for n, s in zip(net, trunk_states(m, self.x, self.e)):
+                self.assertTrue(torch.equal(n, s))
+
     def test_sharpness_one_is_the_plain_model(self):
         torch.manual_seed(2)
         for level, cls in MODELS.items():
