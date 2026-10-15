@@ -303,3 +303,41 @@ Caveats:
 
 Scripts are in the session scratchpad (not kept). They should become a proper head option
 if they are kept.
+
+## Result: joint student + QAT search, 10 k-fold folds (qat_nmp, 2026-10-15)
+
+`run_experiment.py configs/experiments/qat_nmp.yaml run --datasets Mutagenicity` (560082d;
+extra workers from fea8bc0). The study is `results_hps/Mutagenicity/node_mask_push_qat/fold0`,
+with the objective rule-model val bacc on fold 0.
+
+- **Trials:** 29 in all: 17 distinct sets, 10 pruned, 4 failed.
+  - Trials 0-4 and 5-9 are copies of one set each: the first workers shared sampler seed 0.
+  - Trials 6-9 were killed and marked FAIL.
+  - The 5 copies of set 0 gave val 0.700-0.747, so the val noise of one set is about ±0.02.
+- **Best (trial 15, val 0.786):**
+  - K 32, 2000 epochs, lr 4.9e-3, vocab_reg 0.
+  - QAT for 150 epochs: lr 9.7e-4, task weight 0.66, distill weight 0.
+
+Test split, 10 folds. The control is `sum_ablation_ctrl/node_mask_push` (K 16, its own
+study), on the same folds; differences are paired (Wilcoxon):
+
+| | NMP control | NMP + QAT | Δ |
+|---|---|---|---|
+| soft student acc (before QAT) | 0.804 ± 0.020 | 0.793 ± 0.020 | −0.011 (p 0.25) |
+| **rule-model acc** (`logic_acc`) | 0.668 ± 0.041 | **0.766 ± 0.016** | **+0.097 (10/10, p 0.002)** |
+| rule-model AUC | | 0.824 ± 0.017 | |
+| explanation literals / prediction | 2.5 | 4.0 | +1.5 (p 0.002) |
+| explanation bits / prediction | 24 | 61 | +38 (p 0.002) |
+| prototypes cited | 5.5 | 9.5 | +4.0 |
+| trunk bit agreement | 0.946 | 0.958 | +0.012 |
+
+- **Accuracy:** per-fold rule accuracy runs from 0.733 to 0.783.
+- **Fidelity metrics:** `logic_fidelity` = 1 and `head_fidelity` are not comparable with the
+  control. The evaluated network is the QAT model, which stays at quant rate 1, so it *is*
+  the rule model.
+- **Explanation size:** explanations grow, partly from K 32 vs 16.
+- **CO₂** (codecarbon): 0.53 kg for the study and 0.28 kg for the finals. This is an upper
+  bound, because the GPU part is counted by every one of up to 5 parallel jobs.
+
+Below the 0.80 bar: the search lands where the diagnostics put the [mean ≥ 0.5, max] literal
+cap (about 0.77).
