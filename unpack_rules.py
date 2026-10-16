@@ -64,7 +64,9 @@ def dataset_from_path(run_path):
     for stage in ('results_proto', 'results_logic'):
         if stage in parts:
             return parts[parts.index(stage) + 1]
-    raise ValueError(f'{run_path} is neither under results_proto/ nor results_logic/')
+    if 'results_final' in parts:                 # results_final/<experiment>/<dataset>/...
+        return parts[parts.index('results_final') + 2]
+    raise ValueError(f'{run_path} is under none of results_proto/, results_logic/, results_final/')
 
 
 def feature_names(ds_name, n):
