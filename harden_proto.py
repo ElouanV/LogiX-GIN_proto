@@ -20,20 +20,16 @@ regular run directory, so ``interp_metrics.py --run_path`` and ``sparsify_proto.
     python harden_proto.py --run_path "results_proto/Mutagenicity/<cfg>/<baseline cfg>/0" --harden_to 20
 """
 import argparse
-import json
 import os
-import pickle
 import time
 
 import torch
-from torch_geometric.loader import DataLoader
 
-from models.model import GIN
-from sparsify_proto import full_eval, split_run_path
 from train_proto import test_epoch, train_epoch
 from utils import tracking
+from utils.evaluation import full_eval
 from utils.optim import build_optimizer
-from utils.datasets import get_dataset
+from utils.runs import RunDir, load_run
 from utils.utils import set_seed
 
 
@@ -41,17 +37,6 @@ def ramp(epoch, epochs, harden_to, ramp_frac):
     """Sharpness at ``epoch``: 1 at epoch 0, geometric up to harden_to at ramp_frac * epochs, then held."""
     e1 = max(1.0, ramp_frac * epochs)
     return float(harden_to ** min(1.0, epoch / e1))
-
-
-def load_teacher(run_path, num_features, num_classes, device):
-    """The frozen teacher of a run: results/<ds>/<baseline cfg>/<seed>."""
-    _, ds, _, base, seed = split_run_path(run_path)
-    tpath = os.path.join('results', ds, base, seed)
-    targs = json.load(open(os.path.join(tpath, 'args.json')))
-    teacher = GIN(num_features=num_features, num_classes=num_classes, hidden_dim=targs['hidden_dim'],
-                  num_layers=targs['num_layers'], nogumbel=targs['nogumbel']).to(device)
-    teacher.load_state_dict(torch.load(os.path.join(tpath, 'best.pt'), map_location='cpu'))
-    return teacher.eval()
 
 
 def harden(teacher, model, run_args, train_loader, val_loader, device, num_classes, harden_to, epochs, ramp_frac,
@@ -80,42 +65,6 @@ def harden(teacher, model, run_args, train_loader, val_loader, device, num_class
     return history
 
 
-def load_run(run_path, dataset=None):
-    """A trained prototype run, ready to fine-tune: its args, split loaders (train / val /
-    test), model, frozen teacher and device. Shared with qat_proto.py."""
-    device = torch.device('cuda') if torch.cuda.is_available() else torch.device('cpu')
-    stage, ds_name, proto_cfg, base_cfg, run_seed = split_run_path(run_path)
-    if stage != 'proto':
-        raise SystemExit('needs a prototype run (results_proto/...)')
-    ds_name = dataset or ds_name
-    run_args = json.load(open(os.path.join(run_path, 'args.json')))
-    split = pickle.load(open(os.path.join(run_path, 'data.pkl'), 'rb'))
-    ds = get_dataset(ds_name)
-    num_classes, num_features = ds.num_classes, ds.num_features or 10
-    loaders = {'train': DataLoader(ds[split['train_indices']], batch_size=run_args['batch_size'], shuffle=True),
-               'val': DataLoader(ds[split['val_indices']], batch_size=64, shuffle=False),
-               'test': DataLoader(ds[split['test_indices']], batch_size=64, shuffle=False)}
-    model = torch.load(os.path.join(run_path, 'best.pt'), map_location=device, weights_only=False)
-    teacher = load_teacher(run_path, num_features, num_classes, device)
-    return dict(run_path=run_path, dataset=ds_name, proto_cfg=proto_cfg, base_cfg=base_cfg, seed=run_seed,
-                args=run_args, loaders=loaders, model=model, teacher=teacher, device=device,
-                num_classes=num_classes)
-
-
-def write_run(out_dir, run, key, settings, record):
-    """Fine-tuned run directory: args.json (the run's args + ``{key: settings}``), a link to
-    the run's data.pkl and ``<key>.json`` (record). best.pt is written by the caller."""
-    with open(os.path.join(out_dir, 'args.json'), 'w') as f:
-        json.dump({**run['args'], key: settings}, f)
-    link = os.path.join(out_dir, 'data.pkl')
-    if not os.path.exists(link):
-        os.symlink(os.path.abspath(os.path.join(run['run_path'], 'data.pkl')), link)
-    path = os.path.join(out_dir, f'{key}.json')
-    with open(path, 'w') as f:
-        json.dump(record, f, indent=1)
-    return path
-
-
 def main():
     ap = argparse.ArgumentParser(description=__doc__.split('\n')[0])
     ap.add_argument('--run_path', required=True, help='a trained prototype seed directory holding best.pt')
@@ -133,8 +82,11 @@ def main():
         ap.error('--harden_to must be >= 1')
 
     set_seed(a.seed)
-    run = load_run(a.run_path, a.dataset)
-    run_args, model, device, loaders = run['args'], run['model'], run['device'], run['loaders']
+    if RunDir(a.run_path).stage != 'proto':
+        raise SystemExit('needs a prototype run')
+    loaded = load_run(a.run_path, a.dataset, teacher=True)
+    run, model, device, loaders = loaded.run, loaded.model, loaded.device, loaded.loaders
+    run_args = run.args
     eval_loaders = {'val': loaders['val'], 'test': loaders['test']}
     before = full_eval(model, eval_loaders, device)
 
@@ -149,14 +101,14 @@ def main():
     os.makedirs(out_dir, exist_ok=True)
     optimizer = build_optimizer(model, a.optimizer, h_args['lr'], run_args['l2'], muon_lr=a.muon_lr)
 
-    with tracking.run(f"harden/{run['dataset']}", run_name=f"{run_args['proto_level']}|{cfg}/seed{run['seed']}",
+    with tracking.run(f"harden/{run.dataset}", run_name=f"{run_args['proto_level']}|{cfg}/seed{run.seed}",
                       params={**h_args, **{f'source/{k}': v for k, v in run_args.items()}},
-                      tags={'config': cfg, 'source_config': f"{run['proto_cfg']}/{run['base_cfg']}", 'seed': run['seed'],
-                            'kind': 'seed', 'dataset': run['dataset'], 'proto_level': run_args['proto_level'],
+                      tags={'config': cfg, 'source_config': f"{run.config}/{run.teacher_config}", 'seed': run.seed,
+                            'kind': 'seed', 'dataset': run.dataset, 'proto_level': run_args['proto_level'],
                             'source_run_path': a.run_path, 'out_dir': out_dir},
-                      stage='finetune/harden', dataset=run['dataset'], parent_run_id=tracking.fine_tune_parent(a.run_path)):
+                      stage='finetune/harden', dataset=run.dataset, parent_run_id=tracking.fine_tune_parent(a.run_path)):
         tracking.log_metrics({f'before/{k}': v for k, v in before.items()})
-        history = harden(run['teacher'], model, run_args, loaders['train'], loaders['val'], device, run['num_classes'],
+        history = harden(loaded.teacher, model, run_args, loaders['train'], loaders['val'], device, loaded.num_classes,
                          a.harden_to, a.epochs, a.ramp_frac, optimizer, os.path.join(out_dir, 'best.pt'),
                          log=tracking.log_metrics)
         model = torch.load(os.path.join(out_dir, 'best.pt'), map_location=device, weights_only=False)
@@ -164,7 +116,7 @@ def main():
         after = full_eval(model, eval_loaders, device)
         print('before', {k: round(v, 4) for k, v in before.items() if 'acc' in k or 'auc' in k})
         print('after ', {k: round(v, 4) for k, v in after.items() if 'acc' in k or 'auc' in k})
-        path = write_run(out_dir, run, 'harden', h_args, {'before': before, 'after': after, 'history': history})
+        path = run.write_finetune(out_dir, 'harden', h_args, {'before': before, 'after': after, 'history': history})
         tracking.log_metrics({f'after/{k}': v for k, v in after.items()})
         tracking.log_artifact(path)
         print(f'\nwritten: {out_dir}')

@@ -32,7 +32,6 @@ Usage:
 import argparse
 import json
 import os
-import pickle
 from collections import Counter
 
 import torch
@@ -40,7 +39,7 @@ from torch_geometric.loader import DataLoader
 
 from latent_logic import (ATOMS, CLASSES, collect_activations, explain_component,
                           explain_head)
-from utils.datasets import get_dataset
+from utils.runs import RunDir, get_device
 
 
 def atom(x_row):
@@ -375,16 +374,12 @@ def main():
                          '(see latent_logic; 0 leaves ~45%% of layer-0 rules vacuous)')
     a = ap.parse_args()
 
-    device = torch.device('cuda') if torch.cuda.is_available() else torch.device('cpu')
-    args = json.load(open(os.path.join(a.run_path, 'args.json')))
-    model = torch.load(os.path.join(a.run_path, a.ckpt), map_location=device,
-                       weights_only=False).eval()
-
-    dataset = get_dataset(a.dataset)
-    split = pickle.load(open(os.path.join(a.run_path, 'data.pkl'), 'rb'))
-    ds_id = dataset[split[f'{a.split}_indices']]
-    ds_rule = dataset[split[f'{a.rule_split}_indices']]
-    ds_test = dataset[split['test_indices']]
+    device = get_device()
+    run = RunDir(a.run_path, a.dataset)
+    args = run.args
+    model = run.model(device, a.ckpt).eval()
+    sub = run.subsets({a.split, a.rule_split, 'test'})
+    ds_id, ds_rule, ds_test = sub[a.split], sub[a.rule_split], sub['test']
 
     level = args['proto_level']
     cols = readout_columns(model, level)

@@ -43,20 +43,17 @@ utils/tracking.py) and the result is registered as ``logix-proto-sparse-<dataset
 """
 import argparse
 import copy
-import json
 import os
-import pickle
 import time
 
 import torch
 import torch.nn.functional as F
-from torch_geometric.loader import DataLoader
 
 from rule_eval import logical_layers, print_stats, rule_metrics, rule_stats
 from train_proto import test_epoch
 from utils import tracking
-from utils.evaluation import evaluate, held_out
-from utils.datasets import get_dataset
+from utils.evaluation import full_eval, held_out
+from utils.runs import load_run
 from utils.utils import set_seed, zero_nan_gradients
 
 
@@ -206,30 +203,6 @@ def layerwise_sparsify(model, train_loader, val_loader, device, num_classes, max
     return model, history
 
 
-def split_run_path(run_path):
-    """results_{proto,logic}/<ds>/<cfg>/<baseline cfg>/<seed> -> (stage, ds, cfg, baseline cfg, seed).
-    A run directory under another root (hps trials, k-fold final runs: <root>/<ds>/<cfg>/
-    <baseline cfg>/<seed>) is read from its last four components, its stage from its args.json."""
-    parts = os.path.normpath(run_path).split(os.sep)
-    for stage in ('results_proto', 'results_logic'):
-        if stage in parts:
-            i = parts.index(stage)
-            return stage.split('_')[1], parts[i + 1], parts[i + 2], parts[i + 3], parts[i + 4]
-    args_file = os.path.join(run_path, 'args.json')
-    if len(parts) < 4 or not os.path.exists(args_file):
-        raise ValueError(f'{run_path} is not a run directory (<ds>/<cfg>/<baseline cfg>/<seed> with args.json)')
-    stage = 'proto' if 'proto_level' in json.load(open(args_file)) else 'logic'
-    return (stage, *parts[-4:])
-
-
-def full_eval(model, loaders, device):
-    m = {}
-    for name, loader in loaders.items():
-        m.update(evaluate(model, loader, device, prefix=f'{name}_'))
-    return m
-
-
-
 def main():
     ap = argparse.ArgumentParser(description=__doc__.split('\n')[0])
     ap.add_argument('--run_path', required=True, help='a trained seed directory holding best.pt')
@@ -248,21 +221,11 @@ def main():
     a = ap.parse_args()
 
     set_seed(a.seed)
-    device = torch.device('cuda') if torch.cuda.is_available() else torch.device('cpu')
-    stage, ds_name, proto_cfg, base_cfg, run_seed = split_run_path(a.run_path)
-    ds_name = a.dataset or ds_name
-    run_args = json.load(open(os.path.join(a.run_path, 'args.json')))
-    split = pickle.load(open(os.path.join(a.run_path, 'data.pkl'), 'rb'))
-    dataset = get_dataset(ds_name)
-    num_classes = dataset.num_classes
-    bs = a.batch_size or run_args['batch_size']
-    train_loader = DataLoader(dataset[split['train_indices']], batch_size=bs, shuffle=True)
-    val_loader = DataLoader(dataset[split['val_indices']], batch_size=64, shuffle=False)
-    test_loader = DataLoader(dataset[split['test_indices']], batch_size=64, shuffle=False)
+    loaded = load_run(a.run_path, a.dataset, batch_size=a.batch_size)
+    run, model_proto, device, num_classes = loaded.run, loaded.model, loaded.device, loaded.num_classes
+    stage, ds_name, run_seed, run_args = run.stage, run.dataset, run.seed, run.args
+    train_loader, val_loader, test_loader = (loaded.loaders[s] for s in ('train', 'val', 'test'))
     loaders = {'val': val_loader, 'test': test_loader}
-
-    model_proto = torch.load(os.path.join(a.run_path, 'best.pt'), map_location=device,
-                             weights_only=False)
     before = {'metrics': full_eval(model_proto, loaders, device),
               'rules': rule_stats(model_proto, val_loader, device)}
     print_stats('before', before['metrics'], before['rules'])
@@ -284,7 +247,7 @@ def main():
 
     with tracking.run(f'sparsify/{ds_name}', run_name=f'{level}|{cfg}/seed{run_seed}',
                       params={**sp_args, **{f'source/{k}': v for k, v in run_args.items()}},
-                      tags={'config': cfg, 'source_config': f'{proto_cfg}/{base_cfg}', 'seed': run_seed,
+                      tags={'config': cfg, 'source_config': f'{run.config}/{run.teacher_config}', 'seed': run_seed,
                             'source_stage': stage, 'kind': 'seed', 'dataset': ds_name, 'proto_level': level,
                             'source_run_path': a.run_path, 'out_dir': out_dir},
                       stage='finetune/hoyer', dataset=ds_name, parent_run_id=tracking.fine_tune_parent(a.run_path)):
@@ -306,13 +269,7 @@ def main():
         after['used_units'] = used_units(model_proto)
         print(f'lower units read by L1.., head: {after["used_units"]}')
 
-        with open(os.path.join(out_dir, 'args.json'), 'w') as f:
-            json.dump({**run_args, 'sparsify': sp_args}, f)
-        link = os.path.join(out_dir, 'data.pkl')
-        if not os.path.exists(link):
-            os.symlink(os.path.abspath(os.path.join(a.run_path, 'data.pkl')), link)
-        with open(os.path.join(out_dir, 'sparsity.json'), 'w') as f:
-            json.dump({'before': before, 'after': after}, f, indent=1)
+        run.write_finetune(out_dir, 'sparsify', sp_args, {'before': before, 'after': after}, record_name='sparsity')
 
         tracking.log_metrics({f'after/{k}': v for k, v in after['metrics'].items()})
         tracking.log_metrics(rule_metrics(after['rules'], prefix='after/rules/'))

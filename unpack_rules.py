@@ -42,7 +42,6 @@ import argparse
 import json
 import math
 import os
-import pickle
 
 import numpy as np
 import torch
@@ -52,22 +51,12 @@ from latent_logic import collect_activations
 from min_covers import count_min_covers, literal_true_intervals, supported_min_covers
 from rule_eval import logical_layers
 from utils.datasets import spec
-from utils.datasets import get_dataset
+from utils.runs import RunDir
 
 TWO_PI = 2 * math.pi
 EXHAUSTIVE_LIMIT = 5e6      # formal rules per unit above which the shortest rule per example is used
 POOL = 20000                # most supported observed rules offered to the covering-set selection
 MAX_STORED = 20000          # rules per unit written with --all_rules
-
-
-def dataset_from_path(run_path):
-    parts = os.path.normpath(run_path).split(os.sep)
-    for stage in ('results_proto', 'results_logic'):
-        if stage in parts:
-            return parts[parts.index(stage) + 1]
-    if 'results_final' in parts:                 # results_final/<experiment>/<dataset>/...
-        return parts[parts.index('results_final') + 2]
-    raise ValueError(f'{run_path} is under none of results_proto/, results_logic/, results_final/')
 
 
 def feature_names(ds_name, n):
@@ -674,13 +663,13 @@ def main():
     a = ap.parse_args()
 
     torch.set_grad_enabled(False)
-    ds_name = dataset_from_path(a.run_path)
-    model = torch.load(os.path.join(a.run_path, 'best.pt'), map_location='cpu', weights_only=False).eval()
+    run = RunDir(a.run_path)
+    ds_name = run.dataset
+    model = run.model('cpu').eval()
     if type(model).__name__ not in ('GINTELLProtoNode', 'GINTELL'):
         raise SystemExit(f'{type(model).__name__}: only base LogiX-GIN (GINTELL) and node-level prototype '
                          'models (GINTELLProtoNode) are supported')
-    split = pickle.load(open(os.path.join(a.run_path, 'data.pkl'), 'rb'))
-    ds = get_dataset(ds_name)[split[f'{a.split}_indices']]
+    ds = run.subsets([a.split])[a.split]
     acts = collect_activations(model, DataLoader(ds, batch_size=256), torch.device('cpu'))
     print(f'{ds_name}: {len(ds)} {a.split} graphs, {acts[0]["x_bin"].shape[0]} nodes')
 

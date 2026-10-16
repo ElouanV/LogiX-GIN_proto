@@ -11,10 +11,9 @@ for the first N worked examples.
 """
 import argparse
 
-from unpack_rules import dataset_from_path
-from utils.viz_proto import (citations, explain_graphs, head_literal_map, literal_kind, load_run, pick_examples,
-                             plot_examples, plot_prototypes, plot_trunk_match, plot_unfolding, plot_vocabulary,
-                             save)
+from utils.runs import RunDir
+from utils.viz_proto import (citations, explain_graphs, head_literal_map, literal_kind, pick_examples, plot_examples,
+                             plot_prototypes, plot_trunk_match, plot_unfolding, plot_vocabulary, save)
 
 
 def main():
@@ -31,8 +30,8 @@ def main():
 
     models, cited = {}, {}
     for i, (path, name) in enumerate(zip(a.run_path, names)):
-        ds = a.dataset or dataset_from_path(path)
-        model, data = load_run(path)
+        run = RunDir(path, a.dataset)
+        ds, model, data = run.dataset, run.model().eval(), run.data
         recs = explain_graphs(model, data[f'{a.split}_dataset'])
         models[name], cited[name] = model, set(citations(model, recs)[0])
         print(*save(plot_prototypes(model, recs, data['train_dataset'], ds, top=a.top), a.out, f'prototypes_{i}'))

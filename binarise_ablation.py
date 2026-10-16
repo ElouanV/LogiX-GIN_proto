@@ -26,8 +26,6 @@ the soft network (runs worse, Wilcoxon signed-rank p).
 """
 import argparse
 import json
-import os
-import pickle
 
 import numpy as np
 import torch
@@ -35,6 +33,7 @@ from scipy.stats import wilcoxon
 from torch_geometric.loader import DataLoader
 
 from interp_metrics import aggregate
+from utils.runs import RunDir, get_device
 
 
 def conditions(num_layers):
@@ -131,12 +130,11 @@ def main():
     ap.add_argument('--split', default='test', choices=['train', 'val', 'test'])
     ap.add_argument('--out', default=None, help='write {run_path: result} as JSON here')
     a = ap.parse_args()
-    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    device = get_device()
     results = {}
     for p in a.run_path:
-        model = torch.load(os.path.join(p, a.ckpt), map_location=device, weights_only=False)
-        dataset = pickle.load(open(os.path.join(p, 'data.pkl'), 'rb'))[f'{a.split}_dataset']
-        results[p] = binarise_ablation(model, dataset, device)
+        run = RunDir(p)
+        results[p] = binarise_ablation(run.model(device, a.ckpt), run.pickled(a.split), device)
         print(p, {k: round(v['acc'], 3) for k, v in results[p].items() if isinstance(v, dict)}, flush=True)
     print(summarise(list(results.values())))
     if a.out:

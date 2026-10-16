@@ -83,7 +83,6 @@ Usage
 import argparse
 import json
 import os
-import pickle
 
 import torch
 from torch_geometric.loader import DataLoader
@@ -91,7 +90,7 @@ from torch_geometric.nn import global_mean_pool, global_max_pool, global_add_poo
 
 from models_proto.tell import step
 from utils.datasets import spec
-from utils.datasets import get_dataset
+from utils.runs import EVAL_BATCH_SIZE, RunDir, get_device
 
 # data/Mutagenicity/Mutagenicity/raw/Mutagenicity_label_readme.txt
 ATOMS = list(spec('Mutagenicity').features)        # the notebook's atom and class names
@@ -594,16 +593,13 @@ def main():
     ap.add_argument('--out', default=None, help='write JSON here (default: run_path/latent_logic.json)')
     a = ap.parse_args()
 
-    device = torch.device('cuda') if torch.cuda.is_available() else torch.device('cpu')
-    args = json.load(open(os.path.join(a.run_path, 'args.json')))
-    model = torch.load(os.path.join(a.run_path, a.ckpt), map_location=device,
-                       weights_only=False).eval()
-    level = args.get('proto_level')
+    device = get_device()
+    run = RunDir(a.run_path, a.dataset)
+    model = run.model(device, a.ckpt).eval()
+    level = run.args.get('proto_level')
 
-    dataset = get_dataset(a.dataset)
-    split = pickle.load(open(os.path.join(a.run_path, 'data.pkl'), 'rb'))
-    ds = dataset[split[f'{a.split}_indices']]
-    loader = DataLoader(ds, batch_size=64, shuffle=False)
+    ds = run.subsets([a.split])[a.split]
+    loader = DataLoader(ds, batch_size=EVAL_BATCH_SIZE, shuffle=False)
 
     print(f'== {a.run_path}')
     print(f'== level={level} · {len(ds)} graphs from the {a.split} split · '

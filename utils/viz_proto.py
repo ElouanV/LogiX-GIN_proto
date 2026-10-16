@@ -21,8 +21,6 @@ a figure shows the explanation a reader gets, not the soft network.
                         Mutagenicity, the planted motifs on BA2Motifs / BAMultiShapes) and the
                         explanation written
 """
-import os
-import pickle
 import textwrap
 from collections import Counter
 
@@ -32,7 +30,6 @@ import numpy as np
 import torch
 from torch_geometric.loader import DataLoader
 
-from explain_proto import readout_columns
 from interp_metrics import (_subgraph_edges, aggregate, head_literal_map, level_of, shortest_explanation,
                             symbolic_head, trunk_states)
 from latent_logic import ATOMS, collect_activations, explain_component, literal_name
@@ -46,13 +43,6 @@ from matplotlib.colors import ListedColormap  # noqa: E402
 
 PROTO_COLORS = (BLUE, ORANGE, AQUA)        # at most three prototypes marked per drawing
 NODE_FILL, REGION_FILL, DONT_CARE = '#e9e8e3', '#f6e3a1', '#f4f3ef'
-
-
-def load_run(run_path, ckpt='best.pt', device='cpu'):
-    model = torch.load(os.path.join(run_path, ckpt), map_location=device, weights_only=False)
-    model.eval()
-    data = pickle.load(open(os.path.join(run_path, 'data.pkl'), 'rb'))
-    return model, data
 
 
 def class_name(c, ds):

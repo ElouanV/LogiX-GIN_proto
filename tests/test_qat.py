@@ -127,23 +127,5 @@ class TestModel(unittest.TestCase):
         self.assertTrue(torch.isfinite(loss) and loss.requires_grad)
 
 
-class TestRunPath(unittest.TestCase):
-
-    def test_split_run_path_reads_runs_under_any_root(self):
-        """hps trials and k-fold final runs (QAT fine-tunes them) live outside results_proto/."""
-        import json
-        import tempfile
-        from sparsify_proto import split_run_path
-        self.assertEqual(split_run_path('results_proto/MUTAG/node-x/base/2'), ('proto', 'MUTAG', 'node-x', 'base', '2'))
-        with tempfile.TemporaryDirectory() as t:
-            d = os.path.join(t, 'results_final', 'exp', 'MUTAG', 'nmp', 'fold3', 'run', 'MUTAG', 'node-x', 'base|split=kfold', '3')
-            os.makedirs(d)
-            with open(os.path.join(d, 'args.json'), 'w') as f:
-                json.dump({'proto_level': 'node'}, f)
-            self.assertEqual(split_run_path(d), ('proto', 'MUTAG', 'node-x', 'base|split=kfold', '3'))
-            with self.assertRaises(ValueError):
-                split_run_path(os.path.dirname(d))
-
-
 if __name__ == '__main__':
     unittest.main()

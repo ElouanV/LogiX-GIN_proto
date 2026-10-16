@@ -54,3 +54,11 @@ def evaluate(model, loader, device, prefix=''):
     else:
         res['f1'] = float(f1_score(y, pred, average='macro', zero_division=0))
     return {f'{prefix}{k}': v for k, v in res.items()}
+
+
+def full_eval(model, loaders, device):
+    """evaluate() on every loader of ``{split: loader}``, keys prefixed with the split."""
+    m = {}
+    for name, loader in loaders.items():
+        m.update(evaluate(model, loader, device, prefix=f'{name}_'))
+    return m

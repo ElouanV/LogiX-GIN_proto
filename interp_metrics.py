@@ -54,7 +54,6 @@ Writes <run_path>/interp_<split>.json next to each checkpoint and prints one row
 import argparse
 import json
 import os
-import pickle
 from collections import Counter
 
 import numpy as np
@@ -65,9 +64,9 @@ from torch_geometric.nn import global_add_pool, global_max_pool, global_mean_poo
 
 from explain_proto import proto_dim_map, readout_columns
 from models_proto.model_proto import MODELS
-from unpack_rules import dataset_from_path
 from utils.datasets import spec
 from utils.evaluation import evaluate, predict
+from utils.runs import RunDir, get_device
 
 LEVELS = {cls.__name__: level for level, cls in MODELS.items()}
 
@@ -310,9 +309,8 @@ def _subgraph_edges(edge_index, nodes):
 
 
 def run(run_path, split, ckpt, device, dataset=None):
-    model = torch.load(os.path.join(run_path, ckpt), map_location=device, weights_only=False)
-    data = pickle.load(open(os.path.join(run_path, 'data.pkl'), 'rb'))
-    res = interp_metrics(model, data[f'{split}_dataset'], device, dataset or dataset_from_path(run_path))
+    run = RunDir(run_path, dataset)
+    res = interp_metrics(run.model(device, ckpt), run.pickled(split), device, run.dataset)
     with open(os.path.join(run_path, f'interp_{split}.json'), 'w') as f:
         json.dump(res, f, indent=1)
     return res
@@ -326,7 +324,7 @@ def main():
     ap.add_argument('--dataset', default=None, help='default: read from the run path')
     ap.add_argument('--out', default=None, help='also write the table as CSV here')
     a = ap.parse_args()
-    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    device = get_device()
     rows = []
     for p in a.run_path:
         rows.append({'run_path': p, **run(p, a.split, a.ckpt, device, a.dataset)})
