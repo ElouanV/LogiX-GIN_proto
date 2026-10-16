@@ -166,18 +166,27 @@ def literal_kind(model, i):
 
 
 def head_literal_text(model, i):
-    """Readable form of head literal i, e.g. 'some node matches P3'."""
+    """Readable form of head literal i, e.g. 'some node is within 3 mismatches of P3'.
+
+    With masked prototypes s = exp(-m/T) (m = mismatches on cared bits), so a threshold
+    on max over nodes of s is a threshold on the closest node's mismatch count m*.
+    """
     _, k, op, _ = head_literal_map(model)[i]
     lo, hi = head_literal_interval(model, i)
     kind = literal_kind(model, i)
     if kind == 'always':
         return f'{op} match(P{k}) ≥ 0: always true, acts as a bias'
-    strict = model.proto.masked and float(model.proto.mask_temp) <= 1.0
-    if op == 'max' and strict:
-        if kind == 'present' and lo > np.exp(-1):
-            return f'some node matches P{k}'
-        if kind == 'absent' and hi < 0.999:
-            return f'no node matches P{k}'
+    if np.isnan(lo):
+        return f'{op} match(P{k}): never true'
+    if op == 'max' and model.proto.masked:
+        T = float(model.proto.mask_temp)
+        m_hi = int(np.floor(-T * np.log(lo) + 1e-6)) if lo > 0 else None  # s ≥ lo ⇔ m* ≤ m_hi
+        m_lo = int(np.ceil(-T * np.log(hi) - 1e-6))                        # s ≤ hi ⇔ m* ≥ m_lo
+        if kind == 'present':
+            return f'some node matches P{k}' if m_hi == 0 else f'some node is within {m_hi} mismatch{"es" * (m_hi > 1)} of P{k}'
+        if kind == 'absent':
+            return f'no node matches P{k}' if m_lo <= 1 else f'every node has ≥ {m_lo} mismatches with P{k}'
+        return f'closest node to P{k} has {m_lo}-{m_hi} mismatches'
     what = f'{op} over nodes of match(P{k})'
     if kind == 'present':
         return f'{what} ≥ {lo:.2f}'
@@ -545,7 +554,7 @@ def _box_text(model, xs, lits, A, l, u, w, max_lits):
 def plot_unfolding(model, rec, ds='Mutagenicity', k=None, max_bits=8, max_lits=3, depth=3):
     """One prediction unfolded down to atom counts.
 
-    class <- the cited head literal 'some node matches P_k' <- P_k's cared bits at its
+    class <- the cited head literal 'some node is within m mismatches of P_k' <- P_k's cared bits at its
     best-matching node v <- for each true unit, its shortest sufficient set of literals
     (neighbourhood counts of lower units, or of atoms at L0) <- for a count of a lower unit,
     one witness neighbour where that unit holds, unfolded the same way. Everything is the
