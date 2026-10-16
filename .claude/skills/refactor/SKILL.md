@@ -1,6 +1,6 @@
 ---
 name: refactor
-description: Behaviour-preserving refactoring of the LogiX-GIN research codebase — remove duplicated code, move logic into OOP modules, thin out entry-point scripts, clean the repo — while proving numbers do not change. Use when the user asks to refactor, deduplicate, restructure, modularize, clean up the repo, "factor out", merge the *_node / models_proto / PLEX copies, or when a new feature would otherwise copy-paste existing code.
+description: Behaviour-preserving refactoring of the LogiX-GIN research codebase — remove duplicated code, move logic into OOP modules, thin out entry-point scripts, clean the repo — while proving numbers do not change. Use when the user asks to refactor, deduplicate, restructure, modularize, clean up the repo, "factor out", merge the models_proto / PLEX copies, or when a new feature would otherwise copy-paste existing code.
 ---
 
 # Refactor (behaviour-preserving)
@@ -32,10 +32,6 @@ Known hotspots in this repo (re-measure, they may have changed):
 - `models_proto/tell.py` is a copy of `models/tell.py` plus the hard / sharpness modes.
   Prototype checkpoints pickle `models_proto.tell.LogicalLayer`, so it cannot simply
   become an import (the old `models_proto/model.py` / `model_node.py` copies are gone).
-- `train_*.py` vs `train_*_node.py`: large twins (~260-290 differing lines) with the
-  graph-level vs node-level task as the main difference; the node scripts are unused by the
-  paper and still broken upstream (see commit db62acd). The `optimize_*` twins were merged
-  into `optimize_*.py --task graph|node` (grid search in `utils/grid_search.py`).
 - `PLEX/proto.py` is a copy of `models_proto/proto.py` with only the import changed. PLEX is
   a separate repo, so ask before coupling them.
 

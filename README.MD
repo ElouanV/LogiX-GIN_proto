@@ -43,9 +43,9 @@ teacher differs, so never mix teachers of two machines within one dataset).
 ## Training Models:
 It is possible to train the models using the following commands
 - Black-box models
-`python train_baseline.py` and `python train_baseline_node.py` for a single run or `python optimize_baseline.py [--task node]` to do a grid search
+`python train_baseline.py` for a single run or `python optimize_baseline.py` to do a grid search
 - Logic models
-`python train_logic.py` and `python train_logic_node.py` for a single run or `python optimize_logic.py [--task node]` to do a grid search
+`python train_logic.py` for a single run or `python optimize_logic.py` to do a grid search
 
 ## Analyzing results:
 - `nbs/Results.ipynb` allows visualizing classification results

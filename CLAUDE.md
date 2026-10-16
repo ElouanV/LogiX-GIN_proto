@@ -39,8 +39,7 @@ from a commit, a command and a seed.
   variants). Pure computations (metrics, min covers) can stay functions. Prefer composition
   and small base classes over deep inheritance.
 - **No duplicated code:** before writing something, look for an existing implementation and
-  reuse or generalize it. Examples: the `train_*_node.py` twins of the train scripts, and
-  `PLEX/` copies of `proto.py`. When two copies must diverge, extract the shared part and
+  reuse or generalize it. Example: the `PLEX/` copies of `proto.py`. When two copies must diverge, extract the shared part and
   parametrize the difference. Existing duplication is refactoring debt (see the `refactor`
   skill). Don't add more of it.
 - Upstream code (`models/`, original `train_*.py`, notebooks) is the paper's reference
@@ -105,8 +104,8 @@ Compute has a carbon cost. Spend it deliberately.
 
 ## Pipeline
 
-1. Teacher: `train_baseline.py` / `train_baseline_node.py` writes to `results/<Dataset>/`.
-2. Logic student: `train_logic.py` / `train_logic_node.py` writes to `results_logic/<Dataset>/`.
+1. Teacher: `train_baseline.py` writes to `results/<Dataset>/`.
+2. Logic student: `train_logic.py` writes to `results_logic/<Dataset>/`.
 3. Prototype student: `train_proto.py` (`--proto_level node|graph|both`, `--num_prototypes`,
    `--push_every`, `--proto_mask`, `--seed`) writes to `results_proto/`. It uses the same
    distillation as `train_logic.py` and differs only in the head.
@@ -130,8 +129,9 @@ Compute has a carbon cost. Spend it deliberately.
   used. Spaces, studies and best sets are saved under `results_hps/` (see the module
   docstring). Models and spaces live in `configs/models.yaml` and
   `configs/search_spaces.yaml`; changing a space needs a new hps root.
-- `optimize_*.py` run grid searches (upstream; `--task node` for the node-level twins,
-  `utils/grid_search.py`). `optimize_*.py` and `train_*.py` accept `--dataset`
+- `optimize_*.py` run grid searches (upstream, `utils/grid_search.py`). The node-classification
+  twins `train_*_node.py` were removed (unused, broken upstream; in git history);
+  `models/model_node.py` is kept. `optimize_*.py` and `train_*.py` accept `--dataset`
   (MUTAG, Mutagenicity, AIDS, BBBP, PROTEINS, ...).
 - `scripts/` holds only helpers (`env.sh`, `mlflow_server.sh`, `check_setup.py`). The old
   per-experiment launchers were removed (in git history up to ca49a45): batches are YAML configs.
