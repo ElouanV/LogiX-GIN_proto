@@ -40,7 +40,7 @@ from torch_geometric.loader import DataLoader
 
 from latent_logic import (ATOMS, CLASSES, collect_activations, explain_component,
                           explain_head)
-from utils.utils import get_dataset
+from utils.datasets import get_dataset
 
 
 def atom(x_row):

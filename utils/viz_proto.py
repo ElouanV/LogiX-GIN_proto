@@ -17,7 +17,7 @@ a figure shows the explanation a reader gets, not the soft network.
                         literal, prototype, its cared bits, and each true unit's shortest
                         sufficient literals, followed to a witness neighbour
     plot_examples       test graphs with the nodes matching each cited prototype marked,
-                        the ground-truth region shaded (interp_metrics.GROUND_TRUTH: NO2/NH2 on
+                        the ground-truth region shaded (configs/datasets.yaml: NO2/NH2 on
                         Mutagenicity, the planted motifs on BA2Motifs / BAMultiShapes) and the
                         explanation written
 """
@@ -33,9 +33,10 @@ import torch
 from torch_geometric.loader import DataLoader
 
 from explain_proto import readout_columns
-from interp_metrics import (GROUND_TRUTH, _subgraph_edges, aggregate, ground_truth_region, head_literal_map,
-                            level_of, shortest_explanation, symbolic_head, trunk_states)
-from latent_logic import ATOMS, CLASSES, collect_activations, explain_component, literal_name
+from interp_metrics import (_subgraph_edges, aggregate, head_literal_map, level_of, shortest_explanation,
+                            symbolic_head, trunk_states)
+from latent_logic import ATOMS, collect_activations, explain_component, literal_name
+from utils.datasets import spec
 from utils.evaluation import predict
 from utils.viz import AQUA, BLUE, INK, INK2, ORANGE, save  # noqa: F401  (save re-exported for callers)
 
@@ -55,7 +56,7 @@ def load_run(run_path, ckpt='best.pt', device='cpu'):
 
 
 def class_name(c, ds):
-    return CLASSES[c] if ds == 'Mutagenicity' and c < len(CLASSES) else f'class {c}'
+    return spec(ds).class_name(c)
 
 
 # ---------------------------------------------------------------------------
@@ -387,9 +388,10 @@ def pick_examples(recs, ds='Mutagenicity'):
                 return r
         return None
 
-    scored = GROUND_TRUTH[ds][0] if ds in GROUND_TRUTH else ()
+    truth = spec(ds).ground_truth
+    scored = truth.classes if truth else ()
     correct = lambda r: r['backed'] and r['y'] == r['net'] == r['rule']  # noqa: E731
-    gt = first(lambda r: correct(r) and r['y'] in scored and bool(ground_truth_region(ds, r['x'], r['edge_index']).any()))
+    gt = first(lambda r: correct(r) and r['y'] in scored and bool(spec(ds).region(r['x'], r['edge_index']).any()))
     gt_name = 'mutagen with NO2/NH2' if ds == 'Mutagenicity' else f'{class_name(gt["y"], ds)} with its motif' if gt else ''
     # Mutagenicity: a correct non-mutagen, as before the ground-truth table; else another class
     other = first(lambda r: correct(r) and r['y'] not in scored) if ds == 'Mutagenicity' else \
@@ -420,7 +422,7 @@ def plot_examples(model, recs, ds='Mutagenicity', examples=None):
         for k, color in colors.items():
             for v in best_nodes(r['s_node'][:, k]):
                 marks.setdefault(int(v), []).append(color)
-        region = ground_truth_region(ds, r['x'], r['edge_index'])
+        region = spec(ds).region(r['x'], r['edge_index'])
         region = [] if region is None else np.flatnonzero(region.numpy())
         draw_graph(gax, r['x'], r['edge_index'], marks=marks, region=region,
                    title=f'{case}\ntrue {class_name(r["y"], ds)} · network {class_name(r["net"], ds)} · '
@@ -438,8 +440,7 @@ def plot_examples(model, recs, ds='Mutagenicity', examples=None):
         tax.text(0, 1, '\n'.join(lines[:9]) + ('\n …' if len(lines) > 9 else ''), va='top', fontsize=7.8,
                  color=INK, transform=tax.transAxes)
     fig.suptitle('Worked examples (test split). Rings: best-matching nodes of the prototypes whose presence '
-                 'the explanation requires; shaded: ' + {'Mutagenicity': 'within one hop of an NO2/NH2 group'}.get(
-                     ds, 'the planted motif nodes (ground truth)') if ds in GROUND_TRUTH else
+                 'the explanation requires; shaded: ' + spec(ds).ground_truth.shading if spec(ds).ground_truth else
                  'Worked examples (test split). Rings: best-matching nodes of the cited prototypes',
                  x=0.01, ha='left', fontsize=10)
     fig.tight_layout()
@@ -489,7 +490,7 @@ def plot_trunk_match(model, rec, k, ds='Mutagenicity', max_nodes=14):
     gs = fig.add_gridspec(2, 3, width_ratios=[1.1, max(len(cols), 6) * 0.11 + 0.6, 2.6],
                           height_ratios=[1, 1], wspace=0.35, hspace=0.5)
     gax = fig.add_subplot(gs[:, 0])
-    region = ground_truth_region(ds, rec['x'], rec['edge_index'])
+    region = spec(ds).region(rec['x'], rec['edge_index'])
     draw_graph(gax, rec['x'], rec['edge_index'], marks={v: BLUE},
                region=[] if region is None else np.flatnonzero(region.numpy()),
                title=f'test graph {rec["i"]}\ntrue {class_name(rec["y"], ds)}, rules {class_name(rec["rule"], ds)}')
@@ -610,7 +611,7 @@ def plot_unfolding(model, rec, ds='Mutagenicity', k=None, max_bits=8, max_lits=3
         c = layer_col[l % 3]
         if c not in marks[w]:
             marks[w].append(c)
-    region = ground_truth_region(ds, x, ei)
+    region = spec(ds).region(x, ei)
     draw_graph(gax, x, ei, marks=marks, region=[] if region is None else np.flatnonzero(region.numpy()),
                title=f'test graph {rec["i"]}: true {class_name(rec["y"], ds)} · rules {class_name(rec["rule"], ds)}\n'
                      f'rings = nodes used below (L0 aqua, L1 orange, L2 blue)')

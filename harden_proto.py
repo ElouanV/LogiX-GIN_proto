@@ -33,7 +33,8 @@ from sparsify_proto import full_eval, split_run_path
 from train_proto import test_epoch, train_epoch
 from utils import tracking
 from utils.optim import build_optimizer
-from utils.utils import get_dataset, set_seed
+from utils.datasets import get_dataset
+from utils.utils import set_seed
 
 
 def ramp(epoch, epochs, harden_to, ramp_frac):

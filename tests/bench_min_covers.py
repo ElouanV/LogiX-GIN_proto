@@ -140,7 +140,7 @@ def load_run(run_path, split):
     import torch
     from torch_geometric.loader import DataLoader
     from latent_logic import collect_activations
-    from utils.utils import get_dataset
+    from utils.datasets import get_dataset
     torch.set_grad_enabled(False)
     if run_path is None:
         hits = sorted(glob.glob('results_proto/Mutagenicity/*proto_level=node*/*/0/best.pt'))

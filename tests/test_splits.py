@@ -19,7 +19,7 @@ class TestSplits(unittest.TestCase):
         pkls = sorted(glob.glob('results/Mutagenicity/*nogumbel=False*/[0-9]/data.pkl'))
         if not pkls:
             self.skipTest('no Mutagenicity teacher run')
-        from utils.utils import get_dataset
+        from utils.datasets import get_dataset
         y = get_dataset('Mutagenicity').data.y
         for p in pkls[:3]:
             seed = int(os.path.basename(os.path.dirname(p)))
@@ -62,7 +62,7 @@ class TestSplits(unittest.TestCase):
         """Committed splits/*.json are the folds the k-fold teachers were trained on."""
         if not glob.glob(os.path.join(splits.SPLIT_DIR, 'MUTAG_kfold.json')):
             self.skipTest('no saved MUTAG split')
-        from utils.utils import get_dataset
+        from utils.datasets import get_dataset
         y = get_dataset('MUTAG').data.y
         for k in range(N_FOLDS):
             f = splits.load_split('MUTAG', k, y=y)

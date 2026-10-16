@@ -56,7 +56,8 @@ from rule_eval import logical_layers, print_stats, rule_metrics, rule_stats
 from train_proto import test_epoch
 from utils import tracking
 from utils.evaluation import evaluate, held_out
-from utils.utils import get_dataset, set_seed, zero_nan_gradients
+from utils.datasets import get_dataset
+from utils.utils import set_seed, zero_nan_gradients
 
 
 def unit_groups(model):

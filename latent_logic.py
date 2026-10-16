@@ -90,11 +90,12 @@ from torch_geometric.loader import DataLoader
 from torch_geometric.nn import global_mean_pool, global_max_pool, global_add_pool
 
 from models_proto.tell import step
-from utils.utils import get_dataset
+from utils.datasets import spec
+from utils.datasets import get_dataset
 
 # data/Mutagenicity/Mutagenicity/raw/Mutagenicity_label_readme.txt
-ATOMS = ['C', 'O', 'Cl', 'H', 'N', 'F', 'Br', 'S', 'P', 'I', 'Na', 'K', 'Li', 'Ca']
-CLASSES = ['mutagen', 'nonmutagen']
+ATOMS = list(spec('Mutagenicity').features)        # the notebook's atom and class names
+CLASSES = list(spec('Mutagenicity').classes)
 
 
 # =============================================================================

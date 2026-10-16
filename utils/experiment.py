@@ -365,7 +365,7 @@ class Experiment:
     def preflight(self, datasets):
         """Conditions every machine must meet before running (results comparable across machines)."""
         from utils.splits import load_split
-        from utils.utils import get_dataset
+        from utils.datasets import get_dataset
         problems = []
         dirty = subprocess.run(['git', 'status', '--porcelain', '--untracked-files=no'], cwd=REPO,
                                capture_output=True, text=True).stdout.strip()

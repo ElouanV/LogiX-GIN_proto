@@ -126,7 +126,7 @@ def draw_split(y, seed, split='random'):
 
 def check(datasets=None):
     """Each saved file against a fresh draw and against every k-fold teacher's data.pkl."""
-    from utils.utils import get_dataset
+    from utils.datasets import get_dataset
     bad = 0
     files = sorted(glob.glob(os.path.join(SPLIT_DIR, '*_kfold.json')))
     for path in files:
@@ -157,7 +157,7 @@ def main():
     ap.add_argument('datasets', nargs='*')
     a = ap.parse_args()
     if a.action == 'export':
-        from utils.utils import get_dataset
+        from utils.datasets import get_dataset
         for ds in a.datasets:
             print(save_splits(ds, get_dataset(ds).data.y))
     else:

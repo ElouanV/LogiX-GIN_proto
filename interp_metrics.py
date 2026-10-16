@@ -35,7 +35,7 @@ not the network.
                              decode to short rules (CLAUDE.md, rule-extraction limits)
     literal_purity           class purity of the graphs where a cited head literal holds,
                              weighted by how often it is cited
-    gt_precision / gt_chance datasets with a node-level ground truth (GROUND_TRUTH), node
+    gt_precision / gt_chance datasets with a node-level ground truth (configs/datasets.yaml), node
                              prototypes and classic models: share of the best-matching nodes of
                              the cited positive prototype literals that lie in the ground-truth
                              region, on correctly predicted graphs of the scored classes that
@@ -57,7 +57,6 @@ import os
 import pickle
 from collections import Counter
 
-import networkx as nx
 import numpy as np
 import pandas as pd
 import torch
@@ -65,13 +64,12 @@ from torch_geometric.loader import DataLoader
 from torch_geometric.nn import global_add_pool, global_max_pool, global_mean_pool
 
 from explain_proto import proto_dim_map, readout_columns
-from latent_logic import ATOMS
 from models_proto.model_proto import MODELS
 from unpack_rules import dataset_from_path
+from utils.datasets import spec
 from utils.evaluation import evaluate, predict
 
 LEVELS = {cls.__name__: level for level, cls in MODELS.items()}
-MUTAGEN = 0                       # Mutagenicity label 0 = mutagen (latent_logic.CLASSES)
 
 
 def level_of(model):
@@ -158,51 +156,6 @@ def shortest_explanation(w, threshold, true_lits):
     return order[:reached[0] + 1] if len(reached) else None
 
 
-def toxicophore_nodes(x, edge_index, hops=1):
-    """Nodes within `hops` of an NO2 or NH2 group (N with >= 2 O, resp. >= 2 H, neighbours)."""
-    atom = x.argmax(1)
-    N, O, H = ATOMS.index('N'), ATOMS.index('O'), ATOMS.index('H')
-    src, dst = edge_index
-    region = torch.zeros(len(atom), dtype=torch.bool)
-    for n in torch.nonzero(atom == N).flatten().tolist():
-        nb = dst[src == n]
-        for other in (O, H):
-            grp = nb[atom[nb] == other]
-            if len(grp) >= 2:
-                region[n] = True
-                region[grp] = True
-    for _ in range(hops):
-        grow = region.clone()
-        grow[dst[region[src]]] = True
-        region = grow
-    return region
-
-
-def motif_nodes(x, edge_index):
-    """Nodes on a cycle (biconnected components of >= 3 nodes). The BA bases of BA2Motifs and
-    BAMultiShapes are trees (m = 1), so these are exactly the planted motifs: nodes 20-24 of
-    BA2Motifs, the house / 3x3 grid / wheel of BAMultiShapes."""
-    g = nx.Graph()
-    g.add_nodes_from(range(len(x)))
-    g.add_edges_from(edge_index.t().tolist())
-    region = torch.zeros(len(x), dtype=torch.bool)
-    for comp in nx.biconnected_components(g):
-        if len(comp) > 2:
-            region[list(comp)] = True
-    return region
-
-
-# dataset -> (classes whose explanations are scored, node region of the ground truth)
-GROUND_TRUTH = {'Mutagenicity': ((MUTAGEN,), toxicophore_nodes),
-                'BA2Motifs': ((0, 1), motif_nodes),       # 0 = 5-cycle, 1 = house, on nodes 20-24
-                'BaMultiShapes': ((1,), motif_nodes)}     # 1 = exactly two of house, grid, wheel
-
-
-def ground_truth_region(ds_name, x, edge_index):
-    """The ground-truth node region of one graph [N] (bool), or None without ground truth."""
-    return GROUND_TRUTH[ds_name][1](x, edge_index) if ds_name in GROUND_TRUTH else None
-
-
 def prototype_table(model):
     """Per prototype layer: cared bits [K × d], and the trunk unit (layer·h + unit) of every bit."""
     level = level_of(model)
@@ -254,8 +207,9 @@ def interp_metrics(model, dataset, device, ds_name=None):
     base = level_of(model) == 'base'
     lit_map = base_literal_map(model) if base else head_literal_map(model)
     protos = None if base else prototype_table(model)
-    gt = ds_name in GROUND_TRUTH and level_of(model) in ('node', 'both', 'base')
-    gt_classes = GROUND_TRUTH[ds_name][0] if gt else ()
+    truth = spec(ds_name).ground_truth if ds_name else None
+    gt = truth is not None and level_of(model) in ('node', 'both', 'base')
+    gt_classes = truth.classes if gt else ()
 
     margins, lits, head_pred, bit_agree, n_nodes = [], [], [], [], []
     gt_hits, gt_chance = [], []
@@ -278,7 +232,7 @@ def interp_metrics(model, dataset, device, ds_name=None):
             if not gt or e is None or c not in gt_classes or int(y[g0 + g]) != c:
                 continue
             nodes = torch.nonzero(data.batch == g).flatten()
-            region = ground_truth_region(ds_name, xf[nodes].cpu(), _subgraph_edges(data.edge_index, nodes).cpu())
+            region = spec(ds_name).region(xf[nodes].cpu(), _subgraph_edges(data.edge_index, nodes).cpu())
             if not region.any():
                 continue
             for i in e:

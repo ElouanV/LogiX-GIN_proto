@@ -1,0 +1,95 @@
+# Datasets the pipeline knows (utils/datasets.py): how to load each one and how rules,
+# figures and metrics name its node features and classes.
+#
+#   loader        tu | moleculenet | synthetic | bamultishapes | spmotif | planetoid | ogb_mag
+#   root          cache directory (default data/<name>)
+#   name          name passed to the loader (default: the key)
+#   use_node_attr TUDataset: also read the continuous node attributes (default true)
+#   pre_transform registered transform applied once before caching (utils/datasets.py)
+#   features      names of the one-hot node feature columns, in order (default f0, f1, ...)
+#   classes       class names by label (default "class <c>")
+#   ground_truth  node-level ground truth of the explanations (interp_metrics.py):
+#                   classes  labels whose explanations are scored
+#                   region   node region function (utils/datasets.py: REGIONS)
+#                   motif    what the region is, in figure captions
+#                   shading  how figures describe the shaded region
+#
+# A dataset not listed here loads as a TUDataset of that name with use_node_attr: true.
+
+Mutagenicity:
+  loader: tu
+  features: [C, O, Cl, H, N, F, Br, S, P, I, Na, K, Li, Ca]
+  classes: [mutagen, nonmutagen]
+  ground_truth:
+    classes: [0]
+    region: toxicophore
+    motif: NO2/NH2
+    shading: within one hop of an NO2/NH2 group
+
+# use_node_attr: true would prepend 4 continuous columns (chem, charge, x, y coordinates)
+# to the 38 one-hot atom labels of AIDS, and one continuous column (values in [-538, 798])
+# to the 3 one-hot SSE labels of PROTEINS; the logic layers need [0, 1] literals
+AIDS:
+  loader: tu
+  use_node_attr: false
+PROTEINS:
+  loader: tu
+  use_node_attr: false
+
+# binary atom literals (utils/datasets.py: MolOneHot); cached apart from the raw version
+BBBP:
+  loader: moleculenet
+  root: data/BBBP_onehot
+  pre_transform: mol_onehot
+  features: [C, N, O, S, F, Cl, Br, I, P, H, Na, B, Ca, aromatic, in_ring]
+BBBP_raw:
+  loader: moleculenet
+  name: BBBP
+  root: data/BBBP
+
+# BA graphs with a house or a 5-cycle motif on nodes 20-24 (the class), constant node
+# features; Ba2Motifs (upstream) has random node features (utils/syn_dataset.py)
+BA2Motifs:
+  loader: synthetic
+  root: data/ba_2motifs
+  name: ba_2motifs_clean
+  ground_truth:
+    classes: [0, 1]            # 0 = 5-cycle, 1 = house, on nodes 20-24
+    region: motif
+    motif: its motif
+    shading: the planted motif nodes (ground truth)
+Ba2Motifs:
+  loader: synthetic
+  root: data/ba_2motifs
+  name: ba_2motifs
+Ba2MotifsNoisy:
+  loader: synthetic
+  root: data/ba_2motifs
+  name: ba_2motifsnoisy
+BaMultiShapes:
+  loader: bamultishapes
+  ground_truth:
+    classes: [1]               # 1 = exactly two of house, grid, wheel
+    region: motif
+    motif: its motif
+    shading: the planted motif nodes (ground truth)
+TreeGrid:
+  loader: synthetic
+  root: data/tree_grid
+  name: tree_grid
+BaShapes:
+  loader: synthetic
+  root: data/ba_shapes
+  name: ba_shapes
+BaCommunity:
+  loader: synthetic
+  root: data/ba_community
+  name: ba_community
+SPMotif:
+  loader: spmotif
+  root: data/SPMotif-0.333
+
+Cora: {loader: planetoid}
+CiteSeer: {loader: planetoid}
+PubMed: {loader: planetoid}
+OGB_MAG: {loader: ogb_mag}

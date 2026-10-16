@@ -12,11 +12,12 @@ import torch
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from interp_metrics import (base_literal_map, head_literal_map, interp_metrics, motif_nodes, readout_values,  # noqa: E402
-                            shortest_explanation, symbolic_head, toxicophore_nodes, trunk_states)
+from interp_metrics import (base_literal_map, head_literal_map, interp_metrics, readout_values,  # noqa: E402
+                            shortest_explanation, symbolic_head, trunk_states)
 from latent_logic import ATOMS  # noqa: E402
 from models.model import GINTELL  # noqa: E402
 from models_proto.model_proto import MODELS  # noqa: E402
+from utils.datasets import motif_nodes, toxicophore_nodes  # noqa: E402
 
 
 def one_hot(atoms):
@@ -58,14 +59,14 @@ class TestToxicophore(unittest.TestCase):
         # nitro 1(2,3) on C0, amine 5(6,7) on C4; H8 and C9 hang off C4, two hops from the amine N
         atoms = ['C', 'N', 'O', 'O', 'C', 'N', 'H', 'H', 'H', 'C']
         e = undirected([(0, 1), (1, 2), (1, 3), (0, 4), (4, 5), (5, 6), (5, 7), (4, 8), (8, 9)])
-        strict = toxicophore_nodes(one_hot(atoms), e, hops=0)
+        strict = toxicophore_nodes(one_hot(atoms), e, ATOMS, hops=0)
         self.assertEqual(torch.nonzero(strict).flatten().tolist(), [1, 2, 3, 5, 6, 7])
-        grown = toxicophore_nodes(one_hot(atoms), e, hops=1)
+        grown = toxicophore_nodes(one_hot(atoms), e, ATOMS, hops=1)
         self.assertEqual(torch.nonzero(grown).flatten().tolist(), [0, 1, 2, 3, 4, 5, 6, 7])
 
     def test_single_o_is_not_nitro(self):
         e = undirected([(0, 1), (1, 2)])
-        self.assertFalse(toxicophore_nodes(one_hot(['C', 'N', 'O']), e).any())
+        self.assertFalse(toxicophore_nodes(one_hot(['C', 'N', 'O']), e, ATOMS).any())
 
 
 class TestMotifGroundTruth(unittest.TestCase):

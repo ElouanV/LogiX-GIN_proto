@@ -48,10 +48,11 @@ import numpy as np
 import torch
 from torch_geometric.loader import DataLoader
 
-from latent_logic import ATOMS, collect_activations
+from latent_logic import collect_activations
 from min_covers import count_min_covers, literal_true_intervals, supported_min_covers
 from rule_eval import logical_layers
-from utils.utils import BBBP_FEATURES, get_dataset
+from utils.datasets import spec
+from utils.datasets import get_dataset
 
 TWO_PI = 2 * math.pi
 EXHAUSTIVE_LIMIT = 5e6      # formal rules per unit above which the shortest rule per example is used
@@ -70,8 +71,7 @@ def dataset_from_path(run_path):
 
 
 def feature_names(ds_name, n):
-    names = {'Mutagenicity': ATOMS, 'BBBP': BBBP_FEATURES}.get(ds_name, [])
-    return [names[i] if i < len(names) else f'f{i}' for i in range(n)]
+    return spec(ds_name).feature_names(n)
 
 
 # ----------------------------------------------------------------------------- literals
@@ -697,7 +697,7 @@ def main():
     if os.path.exists(sj):
         m = json.load(open(sj))['after']['metrics']
         meta = f'Test accuracy {m["test_acc"]:.3f} · AUC {m.get("test_auc", float("nan")):.3f} · ' + meta
-    classes = ['mutagen', 'nonmutagen'] if ds_name == 'Mutagenicity' else []
+    classes = list(spec(ds_name).classes)
     kind = 'prototype' if ex['kind'] == 'proto-node' else 'base'
     with open(os.path.join(out, 'rules.md'), 'w') as f:
         f.write(to_markdown(ex, f'Rules of the {kind} LogiX-GIN model — {ds_name}', meta, classes))

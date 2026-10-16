@@ -67,7 +67,7 @@ def main():
            + (f' ({torch.cuda.get_device_name(0)})' if torch.cuda.is_available() else ' - training would run on CPU'))
 
     print('datasets')
-    from utils.utils import get_dataset
+    from utils.datasets import get_dataset
     for name in a.datasets:
         present = os.path.isdir(os.path.join('data', name))
         if not (present or a.download):

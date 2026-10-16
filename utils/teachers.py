@@ -40,7 +40,7 @@ def _split_of(config_dir):
 def rebuild_data(config_dir, seed):
     """data.pkl of one teacher seed, as train_baseline.py writes it."""
     from utils.splits import split_indices
-    from utils.utils import get_dataset
+    from utils.datasets import get_dataset
     dataset = get_dataset(config_dir.split(os.sep)[-2])
     tr, va, te = split_indices(dataset.data.y, seed, _split_of(config_dir), config_dir.split(os.sep)[-2])
     return {'train_indices': tr, 'val_indices': va, 'test_indices': te,
