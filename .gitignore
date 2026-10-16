@@ -4,6 +4,16 @@ mlartifacts/
 mlruns/
 logs/
 
+# datasets (downloaded and processed on first use) and run outputs; the upstream MUTAG
+# files tracked before stay tracked
+/data/*
+!/data/MUTAG/
+/results/
+/results_*/
+/figures/*/
+# PLEX/ is a separate nested clone (CLAUDE.md)
+/PLEX/
+
 # teacher bundles for other machines (python -m utils.teachers pack)
 bundles/
 # hyper-parameter studies (utils/hps.py)
