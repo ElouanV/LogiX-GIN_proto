@@ -1,5 +1,6 @@
 # MLflow tracking store (utils/tracking.py, scripts/mlflow_server.sh)
 mlflow.db
+mlflow.db-journal
 mlartifacts/
 mlruns/
 logs/
