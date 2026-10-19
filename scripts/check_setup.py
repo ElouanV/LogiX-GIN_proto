@@ -21,7 +21,8 @@ REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, REPO)
 os.chdir(REPO)
 
-DATASETS = ['MUTAG', 'PROTEINS', 'BaMultiShapes', 'BA2Motifs', 'AIDS', 'BBBP', 'NCI1', 'Mutagenicity']
+# the experiment datasets: those with committed k-fold indices (splits/<dataset>_kfold.json)
+DATASETS = sorted(f[:-len('_kfold.json')] for f in os.listdir(os.path.join(REPO, 'splits')) if f.endswith('_kfold.json'))
 PKG = {'torch': 'torch', 'torch-geometric': 'torch_geometric', 'numpy': 'numpy', 'scikit-learn': 'sklearn',
        'pandas': 'pandas', 'mlflow': 'mlflow', 'optuna': 'optuna', 'codecarbon': 'codecarbon', 'rdkit': 'rdkit'}
 

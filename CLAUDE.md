@@ -42,6 +42,20 @@ from a commit, a command and a seed.
   reuse or generalize it. Example: the `PLEX/` copies of `proto.py`. When two copies must diverge, extract the shared part and
   parametrize the difference. Existing duplication is refactoring debt (see the `refactor`
   skill). Don't add more of it.
+- **Shared modules, use them instead of re-writing:**
+  - `utils/runs.py`: run-directory layout and loading. `RunDir(path)` parses any run path
+    (`results*/`, hps trials, `results_final/...`, nested `sparse/ qat/ harden/` fine-tunes)
+    and gives `.dataset .seed .args .data .pickled(split) .subsets() .model() .teacher()`;
+    `load_run` opens a run with its loaders; `teacher_dir` / `student_dir` name new runs;
+    `EVAL_BATCH_SIZE`, `get_device()`. Never re-parse paths or re-open `data.pkl` by hand.
+  - `utils/training.py`: the seed scaffold of the train scripts (`student_data`,
+    `distill_trunk`, `class_loss`, `test_epoch`, `tracked_student_seed`, `register_final`,
+    `run_seeds`, `log_summary`) and `finetune_run` (MLflow run of a fine-tune).
+  - `utils/datasets.py` + `configs/datasets.yaml`: dataset registry. `spec(name)` gives the
+    loader, feature / class names and ground-truth region; never test `ds == 'Mutagenicity'`.
+- **Adding a dataset:** one entry in `configs/datasets.yaml` (loader, `features`, `classes`,
+  optional `ground_truth`; an unlisted TUDataset loads with generic names), then commit its
+  folds (`python -m utils.splits export <ds>`) and list it in an experiment YAML.
 - Upstream code (`models/`, original `train_*.py`, notebooks) is the paper's reference
   implementation. Refactor it only behaviour-preservingly, and check that its outputs are
   unchanged (see Reproducibility).
@@ -113,7 +127,7 @@ Compute has a carbon cost. Spend it deliberately.
    convs last to first; works on base and proto runs; the joint variant was removed), `unpack_rules.py` (all rules as readable predicates), `rule_eval.py`
    (rules/unit + fidelity), `explain_proto.py` (prototype-level explanations),
    `binarise_ablation.py` (accuracy with one part binarised at a time: head, trunk, each layer), `interp_metrics.py` (interpretability metrics of the symbolic model: fidelity, explanation
-   size per prediction, prototype purity, NO2/NH2 ground truth), to compare methods beside acc/AUC.
+   size per prediction, prototype purity, ground-truth precision where `configs/datasets.yaml` defines a region), to compare methods beside acc/AUC.
 5. Rule-extraction core: `latent_logic.py` (port of `nbs/LayerWiseRules.ipynb`, the
    canonical reading; keep its logic unchanged) and `min_covers.py` (exact DNF of a unit =
    its minimal covers).

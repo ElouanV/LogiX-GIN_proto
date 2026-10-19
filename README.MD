@@ -26,6 +26,10 @@ python scripts/check_setup.py --download
 python run_experiment.py configs/experiments/sum_ablation.yaml run --datasets AIDS   # this machine's dataset(s)
 python run_experiment.py configs/experiments/sum_ablation.yaml status
 ```
+New dataset: add an entry to `configs/datasets.yaml` (how to load it, the names of its
+node features and classes, its ground-truth region if it has one), commit its folds with
+`python -m utils.splits export <dataset>`, then add it to an experiment YAML.
+
 Splits: the indices of every k-fold split are committed in `splits/<dataset>_kfold.json`
 and are the reference for every model, external baselines included
 (`utils.splits.load_split(dataset, fold)`; `python -m utils.splits check` compares them
