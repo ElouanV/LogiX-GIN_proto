@@ -123,5 +123,27 @@ class PrototypeLayer(nn.Module):
         self.proto_logits.copy_((2 * l[idx] - 1) * magnitude)
         return idx
 
+    @torch.no_grad()
+    def init_from_rows(self, x, generator=None, magnitude=3.0):
+        """Data init: every prototype set to a real input row, chosen by farthest-point
+        sampling in Hamming distance (a random first row, then each time the row farthest from
+        the rows already chosen), so the prototypes are distinct observed patterns spread over
+        the data. A random binary prototype in d dimensions is about as far from every row as
+        from any other (Hamming ~d/2), so the readout starts with almost no contrast between
+        graphs.
+
+        x: [n × d] feature rows (nodes or graphs) from the training set, binarised at 0.5.
+        Returns the chosen row index per prototype."""
+        l = (x > 0.5).float()
+        first = int(torch.randint(len(l), (1,), generator=generator))
+        idx = [first]
+        dist = (l != l[first]).float().sum(1)
+        for _ in range(self.num_prototypes - 1):
+            idx.append(int(dist.argmax()))
+            dist = torch.minimum(dist, (l != l[idx[-1]]).float().sum(1))
+        idx = torch.tensor(idx, device=l.device)
+        self.proto_logits.copy_((2 * l[idx] - 1) * magnitude)
+        return idx
+
     def extra_repr(self):
         return f'in_features={self.in_features}, num_prototypes={self.num_prototypes}, mask={self.masked}'

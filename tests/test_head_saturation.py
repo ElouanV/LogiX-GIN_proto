@@ -139,5 +139,53 @@ class TestCenterHeadBias(unittest.TestCase):
                                                   'proto_ent_reg': 0})['logit_loss'])
 
 
+
+@unittest.skipIf(train_proto is None, 'training modules not importable')
+class TestProtoInit(unittest.TestCase):
+    """--proto_init data (a searched hyper-parameter): prototypes start on training rows."""
+
+    def setUp(self):
+        torch.manual_seed(1)
+        self.teacher = GIN(3, 2, num_layers=2, hidden_dim=8)
+        self.loader = DataLoader(graphs(24, 0), batch_size=8, shuffle=False)
+
+    def test_farthest_point_rows(self):
+        from models_proto.proto import PrototypeLayer
+        p = PrototypeLayer(4, 3)
+        x = torch.tensor([[0., 0, 0, 0], [0, 0, 0, 1], [1, 1, 1, 1], [1, 1, 0, 0]])
+        idx = p.init_from_rows(x, torch.Generator().manual_seed(0)).tolist()
+        self.assertEqual(len(set(idx)), 3)
+        self.assertTrue(torch.equal(p.prototypes.detach(), x[idx]))            # binary prototypes = the rows
+        first = idx[0]
+        far = (x != x[first]).sum(1)
+        self.assertEqual(far[idx[1]].item(), far.max().item())                  # second = farthest from first
+
+    def test_data_init_every_level_deterministic_and_rng_untouched(self):
+        for level in ('node', 'graph', 'both'):
+            out = []
+            for _ in range(2):
+                torch.manual_seed(0)
+                m = get_model(level, num_features=3, num_classes=2, num_layers=2, hidden_dim=8, num_prototypes=3)
+                torch.manual_seed(7)
+                idxs = train_proto.init_prototypes(self.teacher, m, self.loader, 'cpu', seed=3)
+                after = torch.rand(3)
+                out.append((idxs, [p.proto_logits.clone() for p in m.proto_layers], after))
+            torch.manual_seed(7)
+            self.assertTrue(torch.equal(out[0][2], torch.rand(3)), level)       # global RNG not consumed
+            self.assertEqual(len(out[0][0]), len(m.proto_layers))
+            for l in out[0][1]:
+                self.assertTrue(bool((l.abs() == 3.0).all()), level)             # set to +-magnitude
+
+    def test_cli_and_space(self):
+        from utils import hps
+        _, _, off = train_proto.parse_cli(['--dataset', 'MUTAG'])
+        self.assertNotIn('proto_init', off)                                     # default random: path unchanged
+        _, _, on = train_proto.parse_cli(['--dataset', 'MUTAG', '--proto_init', 'data'])
+        self.assertEqual(on['proto_init'], 'data')
+        for model in ('node_mask_push', 'graph', 'node_mask_push_qat'):
+            self.assertEqual(hps.MODELS[model]['space']['proto_init']['choices'], ['random', 'data'])
+        self.assertNotIn('proto_init', hps.MODELS['classic']['space'])
+
+
 if __name__ == '__main__':
     unittest.main()

@@ -35,6 +35,12 @@ Extra knobs over train_logic.py:
                                       checkpoints are kept only at sharpness B, so the kept
                                       network is close to the rules it is read as. Off by
                                       default (no harden_* entry in the results path).
+    --proto_init data                 prototypes start on training nodes (node level) / graphs
+                                      (graph level) of the teacher's states, farthest-point
+                                      sampled, instead of random patterns, which are all about
+                                      equally far from every node (no readout contrast at init).
+                                      A searched hyper-parameter (configs/search_spaces.yaml);
+                                      default random, upstream, out of the results path.
     --head_init center, --logit_loss  fixes of the head saturation (sigmoid(10 z) = exactly 1 at
                                       init, zero task gradient, constant output on small datasets
                                       such as MUTAG): centre the head bias on the training set
@@ -62,7 +68,7 @@ from utils import tracking
 from utils.evaluation import held_out
 from utils.optim import build_optimizer
 from utils.runs import EVAL_BATCH_SIZE, PROTO_ROOT, best_teacher_dir, get_device, student_dir
-from utils.training import (center_head, class_loss, distill_trunk, eval_student, fresh_dir, log_summary, register_final,
+from utils.training import (center_head, class_loss, distill_trunk, teacher_states, eval_student, fresh_dir, log_summary, register_final,
                             run_seeds, student_data, test_epoch, tracked_student_seed)
 from utils.utils import set_seed, zero_nan_gradients
 
@@ -232,6 +238,16 @@ def center_head_bias(teacher, model_proto, loader, device):
                        lambda layers_x, layers_y, batch: model_proto.head_input(model_proto.readout(layers_y[:-1], batch)))
 
 
+def init_prototypes(teacher, model_proto, loader, device, seed):
+    """--proto_init data: every prototype set to a training node (node level) or graph (graph
+    level) of the teacher's states, by farthest-point sampling (GINTELLProtoBase.init_prototypes;
+    first row drawn with a generator seeded by the run seed). RNG forked as in center_head.
+    Returns the chosen row indices per prototype layer, in loader order."""
+    with held_out():
+        states = [(layers_y[:-1], batch) for _, layers_y, batch in teacher_states(teacher, loader, device)]
+        return model_proto.init_prototypes(states, torch.Generator().manual_seed(seed))
+
+
 def sharpness(args, epoch):
     """Geometric hardening schedule: 1 until --harden_start_frac of the epochs (default the
     end of the warmup), harden_to from --harden_end_frac on."""
@@ -282,12 +298,15 @@ def _train_seed(dataset_name, baseline_path, args, seed, device, root=PROTO_ROOT
     scheduler = ReduceLROnPlateau(optimizer, mode='max', factor=0.99, patience=300, min_lr=1e-5, verbose=True)
 
     weights = loss_weights(args)
+    push_log = []
+    if args.get('proto_init') == 'data':          # before centring: the head reads the prototype similarities
+        idxs = init_prototypes(model, model_proto, push_loader, device, seed)
+        push_log.append({'epoch': -1, 'init': 'data', 'indices': [i.cpu().tolist() for i in idxs]})
     if args.get('head_init') == 'center':
         set_mask_temperature(model_proto, args, 0)
         print('head bias centred, shift', center_head_bias(model, model_proto, push_loader, device).tolist())
     best_val_acc = 0
     best_test_acc = 0
-    push_log = []
     for epoch in range(args['epochs']):
         set_mask_temperature(model_proto, args, epoch)
         beta = sharpness(args, epoch)
@@ -411,6 +430,7 @@ def get_parser():
     parser.add_argument('--harden_to',      default=None,       type=float, help='Gradual hardening: final sharpness of literals and conv units (default: off)')
     parser.add_argument('--harden_start_frac', default=None,    type=float, help='Fraction of the epochs where hardening starts (default: end of warmup, with --harden_to)')
     parser.add_argument('--harden_end_frac', default=None,      type=float, help='Fraction of the epochs where the final sharpness is reached (default 0.9, with --harden_to)')
+    parser.add_argument('--proto_init',     default='random',   choices=['random', 'data'], help='random (upstream uniform logits) or data: prototypes set to training nodes / graphs of the teacher, farthest-point sampled')
     parser.add_argument('--head_init',      default=None,       choices=['center'], help='center: head bias set so each class\'s mean pre-activation on the training set is 0 (default: random, upstream)')
     parser.add_argument('--logit_loss',     action='store_true',             help='BCE of the task loss on the head logits, so a saturated head keeps its gradient (default: on the sigmoid output, upstream)')
     parser.add_argument('--optimizer',      default=None,       choices=['adamw', 'muon'], help='Default adamw (upstream); muon: Muon on the conv weights (utils/optim.py)')
@@ -439,6 +459,8 @@ def parse_cli(argv=None):
     for k in ('head_init', 'logit_loss'):                            # off: results paths unchanged
         if not args[k]:
             args.pop(k)
+    if args['proto_init'] == 'random':
+        args.pop('proto_init')
     if args['optimizer'] in (None, 'adamw'):                         # default: results paths unchanged
         args.pop('optimizer')
     if args['muon_lr'] is None or 'optimizer' not in args:

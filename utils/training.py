@@ -88,14 +88,22 @@ def center_head(teacher, fc, loader, device, head_input):
     samples Gumbel states), so the training draws are those of a run without it."""
     zs = []
     with held_out():
-        for data in loader:
-            batch = data.batch.to(device)
-            layers_x, layers_y = teacher.forward_e(data.x.float().to(device), data.edge_index.to(device), batch)
+        for layers_x, layers_y, batch in teacher_states(teacher, loader, device):
             fc(head_input(layers_x, layers_y, batch))
             zs.append(fc.logits / (10 * getattr(fc, 'sharpness_out', 1.0)))    # logits = 10 beta (W.lit + b)
         shift = torch.cat(zs).mean(0)
         fc.b.sub_(shift)
     return shift
+
+
+def teacher_states(teacher, loader, device):
+    """(layers_x, layers_y, batch) of the frozen teacher's forward_e on every batch of
+    loader. The teacher samples Gumbel states: call it inside utils.evaluation.held_out when
+    the training draws must not move."""
+    for data in loader:
+        batch = data.batch.to(device)
+        layers_x, layers_y = teacher.forward_e(data.x.float().to(device), data.edge_index.to(device), batch)
+        yield layers_x, layers_y, batch
 
 
 def class_loss(out, y, num_classes, logits=None):

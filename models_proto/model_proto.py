@@ -261,6 +261,17 @@ class GINTELLProtoBase(nn.Module):
         return self.head(self.readout(xs, batch))
 
     @torch.no_grad()
+    def init_prototypes(self, layer_states, generator=None):
+        """Data init of every prototype layer (PrototypeLayer.init_from_rows) from per-layer
+        node states [(xs, batch)] of training graphs (e.g. the teacher's). Returns, per
+        prototype layer, the chosen row indices (nodes or graphs, in layer_states order)."""
+        feats = [[] for _ in self.proto_layers]
+        for xs, batch in layer_states:
+            for i, f in enumerate(self.prototype_inputs(xs, batch)):
+                feats[i].append(f)
+        return [layer.init_from_rows(torch.cat(feats[i]), generator) for i, layer in enumerate(self.proto_layers)]
+
+    @torch.no_grad()
     def project_prototypes(self, loader, device=None):
         """ProtoPNet push: snap each prototype to its closest training node
         (node-level) / graph (graph-level). Returns, per prototype layer, the
