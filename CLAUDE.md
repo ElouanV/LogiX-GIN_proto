@@ -103,8 +103,8 @@ Compute has a carbon cost. Spend it deliberately.
 - Python: `~/miniconda3/envs/logix-gin/bin/python` (py3.10, torch 2.5.1+cu121, PyG 2.6.1).
   `environment.yml` pins it (keep it in sync when installing a package); the paper's
   original is `environment.upstream.yml` (py3.8 / torch 1.12, no longer builds) and the old
-  `pygeo` env is broken. Launchers find the interpreter through `scripts/env.sh` (`$PY`,
-  the active logix-gin env, then the default conda paths).
+  `pygeo` env is broken. Shell helpers (`scripts/mlflow_server.sh`) find the interpreter
+  through `scripts/env.sh` (`$PY`, the active logix-gin env, then the default conda paths).
 - Other machines: **`docs/EXPERIMENT_PROTOCOL.md` is binding** for anyone (agent or human)
   running the paper's experiments on a machine other than the main one; read it first. README
   "Running the experiments (any machine)" is the short version. Teachers move as a
@@ -125,7 +125,7 @@ Compute has a carbon cost. Spend it deliberately.
    `--push_every`, `--proto_mask`, `--seed`) writes to `results_proto/`. It uses the same
    distillation as `train_logic.py` and differs only in the head.
 4. Post-hoc: `harden_proto.py` (gradual sharpening fine-tune), `qat_proto.py` (quantization-aware fine-tune by Quant-Noise, docs/QAT.md), `sparsify_proto.py` (layer-by-layer Hoyer fine-tune of the notebook, head then
-   convs last to first; works on base and proto runs; the joint variant was removed), `unpack_rules.py` (all rules as readable predicates), `rule_eval.py`
+   convs last to first; works on base and proto runs), `unpack_rules.py` (all rules as readable predicates), `rule_eval.py`
    (rules/unit + fidelity), `explain_proto.py` (prototype-level explanations),
    `binarise_ablation.py` (accuracy with one part binarised at a time: head, trunk, each layer), `interp_metrics.py` (interpretability metrics of the symbolic model: fidelity, explanation
    size per prediction, prototype purity, ground-truth precision where `configs/datasets.yaml` defines a region), to compare methods beside acc/AUC.
@@ -144,12 +144,11 @@ Compute has a carbon cost. Spend it deliberately.
   used. Spaces, studies and best sets are saved under `results_hps/` (see the module
   docstring). Models and spaces live in `configs/models.yaml` and
   `configs/search_spaces.yaml`; changing a space needs a new hps root.
-- `optimize_*.py` run grid searches (upstream, `utils/grid_search.py`). The node-classification
-  twins `train_*_node.py` were removed (unused, broken upstream; in git history);
-  `models/model_node.py` is kept. `optimize_*.py` and `train_*.py` accept `--dataset`
-  (MUTAG, Mutagenicity, AIDS, BBBP, PROTEINS, ...).
-- `scripts/` holds only helpers (`env.sh`, `mlflow_server.sh`, `check_setup.py`). The old
-  per-experiment launchers were removed (in git history up to ca49a45): batches are YAML configs.
+- `optimize_*.py` run grid searches (upstream, `utils/grid_search.py`). `optimize_*.py` and
+  `train_*.py` accept `--dataset` (MUTAG, Mutagenicity, AIDS, BBBP, PROTEINS, ...). Only graph
+  classification is trained; `models/model_node.py` (node classification) has no training script.
+- `scripts/` holds only helpers (`env.sh`, `mlflow_server.sh`, `check_setup.py`); batches are
+  YAML configs, not launcher scripts.
 
 ## Tracking
 
@@ -206,7 +205,9 @@ Compute has a carbon cost. Spend it deliberately.
   literals and have about 1e10 minimal covers per unit. This is a limit of weight
   diffusion, not of the search: raising `max_rule_len` or lowering `min_support` only
   burns time. Before extracting, compute the greedy minimum-cardinality bound (sum the
-  largest weights until they reach the threshold). It is instant and exact.
+  largest weights until they reach the threshold). It is instant and exact, but it bounds
+  rule length, not rule count: also count each unit's minimal covers
+  (`min_covers.count_min_covers`), because enumerating a unit with ~1e10 covers exhausts memory.
 - Fan-in k bounds rules/unit by C(k, k/2). The removed joint Hoyer sparsification (reg ~3)
   cut rules/unit by orders of magnitude at about 1 point of accuracy but hurt prototype
   fidelity; the layer-wise one keeps fidelity but so far only sparsifies the last conv layer.

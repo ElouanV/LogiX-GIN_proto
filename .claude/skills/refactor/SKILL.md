@@ -9,7 +9,7 @@ A refactor in a research repo is only acceptable if **every result it can produc
 identical**. The workflow below makes that checkable, commits in small reversible steps,
 and never mixes refactoring with behaviour changes.
 
-Read `CLAUDE.md` first (conventions, invariants, reproducibility and git rules). Use the
+`CLAUDE.md`'s conventions, invariants, reproducibility and git rules apply. Use the
 `logix-gin` interpreter: `~/miniconda3/envs/logix-gin/bin/python`.
 
 ## 1. Scope and map
@@ -32,8 +32,8 @@ Known hotspots in this repo (re-measure, they may have changed):
 - `models_proto/tell.py` is a copy of `models/tell.py` plus the hard / sharpness modes.
   Prototype checkpoints pickle `models_proto.tell.LogicalLayer`, so it cannot simply
   become an import (the old `models_proto/model.py` / `model_node.py` copies are gone).
-- `PLEX/proto.py` is a copy of `models_proto/proto.py` with only the import changed. PLEX is
-  a separate repo, so ask before coupling them.
+- `PLEX/proto.py` started as a copy of `models_proto/proto.py` and has since diverged (no
+  care mask). PLEX is a separate repo, so ask before coupling them.
 
 ## 2. Capture a baseline before touching code
 
@@ -48,6 +48,9 @@ must pin the current behaviour:
   `torch.backends.cudnn.deterministic = True`, or compare on CPU.
 - **Rule extraction**, if touched: the `latent_logic` / `unpack_rules` / `rule_eval`
   output for one run.
+- Post-hoc scripts write into the run they read (`interp_metrics.py`: `interp_<split>.json`,
+  `explain_proto.py`: `explanations.json`), so run the baseline on a scratchpad copy of any
+  `results*/` run.
 - Also run the existing test suite:
   `~/miniconda3/envs/logix-gin/bin/python -m unittest discover tests -v`.
 
@@ -63,8 +66,8 @@ Keep it cheap (green-compute rule): seconds to a few minutes, never a full train
 - Design rules:
   - Shared logic moves into a package module (`models/`, `models_proto/`, `utils/`). Entry
     scripts end up as argparse plus calls.
-  - Variants that differ by a parameter take the parameter (`task='graph'|'node'`) or share
-    a base class with small overrides. Don't use a flag-riddled god function.
+  - Variants that differ by a parameter take the parameter (`task='classification'|'regression'`)
+    or share a base class with small overrides. Don't use a flag-riddled god function.
   - Keep public names that other code or checkpoints rely on: `GINTELL`, `.convs`, `.fc`,
     `reg_loss`, `entropy_loss`, `phi_in`. Keep CLI flags and their defaults. Keep output
     paths.
