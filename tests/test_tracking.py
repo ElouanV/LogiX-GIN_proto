@@ -96,6 +96,9 @@ class TestTracking(TmpStore):
 
     def test_step_metrics_are_batched_then_flushed(self):
         os.environ['LOGIX_MLFLOW_FLUSH_STEPS'] = '2'
+        # _last_flush is module state: without this, the first log flushes at once whenever an
+        # earlier test flushed more than 120 s ago (slow machine, long suite)
+        os.environ['LOGIX_MLFLOW_FLUSH_SECS'] = '1e9'
         try:
             with tracking.run('test/exp', 'batched') as r:
                 rid = r.info.run_id
@@ -108,6 +111,7 @@ class TestTracking(TmpStore):
                 self.assertEqual(len(self.client().get_metric_history(rid, 'a')), 3)
         finally:
             os.environ.pop('LOGIX_MLFLOW_FLUSH_STEPS')
+            os.environ.pop('LOGIX_MLFLOW_FLUSH_SECS')
         hist = self.client().get_metric_history(rid, 'a')
         self.assertEqual([(m.step, m.value) for m in hist], [(0, 1.0), (1, 2.0), (2, 3.0)])
 
