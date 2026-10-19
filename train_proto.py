@@ -35,6 +35,13 @@ Extra knobs over train_logic.py:
                                       checkpoints are kept only at sharpness B, so the kept
                                       network is close to the rules it is read as. Off by
                                       default (no harden_* entry in the results path).
+    --head_init center, --logit_loss  fixes of the head saturation (sigmoid(10 z) = exactly 1 at
+                                      init, zero task gradient, constant output on small datasets
+                                      such as MUTAG): centre the head bias on the training set
+                                      before the first step (utils.training.center_head),
+                                      and compute the task BCE from the logits
+                                      (utils.training.class_loss). Off by default (upstream);
+                                      they only enter the results path when set.
     --optimizer muon [--muon_lr]      Muon on the conv weight matrices, AdamW on the rest
                                       (utils/optim.py). Default AdamW, upstream; the
                                       optimizer only enters the results path when set.
@@ -55,7 +62,7 @@ from utils import tracking
 from utils.evaluation import held_out
 from utils.optim import build_optimizer
 from utils.runs import EVAL_BATCH_SIZE, PROTO_ROOT, best_teacher_dir, get_device, student_dir
-from utils.training import (class_loss, distill_trunk, eval_student, fresh_dir, log_summary, register_final,
+from utils.training import (center_head, class_loss, distill_trunk, eval_student, fresh_dir, log_summary, register_final,
                             run_seeds, student_data, test_epoch, tracked_student_seed)
 from utils.utils import set_seed, zero_nan_gradients
 
@@ -68,7 +75,7 @@ def run_dir(dataset_name, args, baseline_args, seed=None, root=PROTO_ROOT):
 
 def train_epoch(model, model_proto, loader, device, optimizer, num_classes, train_full=True,
                 conv_reg=0.001, fc_reg=0.01, proto_div_reg=0.0, proto_ent_reg=0.0,
-                mask_reg=0.0, vocab_reg=0.0, quant=None, base_weight=1.0, extra_loss=None):
+                mask_reg=0.0, vocab_reg=0.0, logit_loss=False, quant=None, base_weight=1.0, extra_loss=None):
     """One epoch of distillation + task loss. QAT (qat_proto.py): ``quant`` is applied to a
     layer's output before the next layer reads it in the chained (train_full) term, the
     layer's own loss stays on its soft output; the loss is ``base_weight`` x this objective
@@ -79,7 +86,7 @@ def train_epoch(model, model_proto, loader, device, optimizer, num_classes, trai
     untouched (utils.evaluation.held_out)."""
     kw = dict(train_full=train_full, conv_reg=conv_reg, fc_reg=fc_reg, proto_div_reg=proto_div_reg,
               proto_ent_reg=proto_ent_reg, mask_reg=mask_reg, vocab_reg=vocab_reg, quant=quant,
-              base_weight=base_weight, extra_loss=extra_loss)
+              logit_loss=logit_loss, base_weight=base_weight, extra_loss=extra_loss)
     if optimizer is None:
         with held_out():
             return _epoch(model, model_proto, loader, device, None, num_classes, **kw)
@@ -87,7 +94,7 @@ def train_epoch(model, model_proto, loader, device, optimizer, num_classes, trai
 
 
 def _epoch(model, model_proto, loader, device, optimizer, num_classes, train_full, conv_reg, fc_reg,
-           proto_div_reg, proto_ent_reg, mask_reg, vocab_reg, quant, base_weight, extra_loss):
+           proto_div_reg, proto_ent_reg, mask_reg, vocab_reg, logit_loss, quant, base_weight, extra_loss):
     train = optimizer is not None
     model.train()
     model_proto.train(train)
@@ -125,13 +132,13 @@ def _epoch(model, model_proto, loader, device, optimizer, num_classes, train_ful
             # exactly as the fc did before.
             out = model_proto.forward_from_layers(layers_y[:-1], batch)
             pred = out.argmax(-1)
-            loss += class_loss(out, y, num_classes)
+            loss += class_loss(out, y, num_classes, model_proto.fc.logits if logit_loss else None)
 
             if train_full:
                 model_proto.fc.phi_in.tau = 10
                 out = model_proto(data.x.float().to(device), data.edge_index.to(device), batch)
                 pred = out.argmax(-1)
-                loss += class_loss(out, y, num_classes)
+                loss += class_loss(out, y, num_classes, model_proto.fc.logits if logit_loss else None)
 
             loss += fc_reg*(model_proto.fc.reg_loss + model_proto.fc.phi_in.entropy)
 
@@ -179,7 +186,7 @@ def loss_weights(args):
     fine-tunes harden_proto.py / qat_proto.py, which keep the objective that trained it)."""
     return dict(conv_reg=args['conv_reg'], fc_reg=args['fc_reg'], proto_div_reg=args['proto_div_reg'],
                 proto_ent_reg=args['proto_ent_reg'], mask_reg=args.get('mask_reg', 0.0),
-                vocab_reg=args.get('vocab_reg') or 0.0)
+                vocab_reg=args.get('vocab_reg') or 0.0, logit_loss=args.get('logit_loss', False))
 
 
 @torch.no_grad()
@@ -210,6 +217,19 @@ def mask_temperature(args, epoch, d):
     t1 = args.get('mask_temp_end', 1.0)
     f = min(1.0, epoch / max(1, args.get('mask_anneal_frac', 1.0) * args['epochs'] - 1))
     return t0 * (t1 / t0) ** f
+
+
+def set_mask_temperature(model_proto, args, epoch):
+    if args.get('proto_mask'):
+        for p in model_proto.proto_layers:
+            p.mask_temp = mask_temperature(args, epoch, p.in_features)
+
+
+def center_head_bias(teacher, model_proto, loader, device):
+    """--head_init center (utils.training.center_head) on the teacher's node states of the
+    graphs in loader, through this model's readout."""
+    return center_head(teacher, model_proto.fc, loader, device,
+                       lambda layers_x, layers_y, batch: model_proto.head_input(model_proto.readout(layers_y[:-1], batch)))
 
 
 def sharpness(args, epoch):
@@ -262,13 +282,14 @@ def _train_seed(dataset_name, baseline_path, args, seed, device, root=PROTO_ROOT
     scheduler = ReduceLROnPlateau(optimizer, mode='max', factor=0.99, patience=300, min_lr=1e-5, verbose=True)
 
     weights = loss_weights(args)
+    if args.get('head_init') == 'center':
+        set_mask_temperature(model_proto, args, 0)
+        print('head bias centred, shift', center_head_bias(model, model_proto, push_loader, device).tolist())
     best_val_acc = 0
     best_test_acc = 0
     push_log = []
     for epoch in range(args['epochs']):
-        if args.get('proto_mask'):
-            for p in model_proto.proto_layers:
-                p.mask_temp = mask_temperature(args, epoch, p.in_features)
+        set_mask_temperature(model_proto, args, epoch)
         beta = sharpness(args, epoch)
         if args.get('harden_to') is not None:
             model_proto.set_sharpness(beta)
@@ -390,6 +411,8 @@ def get_parser():
     parser.add_argument('--harden_to',      default=None,       type=float, help='Gradual hardening: final sharpness of literals and conv units (default: off)')
     parser.add_argument('--harden_start_frac', default=None,    type=float, help='Fraction of the epochs where hardening starts (default: end of warmup, with --harden_to)')
     parser.add_argument('--harden_end_frac', default=None,      type=float, help='Fraction of the epochs where the final sharpness is reached (default 0.9, with --harden_to)')
+    parser.add_argument('--head_init',      default=None,       choices=['center'], help='center: head bias set so each class\'s mean pre-activation on the training set is 0 (default: random, upstream)')
+    parser.add_argument('--logit_loss',     action='store_true',             help='BCE of the task loss on the head logits, so a saturated head keeps its gradient (default: on the sigmoid output, upstream)')
     parser.add_argument('--optimizer',      default=None,       choices=['adamw', 'muon'], help='Default adamw (upstream); muon: Muon on the conv weights (utils/optim.py)')
     parser.add_argument('--muon_lr',        default=None,       type=float, help='Muon learning rate (default 0.02, with --optimizer muon)')
     parser.add_argument('--pool_ops',       default=None,       type=str,   help='Comma-separated readout pooling, e.g. mean,max,sum (default mean,max; sum: see models_proto/model_proto.py)')
@@ -412,6 +435,9 @@ def parse_cli(argv=None):
     hardened = args['harden_to'] is not None
     for k in ('harden_to', 'harden_start_frac', 'harden_end_frac'):     # off: results paths unchanged
         if args[k] is None or not hardened:
+            args.pop(k)
+    for k in ('head_init', 'logit_loss'):                            # off: results paths unchanged
+        if not args[k]:
             args.pop(k)
     if args['optimizer'] in (None, 'adamw'):                         # default: results paths unchanged
         args.pop('optimizer')

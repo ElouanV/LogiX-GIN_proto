@@ -277,9 +277,14 @@ class LogicalLayer(nn.Module):
         w = self.weight
         if margin:          # QAT (qat_proto.py): the pre-activation W.lit + b, the rule margins at rate 1
             return x @ w.t() + self.b
-        o = sigmoid(x @ w.t() + self.b, tau=10 * beta_out)
+        z = x @ w.t() + self.b
+        o = sigmoid(z, tau=10 * beta_out)
+        # logits: o = sigmoid(logits), for a loss that keeps its gradient where o rounds to
+        # exactly 0 or 1 (utils.training.class_loss); None when the output is binarised
+        self.logits = 10 * beta_out * z
         if discrete_output or getattr(self, 'hard_out', False):
             o = hard_sigmoid(x @ w.t() + self.b)
+            self.logits = None
         
         self.entropy_loss = entropy_loss + -(o*torch.log(o+1e-8) + (1-o)*torch.log(1-o + 1e-8)).mean()
         return o

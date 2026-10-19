@@ -2,6 +2,12 @@
 per-layer BCE on the trunk against the teacher's binary node states, warmup then full
 end-to-end training, ReduceLROnPlateau, one run per seed (upstream training, unchanged).
 
+--head_init center and --logit_loss fix the head saturation (sigmoid(10 z) = exactly 1 at the
+random init, so no task gradient and a constant output on small datasets): the head bias
+is centred on the training set before the first step (utils.training.center_head) and the
+task BCE is computed from the logits (utils.training.class_loss). Off by default
+(upstream); they only enter the results path when set.
+
     python train_logic.py --dataset MUTAG --baseline_path "results/MUTAG/<teacher cfg>" [--seed 0]
 
 Results go to results_logic/<dataset>/<cfg>/<teacher cfg>/<seed> (utils/runs.py).
@@ -12,13 +18,14 @@ import os
 
 import torch
 from torch.optim.lr_scheduler import ReduceLROnPlateau
+from torch_geometric.loader import DataLoader
 
 from models.model import GINTELL
 from models_proto.gintell import GINTELLPool
 from utils import tracking
 from utils.evaluation import held_out
-from utils.runs import LOGIC_ROOT, best_teacher_dir, get_device, student_dir
-from utils.training import (class_loss, distill_trunk, eval_student, fresh_dir, log_summary, register_final,
+from utils.runs import EVAL_BATCH_SIZE, LOGIC_ROOT, best_teacher_dir, get_device, student_dir
+from utils.training import (center_head, class_loss, distill_trunk, eval_student, fresh_dir, log_summary, register_final,
                             run_seeds, student_data, test_epoch, tracked_student_seed)
 from utils.utils import set_seed, zero_nan_gradients
 
@@ -36,17 +43,32 @@ def build_logic_model(args, baseline_args, num_features, num_classes, device):
     return GINTELL(**kwargs).to(device)
 
 
-def train_epoch(model, model_tell, loader, device, optimizer, num_classes, train_full=True, conv_reg=0.001, fc_reg=0.01):
+def train_epoch(model, model_tell, loader, device, optimizer, num_classes, train_full=True, conv_reg=0.001, fc_reg=0.01,
+                logit_loss=False):
     """One distillation epoch; optimizer=None: the same loss on loader without training (the
     val loss): student in eval mode and without input dropout, teacher sampled as in
     training, no gradient, RNG untouched (utils.evaluation.held_out)."""
     if optimizer is None:
         with held_out():
-            return _epoch(model, model_tell, loader, device, None, num_classes, train_full, conv_reg, fc_reg)
-    return _epoch(model, model_tell, loader, device, optimizer, num_classes, train_full, conv_reg, fc_reg)
+            return _epoch(model, model_tell, loader, device, None, num_classes, train_full, conv_reg, fc_reg, logit_loss)
+    return _epoch(model, model_tell, loader, device, optimizer, num_classes, train_full, conv_reg, fc_reg, logit_loss)
 
 
-def _epoch(model, model_tell, loader, device, optimizer, num_classes, train_full, conv_reg, fc_reg):
+def head_input(model_tell, layers_x):
+    """What the head reads in the warmup: the teacher's pooled readout (mean | max | sum,
+    or the columns this model's readout keeps) and its negation."""
+    pooled = layers_x[-1]
+    if hasattr(model_tell, 'select_pooled'):
+        pooled = model_tell.select_pooled(pooled)
+    return torch.hstack([pooled, 1 - pooled])
+
+
+def center_head_bias(teacher, model_tell, loader, device):
+    """--head_init center (utils.training.center_head) on the teacher's pooled readout."""
+    return center_head(teacher, model_tell.fc, loader, device, lambda layers_x, layers_y, batch: head_input(model_tell, layers_x))
+
+
+def _epoch(model, model_tell, loader, device, optimizer, num_classes, train_full, conv_reg, fc_reg, logit_loss):
     train = optimizer is not None
     model.train()
     model_tell.train(train)
@@ -69,18 +91,15 @@ def _epoch(model, model_tell, loader, device, optimizer, num_classes, train_full
             loss = distill_trunk(model_tell, layers_x, layers_y, data.edge_index.to(device), train, train_full, conv_reg,
                                  total_loss, total_correct, len(loader.dataset), len(loader))
 
-            pooled = layers_x[-1]           # the teacher's mean ‖ max ‖ sum readout
-            if hasattr(model_tell, 'select_pooled'):
-                pooled = model_tell.select_pooled(pooled)
-            out = model_tell.fc(torch.hstack([pooled, 1-pooled]))
+            out = model_tell.fc(head_input(model_tell, layers_x))
             pred = out.argmax(-1)
-            loss += class_loss(out, y, num_classes)
+            loss += class_loss(out, y, num_classes, model_tell.fc.logits if logit_loss else None)
 
             if train_full:
                 model_tell.fc.phi_in.tau = 10
                 out = model_tell(data.x.float().to(device), data.edge_index.to(device), data.batch.to(device))
                 pred = out.argmax(-1)
-                loss += class_loss(out, y, num_classes)
+                loss += class_loss(out, y, num_classes, model_tell.fc.logits if logit_loss else None)
 
             loss += fc_reg*(model_tell.fc.reg_loss + model_tell.fc.phi_in.entropy)
 
@@ -125,14 +144,17 @@ def _train_seed(dataset_name, baseline_path, args, seed, device, root=LOGIC_ROOT
     optimizer = torch.optim.AdamW(model_tell.parameters(), lr=args['lr'], weight_decay=args['l2'])
     scheduler = ReduceLROnPlateau(optimizer, mode='max', factor=0.99, patience=300, min_lr=1e-5, verbose=True)
 
+    if args.get('head_init') == 'center':
+        push = DataLoader(d.datasets['train'], batch_size=EVAL_BATCH_SIZE, shuffle=False)
+        print('head bias centred, shift', center_head_bias(model, model_tell, push, device).tolist())
+    loss_args = dict(conv_reg=args['conv_reg'], fc_reg=args['fc_reg'], logit_loss=args.get('logit_loss', False))
     best_val_acc = 0
     best_test_acc = 0
     for epoch in range(args['epochs']):
         full = epoch > args['warmup_epochs']
         train_loss, train_acc = train_epoch(model, model_tell, train_loader, device, optimizer, d.num_classes,
-                                            train_full=full, conv_reg=args['conv_reg'], fc_reg=args['fc_reg'])
-        val_loss, _ = train_epoch(model, model_tell, val_loader, device, None, d.num_classes,
-                                  train_full=full, conv_reg=args['conv_reg'], fc_reg=args['fc_reg'])
+                                            train_full=full, **loss_args)
+        val_loss, _ = train_epoch(model, model_tell, val_loader, device, None, d.num_classes, train_full=full, **loss_args)
         val_acc = test_epoch(model_tell, val_loader, device)
         test_acc = test_epoch(model_tell, test_loader, device)
 
@@ -206,6 +228,8 @@ def get_parser():
     parser.add_argument('--conv_reg',      default=0.001,      type=float,   help='Conv layer regularization')
     parser.add_argument('--fc_reg',        default=0.01,      type=float,    help='Last layer regularization')
     parser.add_argument('--pool_ops',      default=None,      type=str,     help='Comma-separated readout pooling, e.g. mean,max (default: upstream mean,max,sum; models_proto/gintell.py)')
+    parser.add_argument('--head_init',     default=None,      choices=['center'], help='center: head bias set so each class\'s mean pre-activation on the training set is 0 (default: random, upstream)')
+    parser.add_argument('--logit_loss',    action='store_true',              help='BCE of the task loss on the head logits, so a saturated head keeps its gradient (default: on the sigmoid output, upstream)')
     parser.add_argument('--only_eval',     action='store_true',              help='Only evaluate the kept checkpoints')
     parser.add_argument('--seed',          default=None,      type=int,    help='Single seed to run')
     return parser
@@ -215,6 +239,9 @@ def parse_cli(argv=None):
     """(dataset, baseline_path or None, args) from a command line; optimize_optuna.py
     builds its trials through it too."""
     args = get_parser().parse_args(argv).__dict__
+    for k in ('head_init', 'logit_loss'):                            # off: results paths unchanged
+        if not args[k]:
+            args.pop(k)
     return args.pop('dataset'), args.pop('baseline_path'), args
 
 

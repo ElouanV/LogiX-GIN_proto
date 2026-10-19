@@ -239,9 +239,14 @@ class LogicalLayer(nn.Module):
         self.reg_loss = reg_loss
         
         w = self.weight
-        o = sigmoid(x @ w.t() + self.b)
+        z = x @ w.t() + self.b
+        o = sigmoid(z)
+        # logits: o = sigmoid(logits) (sigmoid has tau 10), for a loss that keeps its gradient
+        # where o rounds to exactly 0 or 1 (utils.training.class_loss); None when binarised
+        self.logits = 10 * z
         if discrete_output:
             o = hard_sigmoid(x @ w.t() + self.b)
+            self.logits = None
         
         self.entropy_loss = entropy_loss + -(o*torch.log(o+1e-8) + (1-o)*torch.log(1-o + 1e-8)).mean()
         return o

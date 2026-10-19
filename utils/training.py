@@ -15,7 +15,7 @@ import torch.nn.functional as F
 
 from utils import tracking
 from utils.datasets import get_dataset
-from utils.evaluation import evaluate
+from utils.evaluation import evaluate, held_out
 from utils.runs import load_teacher, make_loaders, num_features, save_split, split_datasets, write_args
 from utils.utils import set_seed
 
@@ -73,11 +73,43 @@ def distill_trunk(student, layers_x, layers_y, edge_index, train, train_full, co
     return loss
 
 
-def class_loss(out, y, num_classes):
+def center_head(teacher, fc, loader, device, head_input):
+    """Data-dependent init of a student's head bias (train_logic.py / train_proto.py
+    --head_init center): shift fc.b so that each class's mean pre-activation W.lit + b over
+    the graphs of ``loader`` (the training set) is 0. Returns the shift.
+
+    At the random LogicalLayer init every head literal is >= 0.5 (phi_in maps [0, 1] to
+    [0.5, 0.92]) and about half the weights are ~exp(weight_exp) (sigmoid(10 * logit U(.1, .9))
+    is nearly binary), so W.lit + b is ~2-20 and sigmoid(10 (W.lit + b)) rounds to exactly 1
+    for every graph: no task gradient, and on small datasets the head stays constant.
+
+    ``head_input(layers_x, layers_y, batch)`` builds fc's input from the frozen teacher's
+    forward_e, as in the warmup the head first trains on. The RNG is forked (the teacher
+    samples Gumbel states), so the training draws are those of a run without it."""
+    zs = []
+    with held_out():
+        for data in loader:
+            batch = data.batch.to(device)
+            layers_x, layers_y = teacher.forward_e(data.x.float().to(device), data.edge_index.to(device), batch)
+            fc(head_input(layers_x, layers_y, batch))
+            zs.append(fc.logits / (10 * getattr(fc, 'sharpness_out', 1.0)))    # logits = 10 beta (W.lit + b)
+        shift = torch.cat(zs).mean(0)
+        fc.b.sub_(shift)
+    return shift
+
+
+def class_loss(out, y, num_classes, logits=None):
     """BCE on the per-class sigmoid outputs + NLL of their log-softmax (the task loss of the
-    LogiX-GIN students)."""
-    return F.binary_cross_entropy(out.reshape(-1), F.one_hot(y, num_classes=num_classes).float().reshape(-1)) + \
-        F.nll_loss(F.log_softmax(out, dim=-1), y.long())
+    LogiX-GIN students).
+
+    With ``logits`` (out = sigmoid(logits), e.g. LogicalLayer.logits) the BCE is computed from
+    them: the same loss, but F.binary_cross_entropy clamps log(0) at -100, so an output that
+    rounds to exactly 0 or 1 in float32 (|logit| > ~17) gets no gradient however wrong it is,
+    which kept saturated heads stuck (train_proto.py --logit_loss)."""
+    target = F.one_hot(y, num_classes=num_classes).float().reshape(-1)
+    bce = F.binary_cross_entropy(out.reshape(-1), target) if logits is None else \
+        F.binary_cross_entropy_with_logits(logits.reshape(-1), target)
+    return bce + F.nll_loss(F.log_softmax(out, dim=-1), y.long())
 
 
 @dataclass

@@ -198,6 +198,13 @@ Compute has a carbon cost. Spend it deliberately.
   `train_proto.py` sum is off by default (node level: no negation on the count; graph
   level: counts are thresholded by `phi_sum` before the prototypes); on `train_logic.py`
   `--pool_ops mean,max` drops the upstream sum (`models_proto/gintell.py`).
+- Head saturation: at the random `LogicalLayer` init the head's `sigmoid(10 z)` is exactly 1
+  (z ~ 2-20), so the BCE gives no gradient, the masks never shrink and the output is
+  constant on small datasets (MUTAG NMP: 10/10 folds). The prototype models in
+  `configs/models.yaml` train with `--head_init center --logit_loss` (bias centred on the
+  training set, BCE on the logits); both are off by default in `train_proto.py`, so older
+  runs reproduce. `classic` stays upstream. A run still needs enough optimizer steps
+  (MUTAG at lr 3e-4 x 5k steps stays constant even with the fix).
 
 ## Rule-extraction limits (read before running extraction)
 
