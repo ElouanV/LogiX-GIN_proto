@@ -20,6 +20,9 @@ Protocol
     accuracy) scores 0.5. Test metrics are recorded for every trial but never used by the
     search. Trials report the validation balanced accuracy every ``report_every`` epochs
     after warmup, and the median pruner stops those below the median of earlier trials.
+    A trial whose model predicts one class for every validation graph at
+    ``collapse_reports`` consecutive reports after warmup is pruned as collapsed
+    (constant head, see train_logic.py --head_init), even before the median pruner starts.
 
     Per fold (``fold=k`` for every k, nested model selection) every reported test number
     comes from a configuration chosen without that fold's test set. With a single tuning
@@ -81,7 +84,7 @@ def load_models():
 MODELS = load_models()
 
 SAMPLER = {'name': 'TPESampler', 'multivariate': True, 'n_startup_trials': 10}
-PRUNER = {'name': 'MedianPruner', 'n_startup_trials': 8, 'n_warmup_steps': 0}
+PRUNER = {'name': 'MedianPruner', 'n_startup_trials': 8, 'n_warmup_steps': 0, 'collapse_reports': 2}
 OBJECTIVE = 'val_balanced_acc of the checkpoint kept by validation accuracy (maximise)'
 OBJECTIVE_QAT = ('val_balanced_acc of the rule model after the QAT fine-tune (qat_proto.run_qat) of the checkpoint '
                  'kept by validation accuracy (maximise)')
@@ -215,19 +218,30 @@ def open_study(dataset, model, fold, root=ROOT, sampler_seed=0, register=True, t
 
 class PruneCallback:
     """epoch_callback of train_seed: validation balanced accuracy every ``every`` epochs
-    after warmup, reported to the trial; raises TrialPruned when the pruner says so."""
+    after warmup, reported to the trial; raises TrialPruned when the pruner says so, or
+    when the model predicted one class for every validation graph at ``collapse_reports``
+    consecutive reports (a collapsed run; one report is not enough, a healthy run can pass
+    through one such epoch right after warmup)."""
 
-    def __init__(self, trial, warmup, device, every=50):
+    def __init__(self, trial, warmup, device, every=50, collapse_reports=PRUNER['collapse_reports']):
         self.trial, self.warmup, self.device, self.every = trial, warmup, device, every
+        self.collapse_reports, self.n_collapsed = collapse_reports, 0
 
     def __call__(self, epoch, model, val_loader):
         import optuna
         from utils import tracking
-        from utils.evaluation import evaluate
+        from utils.evaluation import evaluate, predict
         if epoch <= self.warmup or (epoch - self.warmup) % self.every:
             return
         v = evaluate(model, val_loader, self.device)['balanced_acc']
         self.trial.report(v, step=epoch)
+        out, _ = predict(model, val_loader, self.device)
+        self.n_collapsed = self.n_collapsed + 1 if len(set(out.argmax(-1).tolist())) == 1 else 0
+        if self.collapse_reports and self.n_collapsed >= self.collapse_reports:
+            self.trial.set_user_attr('collapsed', True)
+            tracking.set_tags({'hps_pruned_at': epoch, 'hps_collapsed': True})
+            raise optuna.TrialPruned(f'one class predicted for every val graph at {self.n_collapsed} '
+                                     f'consecutive reports (epoch {epoch})')
         if self.trial.should_prune():
             tracking.set_tags({'hps_pruned_at': epoch})
             raise optuna.TrialPruned(f'val balanced acc {v:.3f} at epoch {epoch}')

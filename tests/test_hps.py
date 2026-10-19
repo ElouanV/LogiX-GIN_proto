@@ -8,6 +8,8 @@ import sys
 import tempfile
 import unittest
 
+import torch
+
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 try:
@@ -43,6 +45,7 @@ class TestHPS(unittest.TestCase):
             if model.startswith('node'):
                 self.assertTrue(args['proto_mask'])
                 self.assertEqual(args['proto_level'], 'node')
+            self.assertEqual((args['head_init'], args['logit_loss']), ('center', True), model)   # head saturation fix
 
     def test_qat_parameters_go_to_run_qat_not_to_the_training_script(self):
         params = some_params('node_mask_push_qat')
@@ -69,6 +72,63 @@ class TestHPS(unittest.TestCase):
             finally:
                 hps.MODELS['graph']['space'] = saved
             hps.open_study('MUTAG', 'graph', 0, root)               # unchanged space: joins
+
+
+
+class FakeTrial:
+    def __init__(self):
+        self.reports, self.user_attrs = [], {}
+
+    def report(self, v, step):
+        self.reports.append((step, v))
+
+    def should_prune(self):
+        return False
+
+    def set_user_attr(self, k, v):
+        self.user_attrs[k] = v
+
+
+class Scores(torch.nn.Module):
+    """Class outputs scripted per call: 'const' -> class 0 for every graph, else the label."""
+    def __init__(self, script):
+        super().__init__()
+        self.script = list(script)
+        self.calls = 0
+
+    def forward(self, x, edge_index, batch, **kw):
+        kind = self.script[min(self.calls // 2, len(self.script) - 1)]      # evaluate + predict per report
+        self.calls += 1
+        n = int(batch.max()) + 1
+        if kind == 'const':
+            return torch.tensor([[1.0, 0.0]]).repeat(n, 1)
+        return torch.stack([torch.arange(n) % 2 == 0, torch.arange(n) % 2 == 1], 1).float()
+
+
+class TestCollapsePrune(unittest.TestCase):
+
+    def setUp(self):
+        from torch_geometric.data import Data
+        from torch_geometric.loader import DataLoader
+        g = [Data(x=torch.ones(3, 2), edge_index=torch.tensor([[0, 1], [1, 0]]), y=torch.tensor([i % 2]))
+             for i in range(6)]
+        self.loader = DataLoader(g, batch_size=6)
+
+    def _run(self, script, epochs=(10, 15, 20, 25)):
+        trial, model = FakeTrial(), Scores(script)
+        cb = hps.PruneCallback(trial, warmup=5, device='cpu', every=5)
+        for e in range(epochs[-1] + 1):
+            cb(e, model, self.loader)
+        return trial
+
+    def test_two_consecutive_one_class_reports_prune(self):
+        with self.assertRaises(optuna.TrialPruned):
+            self._run(['ok', 'const', 'const', 'ok'])
+
+    def test_one_isolated_one_class_report_does_not(self):
+        trial = self._run(['const', 'ok', 'const', 'ok'])
+        self.assertEqual(len(trial.reports), 4)
+        self.assertNotIn('collapsed', trial.user_attrs)
 
 
 if __name__ == '__main__':
