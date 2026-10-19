@@ -1,4 +1,5 @@
 import os
+import pickle
 import sys
 import unittest
 
@@ -18,6 +19,10 @@ class TestRegistry(unittest.TestCase):
 
     def test_bbbp_names_follow_the_transform(self):
         self.assertEqual(list(spec('BBBP').features), MolOneHot.FEATURES)
+
+    def test_old_bbbp_pickles_still_load(self):
+        # data.pkl files written before fc1d730 reference utils.utils.MolOneHot
+        self.assertIsInstance(pickle.loads(b'cutils.utils\nMolOneHot\n)\x81.'), MolOneHot)
 
     def test_unlisted_dataset_is_a_tudataset_with_generic_names(self):
         s = spec('NCI1')

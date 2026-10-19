@@ -25,7 +25,9 @@ from torch_geometric.loader import DataLoader  # noqa: F401
 from torch_geometric.nn import GINConv, global_add_pool, global_max_pool, global_mean_pool  # noqa: F401
 
 from utils.ba_multi_shapes import BAMultiShapesDataset  # noqa: F401
-from utils.datasets import get_dataset  # noqa: F401
+# MolOneHot is re-exported because the BBBP data.pkl files written before fc1d730 pickled it as
+# utils.utils.MolOneHot
+from utils.datasets import MolOneHot, get_dataset  # noqa: F401
 from utils.spmotif_dataset import *  # noqa: F401,F403
 from utils.syn_dataset import SynGraphDataset  # noqa: F401
 
