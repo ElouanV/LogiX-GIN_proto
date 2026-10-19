@@ -99,8 +99,9 @@ def verify(configs=None, tol=1e-9):
     from torch_geometric.loader import DataLoader
     from models.model import GIN
     from train_baseline import test_epoch
+    from utils.runs import EVAL_BATCH_SIZE, get_device, num_features
     from utils.utils import set_seed
-    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    device = get_device()
     bad = 0
     for c in configs or teacher_configs():
         rec = pd.read_csv(os.path.join(c, 'total_results.csv')).set_index('seed')
@@ -108,13 +109,13 @@ def verify(configs=None, tol=1e-9):
             d = os.path.join(c, str(seed))
             a = json.load(open(os.path.join(d, 'args.json')))
             data = pickle.load(open(os.path.join(d, 'data.pkl'), 'rb'))
-            nf = data['train_dataset'].num_features or 10
+            nf = num_features(data['train_dataset'])
             # the teacher samples Gumbel noise even at test time: replay eval_seed's RNG sequence
             set_seed(seed)
             model = GIN(num_features=nf, num_classes=data['train_dataset'].num_classes, hidden_dim=a['hidden_dim'],
                         num_layers=a['num_layers'], nogumbel=a['nogumbel']).to(device)
             model.load_state_dict(torch.load(os.path.join(d, 'best.pt'), map_location=device))
-            got = {s: test_epoch(model, DataLoader(data[f'{s}_dataset'], batch_size=64), device) for s in ('val', 'test')}
+            got = {s: test_epoch(model, DataLoader(data[f'{s}_dataset'], batch_size=EVAL_BATCH_SIZE), device) for s in ('val', 'test')}
             diff = max(abs(got[s] - rec.loc[seed, f'{s}_acc']) for s in got)
             if diff > tol:
                 bad += 1

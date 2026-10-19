@@ -41,55 +41,29 @@ Extra knobs over train_logic.py:
 
 Results go to results_proto/ so they never collide with results_logic/.
 """
-from torch import nn
-import torch
-import torch.nn.functional as F
-from torch_geometric.datasets import TUDataset
-from utils.syn_dataset import SynGraphDataset
-from utils.spmotif_dataset import *
-import torch_geometric.transforms as T
-from torch_geometric.loader import DataLoader
-from torch_geometric.nn import GINConv, global_mean_pool, global_max_pool, global_add_pool
-from utils.utils import *
-from sklearn.model_selection import train_test_split
-import shutil
-import glob
-import traceback
-import pandas as pd
 import argparse
-import hashlib
-import pickle
 import json
-from models.model import GIN
-from models_proto.model_proto import get_model
-from train_logic import get_best_baseline_path, test_epoch
+import os
+import traceback
+
+import torch
 from torch.optim.lr_scheduler import ReduceLROnPlateau
+from torch_geometric.loader import DataLoader
+
+from models_proto.model_proto import get_model
 from utils import tracking
-from utils.evaluation import evaluate, held_out
+from utils.evaluation import held_out
 from utils.optim import build_optimizer
+from utils.runs import EVAL_BATCH_SIZE, PROTO_ROOT, best_teacher_dir, get_device, student_dir
+from utils.training import (class_loss, distill_trunk, eval_student, fresh_dir, log_summary, register_final,
+                            run_seeds, student_data, test_epoch, tracked_student_seed)
+from utils.utils import set_seed, zero_nan_gradients
 
-SEEDS = 10
 
-
-def create_folder_proto(dataset_name, args, baseline_args, seed=None, root='results_proto'):
-    """Mirror of utils.create_folder_logic, under results_proto/.
-
-    args already carries proto_level / num_prototypes / ..., so two prototype
-    configurations never write into the same directory.
-    """
-    args_s = '|'.join([f"{k}={args[k]}" for k in sorted(args.keys())])
-    full_args_s = args_s
-    if len(args_s.encode()) > 255:        # filesystem limit on one path component
-        args_s = f"{args['proto_level']}-{hashlib.sha1(args_s.encode()).hexdigest()[:12]}"
-    baseline_args_s = '|'.join([f"{k}={baseline_args[k]}" for k in sorted(baseline_args.keys())])
-    path = f'{root}/{dataset_name}/{args_s}/{baseline_args_s}'
-    if seed is not None:
-        path = f"{path}/{seed}"
-    os.makedirs(path, exist_ok=True)
-    if args_s != full_args_s:             # the hashed name's configuration, for lookup
-        with open(f'{root}/{dataset_name}/{args_s}/config.txt', 'w') as f:
-            f.write(full_args_s + '\n')
-    return path
+def run_dir(dataset_name, args, baseline_args, seed=None, root=PROTO_ROOT):
+    """args carries proto_level / num_prototypes / ..., so two prototype configurations never
+    write into the same directory; too long a name is hashed (utils.runs.student_dir)."""
+    return student_dir(dataset_name, args, baseline_args, seed=seed, root=root, hash_long=True)
 
 
 def train_epoch(model, model_proto, loader, device, optimizer, num_classes, train_full=True,
@@ -137,23 +111,9 @@ def _epoch(model, model_proto, loader, device, optimizer, num_classes, train_ful
             # hard=True); layers_x[i] = the input that produced them.
             with torch.no_grad():
                 layers_x, layers_y = model.forward_e(data.x.float().to(device), data.edge_index.to(device), batch)
-            loss = 0
-            last_layer_out = None
             # ---- trunk: identical to train_logic.py, the prototypes change nothing here ----
-            for i, (layer, layer_x, layer_y) in enumerate(zip(model_proto.convs, layers_x[:-1], layers_y[:-1])):
-                if train_full: layer.nn[0].phi_in.tau = 10
-                if i !=0 and train: layer_x = F.dropout(layer_x, p=0.2)*(1-0.2)
-                layer_out = layer(torch.hstack([layer_x, 1-layer_x]), data.edge_index.to(device))
-                layer_loss = F.binary_cross_entropy(layer_out.reshape(-1), layer_y.reshape(-1)) + conv_reg* (layer.nn[0].reg_loss + layer.nn[0].phi_in.entropy)
-                loss += layer_loss
-                if train_full and i!=0:
-                    layer_x = last_layer_out
-                    layer_out = layer(torch.hstack([layer_x, 1-layer_x]), data.edge_index.to(device))
-                    layer_loss = F.binary_cross_entropy(layer_out.reshape(-1), layer_y.reshape(-1)) + conv_reg* (layer.nn[0].reg_loss + layer.nn[0].phi_in.entropy)
-                    loss += layer_loss
-                last_layer_out = layer_out if quant is None else quant(layer_out)
-                total_loss[i] += layer_loss.item() / len(loader.dataset)
-                total_correct[i] += ((layer_out >= 0.5).long() == layer_y).sum().item() / (layer_y.shape[-2]*layer_y.shape[-1]*len(loader))
+            loss = distill_trunk(model_proto, layers_x, layers_y, data.edge_index.to(device), train, train_full, conv_reg,
+                                 total_loss, total_correct, len(loader.dataset), len(loader), quant)
 
             # ---- head: THE difference from train_logic.py ----
             # train_logic.py does  model_tell.fc(hstack([layers_x[-1], 1-layers_x[-1]]))
@@ -165,13 +125,13 @@ def _epoch(model, model_proto, loader, device, optimizer, num_classes, train_ful
             # exactly as the fc did before.
             out = model_proto.forward_from_layers(layers_y[:-1], batch)
             pred = out.argmax(-1)
-            loss += F.binary_cross_entropy(out.reshape(-1), torch.nn.functional.one_hot(y, num_classes=num_classes).float().reshape(-1)) + F.nll_loss(F.log_softmax(out, dim=-1), y.long())
+            loss += class_loss(out, y, num_classes)
 
             if train_full:
                 model_proto.fc.phi_in.tau = 10
                 out = model_proto(data.x.float().to(device), data.edge_index.to(device), batch)
                 pred = out.argmax(-1)
-                loss += F.binary_cross_entropy(out.reshape(-1), torch.nn.functional.one_hot(y, num_classes=num_classes).float().reshape(-1)) + F.nll_loss(F.log_softmax(out, dim=-1), y.long())
+                loss += class_loss(out, y, num_classes)
 
             loss += fc_reg*(model_proto.fc.reg_loss + model_proto.fc.phi_in.entropy)
 
@@ -201,7 +161,7 @@ def _epoch(model, model_proto, loader, device, optimizer, num_classes, train_ful
                 optimizer.step()
             total_loss[-1] += loss.item() * data.num_graphs / len(loader.dataset)
             total_correct[-1] += pred.eq(y).sum().item() / len(loader.dataset)
-        except Exception as e:
+        except Exception:
             # train_logic.py swallows batch errors to survive degenerate batches. Kept,
             # but counted: a shape/config error fails *every* batch and would otherwise
             # produce a full silent run at chance accuracy.
@@ -263,79 +223,28 @@ def train_seed(dataset_name, baseline_path, args, seed, device, out_root=None, e
     ``epoch_callback(epoch, model, val_loader)`` is called after every epoch (optimize_optuna.py
     reports to Optuna and prunes there); ``tags`` are added to the MLflow run.
     """
-    root = out_root or 'results_proto'
+    root = out_root or PROTO_ROOT
     baseline_args = json.load(open(os.path.join(baseline_path, 'args.json'), 'r'))
-    path = create_folder_proto(dataset_name, args, baseline_args, seed=seed, root=root)
-    cfg = os.path.relpath(os.path.dirname(path), f'{root}/{dataset_name}')
-    params = {**args, **{f'teacher/{k}': v for k, v in baseline_args.items()},
-              'seed': seed, 'dataset': dataset_name, 'teacher_path': baseline_path}
-    name = f"proto/{args['proto_level']}/seed{seed}"
-    tags = {'config': cfg, 'seed': seed, 'kind': 'seed', 'dataset': dataset_name,
-            'proto_level': args['proto_level'], **(tags or {})}
-    with tracking.ensure_pipeline(dataset_name, name, tags=tags):      # one per seed when run alone
-        tracking.teacher_reference(baseline_path, dataset_name, seed)
-        with tracking.run(f'proto/{dataset_name}', run_name=name, params=params, tags=tags,
-                          stage='distillation', dataset=dataset_name):
-            res = _train_seed(dataset_name, baseline_path, args, seed, device, root, epoch_callback)
-            tracking.write_pipeline(path)
-            return res
+    path = run_dir(dataset_name, args, baseline_args, seed, root)
+    return tracked_student_seed(
+        dataset_name, baseline_path, args, seed, path, root, f'proto/{dataset_name}',
+        f"proto/{args['proto_level']}/seed{seed}", {'proto_level': args['proto_level'], **(tags or {})},
+        lambda: _train_seed(dataset_name, baseline_path, args, seed, device, root, epoch_callback))
 
 
-def _train_seed(dataset_name, baseline_path, args, seed, device, root='results_proto', epoch_callback=None):
+def _train_seed(dataset_name, baseline_path, args, seed, device, root=PROTO_ROOT, epoch_callback=None):
     set_seed(seed)
-
-
     baseline_args = json.load(open(os.path.join(baseline_path, 'args.json'), 'r'))
-    path = create_folder_proto(dataset_name, args, baseline_args, seed=seed, root=root)
-    shutil.rmtree(path)
-    path = create_folder_proto(dataset_name, args, baseline_args, seed=seed, root=root)
-
-    with open(os.path.join(path, 'args.json'), 'w') as f:
-        args = {k: (v.item() if hasattr(v, 'item') else v) for k,v in args.items()}
-        json.dump(args, f)
-
-
-    dataset = get_dataset(dataset_name)
-
-    print(f'Training prototype logic model ({args["proto_level"]}, K={args["num_prototypes"]}) on {dataset_name}')
-    print(baseline_args)
-
-
-    num_classes = dataset.num_classes
-    num_features = dataset.num_features
-
-    if num_features == 0: num_features = 10
-
-    # Reuse the baseline's split, otherwise the teacher has seen part of our test set.
-    data = pickle.load(open(os.path.join(baseline_path, 'data.pkl'), 'rb'))
-
-    train_dataset = dataset[data['train_indices']]
-    val_dataset = dataset[data['val_indices']]
-    test_dataset = dataset[data['test_indices']]
-    train_loader = DataLoader(train_dataset, batch_size=args['batch_size'], shuffle=True)
-    val_loader = DataLoader(val_dataset, batch_size=64, shuffle=False)
-    test_loader = DataLoader(test_dataset, batch_size=64, shuffle=False)
+    path = fresh_dir(lambda: run_dir(dataset_name, args, baseline_args, seed, root))
+    d = student_data(dataset_name, baseline_path, args, device,
+                     f'Training prototype logic model ({args["proto_level"]}, K={args["num_prototypes"]}) on {dataset_name}',
+                     path)
+    args, model = d.args, d.teacher
+    train_loader, val_loader, test_loader = d.loaders['train'], d.loaders['val'], d.loaders['test']
     # Unshuffled copy: the push must read the training set in a fixed order for the
     # returned row indices to identify the graphs the prototypes snapped to.
-    push_loader = DataLoader(train_dataset, batch_size=64, shuffle=False)
-
-    with open(os.path.join(path, 'data.pkl'), 'wb') as f:
-        pickle.dump({
-            'train_indices': data['train_indices'],
-            'val_indices': data['val_indices'],
-            'test_indices': data['test_indices'],
-            'train_dataset': train_dataset,
-            'val_dataset': val_dataset,
-            'test_dataset': test_dataset,
-        }, f)
-
-    model = GIN(num_features=num_features, num_classes=num_classes, hidden_dim=baseline_args['hidden_dim'], num_layers=baseline_args['num_layers'], nogumbel=baseline_args['nogumbel']).to(device)
-    model.load_state_dict(torch.load(os.path.join(baseline_path, 'best.pt'), map_location='cpu'))
-    model.eval()
-    for p in model.parameters():
-        p.requires_grad_ = False
-    print('Baseline Acc:', test_epoch(model, test_loader, device))
-    model_proto = build_proto_model(args, baseline_args, num_features, num_classes, device)
+    push_loader = DataLoader(d.datasets['train'], batch_size=EVAL_BATCH_SIZE, shuffle=False)
+    model_proto = build_proto_model(args, baseline_args, d.num_features, d.num_classes, device)
     if args.get('mask_layer_cost'):
         model_proto.set_mask_layer_cost([float(c) for c in args['mask_layer_cost'].split(',')])
 
@@ -344,12 +253,8 @@ def _train_seed(dataset_name, baseline_path, args, seed, device, root='results_p
 
     scheduler = ReduceLROnPlateau(optimizer, mode='max', factor=0.99, patience=300, min_lr=1e-5, verbose=True)
 
-    # Training loop
     best_val_acc = 0
     best_test_acc = 0
-    train_accs = []
-    val_accs = []
-    test_accs = []
     push_log = []
     for epoch in range(args['epochs']):
         if args.get('proto_mask'):
@@ -358,7 +263,7 @@ def _train_seed(dataset_name, baseline_path, args, seed, device, root='results_p
         beta = sharpness(args, epoch)
         if args.get('harden_to') is not None:
             model_proto.set_sharpness(beta)
-        train_loss, train_acc = train_epoch(model, model_proto, train_loader, device, optimizer, num_classes,
+        train_loss, train_acc = train_epoch(model, model_proto, train_loader, device, optimizer, d.num_classes,
                                             train_full=epoch>args['warmup_epochs'], conv_reg=args['conv_reg'], fc_reg=args['fc_reg'],
                                             proto_div_reg=args['proto_div_reg'], proto_ent_reg=args['proto_ent_reg'],
                                             mask_reg=args.get('mask_reg', 0.0), vocab_reg=args.get('vocab_reg', 0.0))
@@ -371,7 +276,7 @@ def _train_seed(dataset_name, baseline_path, args, seed, device, root='results_p
             idxs = model_proto.project_prototypes(push_loader, device)
             push_log.append({'epoch': epoch, 'indices': [i.cpu().tolist() for i in idxs]})
 
-        val_loss, _ = train_epoch(model, model_proto, val_loader, device, None, num_classes,
+        val_loss, _ = train_epoch(model, model_proto, val_loader, device, None, d.num_classes,
                                   train_full=epoch>args['warmup_epochs'], conv_reg=args['conv_reg'], fc_reg=args['fc_reg'],
                                   proto_div_reg=args['proto_div_reg'], proto_ent_reg=args['proto_ent_reg'],
                                   mask_reg=args.get('mask_reg', 0.0), vocab_reg=args.get('vocab_reg', 0.0))
@@ -406,10 +311,6 @@ def _train_seed(dataset_name, baseline_path, args, seed, device, root='results_p
             print(f'Epoch: {epoch+1}, Train Loss: {train_loss}, Train Acc: {train_acc}, Val Acc: {val_acc:.4f}, Test Acc: {test_acc:.4f}')
             print(f'\t\t Best Val Acc: {best_val_acc:.4f}, Best Test Acc: {best_test_acc:.4f}')
 
-        train_accs.append(train_acc)
-        val_accs.append(val_acc)
-        test_accs.append(test_acc)
-
     torch.save(model_proto, os.path.join(path, 'last.pt'))
     # Which training graph/node each prototype ended up standing for.
     with open(os.path.join(path, 'push_log.json'), 'w') as f:
@@ -419,12 +320,6 @@ def _train_seed(dataset_name, baseline_path, args, seed, device, root='results_p
     val_acc = test_epoch(model_proto, val_loader, device)
     test_acc = test_epoch(model_proto, test_loader, device)
 
-    results = {
-        'seed': seed,
-        'val_acc': val_acc,
-        'test_acc': test_acc,
-    }
-
     # How each prototype separates the classes (agreement.{png,json,npz} + MLflow), for
     # every run: Optuna trials and final folds go through here too.
     from utils.agreement import log_agreement
@@ -433,131 +328,32 @@ def _train_seed(dataset_name, baseline_path, args, seed, device, root='results_p
 
     # Final evaluation of the kept checkpoint: imbalance-aware metrics and the size of the
     # extracted explanation (rules per unit, shortest rule, fidelity), then registration.
-    if tracking.enabled():
-        from rule_eval import rule_metrics, rule_stats
-        final = {**evaluate(model_proto, val_loader, device, prefix='final/val_'),
-                 **evaluate(model_proto, test_loader, device, prefix='final/test_')}
-        stats = rule_stats(model_proto, val_loader, device)
-        tracking.log_metrics({**final, **rule_metrics(stats, prefix='final/rules/')})
-        tracking.log_dict({'metrics': final, 'rules': stats}, 'final_evaluation.json')
-        for f in ('args.json', 'push_log.json'):
-            tracking.log_artifact(os.path.join(path, f))
-        tracking.log_model(model_proto, f"logix-proto-{dataset_name}-{args['proto_level']}",
-                           code_dirs=('models_proto',),
-                           tags={'seed': seed, 'val_acc': val_acc, 'test_acc': test_acc, 'path': path})
-
-    return results
-
-
-def log_summary(dataset_name, args, df, path):
-    """Mean/std over seeds as a kind=summary run next to the seed runs."""
-    cfg = os.path.relpath(path, f'results_proto/{dataset_name}')
-    with tracking.run(tracking.pipeline_experiment(dataset_name), run_name=f"proto/{args['proto_level']}/summary",
-                      params={**args, 'n_seeds': len(df)},
-                      tags={'config': cfg, 'kind': 'summary', 'dataset': dataset_name,
-                            'proto_level': args['proto_level']}):
-        tracking.log_metrics({f'{c}_{s}': getattr(df[c], s)() for c in ('val_acc', 'test_acc')
-                              for s in ('mean', 'std')})
-        tracking.log_artifact(os.path.join(path, 'total_results.csv'))
+    register_final(model_proto, d.loaders, device, path, f"logix-proto-{dataset_name}-{args['proto_level']}",
+                   ('models_proto',), ('args.json', 'push_log.json'),
+                   {'seed': seed, 'val_acc': val_acc, 'test_acc': test_acc, 'path': path})
+    return {'seed': seed, 'val_acc': val_acc, 'test_acc': test_acc}
 
 
 def eval_seed(dataset_name, baseline_path, args, seed, device):
-    set_seed(seed)
-
     baseline_args = json.load(open(os.path.join(baseline_path, 'args.json'), 'r'))
-    path = create_folder_proto(dataset_name, args, baseline_args, seed=seed)
-
-    dataset = get_dataset(dataset_name)
-
-    print(f'Evaluating prototype logic model on {dataset_name}')
-    print(baseline_args)
-
-    num_classes = dataset.num_classes
-    num_features = dataset.num_features
-
-    if num_features == 0: num_features = 10
-
-    data = pickle.load(open(os.path.join(baseline_path, 'data.pkl'), 'rb'))
-
-    train_dataset = dataset[data['train_indices']]
-    val_dataset = dataset[data['val_indices']]
-    test_dataset = dataset[data['test_indices']]
-    train_loader = DataLoader(train_dataset, batch_size=args['batch_size'], shuffle=True)
-    val_loader = DataLoader(val_dataset, batch_size=64, shuffle=False)
-    test_loader = DataLoader(test_dataset, batch_size=64, shuffle=False)
-
-
-    model = GIN(num_features=num_features, num_classes=num_classes, hidden_dim=baseline_args['hidden_dim'], num_layers=baseline_args['num_layers'], nogumbel=baseline_args['nogumbel']).to(device)
-    model.load_state_dict(torch.load(os.path.join(baseline_path, 'best.pt'), map_location='cpu'))
-    model.eval()
-    for p in model.parameters():
-        p.requires_grad_ = False
-    print('Baseline Acc:', test_epoch(model, test_loader, device))
-    model_proto = build_proto_model(args, baseline_args, num_features, num_classes, device)
-    model_proto = torch.load(os.path.join(path, 'best.pt'))
-
-    val_acc = test_epoch(model_proto, val_loader, device)
-    test_acc = test_epoch(model_proto, test_loader, device)
-
-    results = {
-        'seed': seed,
-        'val_acc': val_acc,
-        'test_acc': test_acc,
-    }
-
-    return results
+    return eval_student(dataset_name, baseline_path, args, seed, device, run_dir(dataset_name, args, baseline_args, seed),
+                        f'Evaluating prototype logic model on {dataset_name}')
 
 
 def train_eval(dataset_name, baseline_path, args):
-    device = torch.device('cuda') if torch.cuda.is_available() else torch.device('cpu')
+    device = get_device()
     baseline_args = json.load(open(os.path.join(baseline_path, '0', 'args.json'), 'r'))
-
-    seed_todo = args.pop('seed', None)
+    seed = args.pop('seed', None)
     only_eval = args.pop('only_eval', False)
     if args.get('pool_ops') is None:               # default readout: keep existing dir names
         args.pop('pool_ops', None)
-
-    path = create_folder_proto(dataset_name, args, baseline_args)
-
-    seeds = range(SEEDS)
-    if seed_todo is not None:
-        seeds = [seed_todo]
-
-    results = []
-    if not only_eval:
-        for seed in seeds:
-            results.append(train_seed(dataset_name, os.path.join(baseline_path, str(seed)), args, seed, device))
-
-    print(results)
-
-    if only_eval or seed_todo is not None:
-        results = []
-        for seed in range(SEEDS):
-            try:
-                r = eval_seed(dataset_name, os.path.join(baseline_path, str(seed)), args, seed, device)
-                results.append(r)
-                print(r)
-            except Exception as e: print(e)
-
-    df = pd.DataFrame(results)
-    df.to_csv(os.path.join(path, 'total_results.csv'))
-
-    ret = {
-        'val_acc_mean': df['val_acc'].mean(),
-        'test_acc_mean': df['test_acc'].mean(),
-        'val_acc_std': df['val_acc'].std(),
-        'test_acc_std': df['test_acc'].std()
-    }
-
-    with open(os.path.join(path, 'results.json'), 'w') as f:
-        json.dump(ret, f)
-
-    # parallel single-seed processes each re-evaluate every seed; only a full or
-    # --only_eval pass writes the summary run, so it exists once per configuration
-    if only_eval or seed_todo is None:
-        log_summary(dataset_name, args, df, path)
-
-    return ret
+    path = run_dir(dataset_name, args, baseline_args)
+    teacher = lambda s: os.path.join(baseline_path, str(s))  # noqa: E731
+    level = args['proto_level']
+    return run_seeds(path, lambda s: train_seed(dataset_name, teacher(s), args, s, device),
+                     lambda s: eval_seed(dataset_name, teacher(s), args, s, device), seed, only_eval,
+                     lambda df, ret: log_summary(dataset_name, f'proto/{level}/summary', args, df, ret, path, PROTO_ROOT,
+                                                 {'proto_level': level}))
 
 
 def get_parser():
@@ -626,6 +422,6 @@ def parse_cli(argv=None):
 if __name__ == '__main__':
     dataset_name, baseline_path, args = parse_cli()
     if baseline_path is None:
-        baseline_path = get_best_baseline_path(dataset_name)
+        baseline_path = best_teacher_dir(dataset_name)
         print('Baseline path found:', baseline_path)
     train_eval(dataset_name, baseline_path, args)

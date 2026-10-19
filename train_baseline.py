@@ -1,25 +1,28 @@
-from torch import nn
+"""Teacher: a GIN with binary (Gumbel) node states trained on the graph labels, one run per
+seed (upstream training, unchanged).
+
+    python train_baseline.py --dataset MUTAG --hidden_dim 64 --num_layers 3 [--split kfold] [--seed 0]
+
+Results go to results/<dataset>/<cfg>/<seed> (utils/runs.py); --split kfold reads the
+committed fold indices (utils/splits.py).
+"""
+import argparse
+import os
+
 import torch
 import torch.nn.functional as F
-from torch_geometric.datasets import TUDataset
-from utils.syn_dataset import SynGraphDataset
-from utils.spmotif_dataset import *
-import torch_geometric.transforms as T
-from torch_geometric.loader import DataLoader
-from torch_geometric.nn import GINConv, global_mean_pool, global_max_pool, global_add_pool
-from utils.utils import *
-import shutil
-import glob
-import pandas as pd
-import argparse
-import pickle
-import json
-from models.model import GIN
 from torch.optim.lr_scheduler import ReduceLROnPlateau
+
+from models.model import GIN
 from utils import tracking
+from utils.datasets import get_dataset
 from utils.evaluation import evaluate, held_out
-from utils.splits import split_indices, SPLITS
-SEEDS = 10
+from utils.runs import TEACHER_ROOT, get_device, make_loaders, num_features, save_split, split_datasets, teacher_dir, \
+    write_args
+from utils.splits import SPLITS, split_indices
+from utils.training import NUM_SEEDS, fresh_dir, log_summary, run_seeds, summarize
+from utils.utils import set_seed, zero_nan_gradients
+
 
 def train_epoch(model, loader, device, optimizer, num_classes):
     """One training epoch; optimizer=None: the same loss on loader without training (eval
@@ -35,7 +38,6 @@ def _epoch(model, loader, device, optimizer, num_classes):
     total_loss = 0
     total_correct = 0
     for data in loader:
-        mask = [i in data.batch for i in range(data.y.shape[0])]
         y = data.y.squeeze(-1).to(device).long()
         if train:
             optimizer.zero_grad()
@@ -77,11 +79,24 @@ def test_epoch(model, loader, device):
     
     return val_acc
 
+def split_data(dataset_name, args, seed):
+    """The dataset, its split for this seed (utils.splits.split_indices) and the split datasets."""
+    dataset = get_dataset(dataset_name)
+    train, val, test = split_indices(dataset.data.y, seed, args.get('split', 'random'), dataset_name)
+    indices = {'train_indices': train, 'val_indices': val, 'test_indices': test}
+    return dataset, indices, split_datasets(dataset, indices)
+
+
+def build_teacher(args, dataset, device):
+    return GIN(num_features=num_features(dataset), num_classes=dataset.num_classes, hidden_dim=args['hidden_dim'],
+               num_layers=args['num_layers'], nogumbel=args['nogumbel']).to(device)
+
+
 def train_seed(dataset_name, args, seed, device):
     """One seed, logged as the teacher stage of its own pipeline run (utils/tracking.py);
     student pipelines refer to it (tracking.teacher_reference)."""
-    path = create_folder(dataset_name, args, seed=seed)
-    cfg = os.path.relpath(os.path.dirname(path), f'results/{dataset_name}')
+    path = teacher_dir(dataset_name, args, seed=seed)
+    cfg = os.path.relpath(os.path.dirname(path), f'{TEACHER_ROOT}/{dataset_name}')
     with tracking.run(f'baseline/{dataset_name}', run_name=f'teacher/seed{seed}',
                       params={**args, 'seed': seed, 'dataset': dataset_name},
                       tags={'config': cfg, 'seed': seed, 'kind': 'seed', 'dataset': dataset_name},
@@ -93,56 +108,20 @@ def train_seed(dataset_name, args, seed, device):
 
 def _train_seed(dataset_name, args, seed, device):
     set_seed(seed)
-
-    path = create_folder(dataset_name, args, seed=seed)
-    shutil.rmtree(path)
-    path = create_folder(dataset_name, args, seed=seed)
-
-    with open(os.path.join(path, 'args.json'), 'w') as f:
-        args = {k: (v.item() if hasattr(v, 'item') else v) for k,v in args.items()}
-        json.dump(args, f)
-
-    dataset = get_dataset(dataset_name)
-
-    
+    path = fresh_dir(lambda: teacher_dir(dataset_name, args, seed=seed))
+    args = write_args(path, args)
+    dataset, indices, datasets = split_data(dataset_name, args, seed)
     num_classes = dataset.num_classes
-    num_features = dataset.num_features
-
-    if num_features == 0: num_features = 10
-    
-    train_indices, val_indices, test_indices = split_indices(dataset.data.y, seed, args.get('split', 'random'), dataset_name)
-
-    train_dataset = dataset[train_indices]
-    val_dataset = dataset[val_indices]
-    test_dataset = dataset[test_indices]
-
-    with open(os.path.join(path, 'data.pkl'), 'wb') as f:
-        pickle.dump({
-            'train_indices': train_indices,
-            'val_indices': val_indices,
-            'test_indices': test_indices,
-            'train_dataset': train_dataset,
-            'val_dataset': val_dataset,
-            'test_dataset': test_dataset,
-        }, f)
-
-    train_loader = DataLoader(train_dataset, batch_size=args['batch_size'], shuffle=True)
-    val_loader = DataLoader(val_dataset, batch_size=64, shuffle=False)
-    test_loader = DataLoader(test_dataset, batch_size=64, shuffle=False)
-    
-    model = GIN(num_features=num_features, num_classes=num_classes, hidden_dim=args['hidden_dim'], num_layers=args['num_layers'], nogumbel=args['nogumbel']).to(device)
-    
-    
+    save_split(path, indices, datasets)
+    loaders = make_loaders(datasets, args['batch_size'])
+    train_loader, val_loader, test_loader = loaders['train'], loaders['val'], loaders['test']
+    model = build_teacher(args, dataset, device)
 
     optimizer = torch.optim.AdamW(model.parameters(), lr=args['lr'], weight_decay=args['l2'])
     scheduler = ReduceLROnPlateau(optimizer, mode='max', factor=0.99, patience=100, min_lr=1e-5, verbose=True)
 
-    # Training loop
     best_val_acc = 0
     best_test_acc = 0
-    train_accs = []
-    val_accs = []
-    test_accs = []
     max_patience = 200
     patience = 0
     for epoch in range(args['epochs']):
@@ -167,23 +146,12 @@ def _train_seed(dataset_name, args, seed, device):
         print(f'Epoch: {epoch+1}, Train Loss: {train_loss:.4f}, Train Acc: {train_acc:.4f}, Val Acc: {val_acc:.4f}, Test Acc: {test_acc:.4f}')
         print(f'\t\t Best Val Acc: {best_val_acc:.4f}, Best Test Acc: {best_test_acc:.4f}')
 
-        train_accs.append(train_acc)
-        val_accs.append(val_acc)
-        test_accs.append(test_acc)
-
         if patience >= max_patience: break
-    
+
     torch.save(model.state_dict(), os.path.join(path, 'last.pt'))
     model.load_state_dict(torch.load(os.path.join(path, 'best.pt')))
-
     val_acc = test_epoch(model, val_loader, device)
     test_acc = test_epoch(model, test_loader, device)
-
-    results = {
-        'seed': seed,
-        'val_acc': val_acc,
-        'test_acc': test_acc,
-    }
 
     if tracking.enabled():
         tracking.log_metrics({**evaluate(model, val_loader, device, prefix='final/val_'),
@@ -193,127 +161,40 @@ def _train_seed(dataset_name, args, seed, device):
         tracking.log_model(model, f'gin-teacher-{dataset_name}', code_dirs=('models',),
                            tags={'seed': seed, 'val_acc': val_acc, 'test_acc': test_acc, 'path': path})
 
-    return results
+    return {'seed': seed, 'val_acc': val_acc, 'test_acc': test_acc}
+
 
 def eval_seed(dataset_name, args, seed, device):
     set_seed(seed)
-
-    path = create_folder(dataset_name, args, seed=seed)
-    
-    dataset = get_dataset(dataset_name)
-
-    
-    num_classes = dataset.num_classes
-    num_features = dataset.num_features
-
-    if num_features == 0: num_features = 10
-    
-    train_indices, val_indices, test_indices = split_indices(dataset.data.y, seed, args.get('split', 'random'), dataset_name)
-
-    train_dataset = dataset[train_indices]
-    val_dataset = dataset[val_indices]
-    test_dataset = dataset[test_indices]
-
-    train_loader = DataLoader(train_dataset, batch_size=args['batch_size'], shuffle=True)
-    val_loader = DataLoader(val_dataset, batch_size=64, shuffle=False)
-    test_loader = DataLoader(test_dataset, batch_size=64, shuffle=False)
-    
-    model = GIN(num_features=num_features, num_classes=num_classes, hidden_dim=args['hidden_dim'], num_layers=args['num_layers'], nogumbel=args['nogumbel']).to(device)
-    
+    path = teacher_dir(dataset_name, args, seed=seed)
+    dataset, _, datasets = split_data(dataset_name, args, seed)
+    loaders = make_loaders(datasets, args['batch_size'])
+    model = build_teacher(args, dataset, device)
     model.load_state_dict(torch.load(os.path.join(path, 'best.pt')))
-
-    val_acc = test_epoch(model, val_loader, device)
-    test_acc = test_epoch(model, test_loader, device)
-
-    results = {
-        'seed': seed,
-        'val_acc': val_acc,
-        'test_acc': test_acc,
-    }
-
-    return results
+    return {'seed': seed, 'val_acc': test_epoch(model, loaders['val'], device),
+            'test_acc': test_epoch(model, loaders['test'], device)}
 
 
 def train(dataset_name, args):
-    device = torch.device('cuda') if torch.cuda.is_available() else torch.device('cpu')
-
-    path = create_folder(dataset_name, args)
-
-    results = []
-    for seed in range(10):
-        results.append(train_seed(dataset_name, args, seed, device))
-
-    df = pd.DataFrame(results)
-    df.to_csv(os.path.join(path, 'total_results.csv'))
-
-    ret = {
-        'val_acc_mean': df['val_acc'].mean(),
-        'test_acc_mean': df['test_acc'].mean(),
-        'val_acc_std': df['val_acc'].std(),
-        'test_acc_std': df['test_acc'].std()
-    }
-
-    with open(os.path.join(path, 'results.json'), 'w') as f:
-        json.dump(ret, f)
-
-    return ret
+    """Every seed, summarized (the grid search of optimize_baseline.py)."""
+    device = get_device()
+    path = teacher_dir(dataset_name, args)
+    results = [train_seed(dataset_name, args, seed, device) for seed in range(NUM_SEEDS)]
+    return summarize(results, path)[1]
 
 
-def train_eval(dataset_name,  args):
-    device = torch.device('cuda') if torch.cuda.is_available() else torch.device('cpu')
-    
-    seed_todo = args.pop('seed', None)
+def train_eval(dataset_name, args):
+    device = get_device()
+    seed = args.pop('seed', None)
     only_eval = args.pop('only_eval', False)
     # the upstream split stays out of the config, so existing result dirs keep their names
     if args.get('split', 'random') == 'random':
         args.pop('split', None)
-    
-    path = create_folder(dataset_name, args)
+    path = teacher_dir(dataset_name, args)
     print(path)
-    seeds = range(SEEDS)
-    if seed_todo is not None:
-        seeds = [seed_todo]
-    
-    results = []
-    if not only_eval:
-        for seed in seeds:
-            results.append(train_seed(dataset_name, args, seed, device))
-
-    print(results)
-
-    if only_eval or seed_todo is not None:
-        results = []
-        for seed in range(SEEDS):
-            try:
-                r = eval_seed(dataset_name, args, seed, device)
-                results.append(r)
-                print(r)
-            except Exception as e: print(e)
-
-    df = pd.DataFrame(results)
-    df.to_csv(os.path.join(path, 'total_results.csv'))
-
-    ret = {
-        'val_acc_mean': df['val_acc'].mean(),
-        'test_acc_mean': df['test_acc'].mean(),
-        'val_acc_std': df['val_acc'].std(),
-        'test_acc_std': df['test_acc'].std()
-    }
-
-    with open(os.path.join(path, 'results.json'), 'w') as f:
-        json.dump(ret, f)
-
-    # only a full or --only_eval pass writes the summary run (parallel single-seed
-    # processes would each write one otherwise)
-    if only_eval or seed_todo is None:
-        with tracking.run(tracking.pipeline_experiment(dataset_name), run_name='teacher/summary',
-                          params={**args, 'n_seeds': len(df)},
-                          tags={'config': os.path.relpath(path, f'results/{dataset_name}'),
-                                'kind': 'summary', 'dataset': dataset_name}):
-            tracking.log_metrics(ret)
-            tracking.log_artifact(os.path.join(path, 'total_results.csv'))
-
-    return ret
+    return run_seeds(path, lambda s: train_seed(dataset_name, args, s, device),
+                     lambda s: eval_seed(dataset_name, args, s, device), seed, only_eval,
+                     lambda df, ret: log_summary(dataset_name, 'teacher/summary', args, df, ret, path, TEACHER_ROOT))
 
 
 def get_parser():
@@ -327,9 +208,9 @@ def get_parser():
     parser.add_argument('--dropout',       default=0.15,       type=float,   help='Dropout')
     parser.add_argument('--lr',            default=0.01,      type=float,   help='Learning Rate')
     parser.add_argument('--l2',            default=1e-5,      type=float,   help='Weight Decay')
-    parser.add_argument('--nogumbel',      action='store_true',             help='Number of Convolutional Layers')
-    parser.add_argument('--only_eval',    action='store_true',              help='Number of Convolutional Layers')
-    parser.add_argument('--seed',          default=None,      type=int,    help='Number of Convolutional Layers')
+    parser.add_argument('--nogumbel',      action='store_true',             help='Deterministic teacher (no Gumbel sampling)')
+    parser.add_argument('--only_eval',     action='store_true',              help='Only evaluate the kept checkpoints')
+    parser.add_argument('--seed',          default=None,      type=int,    help='Single seed to run')
     parser.add_argument('--split',         default='random',  choices=SPLITS, help='random: 80/10/10 per seed (upstream); kfold: stratified 10-fold, seed = fold')
     return parser
 

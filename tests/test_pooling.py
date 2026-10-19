@@ -113,7 +113,7 @@ class TestProtoSumPooling(unittest.TestCase):
         import pandas as pd
         import pickle
         from torch_geometric.loader import DataLoader
-        from train_proto import test_epoch
+        from utils.training import test_epoch
         root = os.path.dirname(runs[0])
         rec = pd.read_csv(runs[0]).set_index('seed')['test_acc']
         seed = int(rec.index[0])

@@ -84,13 +84,12 @@ class Experiment:
     # ---- locations ----
     def teacher_dir(self, dataset):
         import train_baseline
-        from utils.utils import create_folder
+        from utils.runs import TEACHER_ROOT, config_name
         _, args = train_baseline.parse_cli(['--dataset', dataset, *self._teacher_argv()])
         args.pop('seed'); args.pop('only_eval')
         if args.get('split', 'random') == 'random':
             args.pop('split', None)
-        return os.path.join('results', dataset,
-                            '|'.join(f'{k}={args[k]}' for k in sorted(args)))   # utils.create_folder's name
+        return os.path.join(TEACHER_ROOT, dataset, config_name(args))
 
     def _teacher_argv(self):
         argv = []

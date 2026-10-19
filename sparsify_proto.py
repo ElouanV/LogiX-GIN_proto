@@ -50,10 +50,10 @@ import torch
 import torch.nn.functional as F
 
 from rule_eval import logical_layers, print_stats, rule_metrics, rule_stats
-from train_proto import test_epoch
 from utils import tracking
 from utils.evaluation import full_eval, held_out
 from utils.runs import load_run
+from utils.training import test_epoch
 from utils.utils import set_seed, zero_nan_gradients
 
 

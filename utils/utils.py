@@ -1,51 +1,41 @@
-import torch
+"""Seeding and gradient helpers.
+
+The upstream notebooks (nbs/*.ipynb) do ``from utils.utils import *`` and use what it
+brought in: ``get_dataset`` and the torch / PyG / sklearn / pandas names below are
+re-exported for them. New code imports from the defining modules (utils.datasets,
+utils.runs, ...).
+"""
+import argparse  # noqa: F401
+import glob  # noqa: F401
+import json  # noqa: F401
+import os  # noqa: F401
+import pickle  # noqa: F401
 import random
+import shutil  # noqa: F401
+
 import numpy as np
-import os
-from torch import nn
+import pandas as pd  # noqa: F401
 import torch
-import torch.nn.functional as F
-from torch_geometric.datasets import TUDataset, Planetoid, OGB_MAG, MoleculeNet
-from utils.ba_multi_shapes import BAMultiShapesDataset
-from utils.syn_dataset import SynGraphDataset
-from utils.spmotif_dataset import *
-import torch_geometric.transforms as T
-from torch_geometric.loader import DataLoader
-from torch_geometric.nn import GINConv, global_mean_pool, global_max_pool, global_add_pool
-from sklearn.model_selection import train_test_split
-import shutil
-import glob
-import pandas as pd
-import argparse
-import pickle
-import json
+import torch.nn.functional as F  # noqa: F401
+import torch_geometric.transforms as T  # noqa: F401
+from sklearn.model_selection import train_test_split  # noqa: F401
+from torch import nn  # noqa: F401
+from torch_geometric.datasets import MoleculeNet, OGB_MAG, Planetoid, TUDataset  # noqa: F401
+from torch_geometric.loader import DataLoader  # noqa: F401
+from torch_geometric.nn import GINConv, global_add_pool, global_max_pool, global_mean_pool  # noqa: F401
 
-# get_dataset lives in utils/datasets.py; re-exported here because the upstream notebooks
-# do `from utils.utils import *`
+from utils.ba_multi_shapes import BAMultiShapesDataset  # noqa: F401
 from utils.datasets import get_dataset  # noqa: F401
+from utils.spmotif_dataset import *  # noqa: F401,F403
+from utils.syn_dataset import SynGraphDataset  # noqa: F401
 
-def create_folder(dataset_name, args, seed=None):
-    args_s = '|'.join([f"{k}={args[k]}" for k in sorted(args.keys())])
-    path = f'results/{dataset_name}/{args_s}'    
-    if seed is not None:
-        path = f"{path}/{seed}"
-    os.makedirs(path, exist_ok=True)
-    return path
-
-def create_folder_logic(dataset_name, args, baseline_args, seed=None, root='results_logic'):
-    args_s = '|'.join([f"{k}={args[k]}" for k in sorted(args.keys())])
-    baseline_args_s = '|'.join([f"{k}={baseline_args[k]}" for k in sorted(baseline_args.keys())])
-    path = f'{root}/{dataset_name}/{args_s}/{baseline_args_s}'    
-    if seed is not None:
-        path = f"{path}/{seed}"
-    os.makedirs(path, exist_ok=True)
-    return path
 
 def set_seed(seed):
     torch.manual_seed(seed)
     random.seed(seed)
     np.random.seed(seed)
     return torch.Generator().manual_seed(seed)
+
 
 def zero_nan_gradients(model):
     for param in model.parameters():

@@ -161,12 +161,8 @@ def script_module(model):
 
 def run_dir(model, dataset, args, teacher_fold_path, seed, root):
     """Seed directory a train_seed call with these arguments writes to."""
-    m = script_module(model)
     baseline_args = json.load(open(os.path.join(teacher_fold_path, 'args.json')))
-    if MODELS[model]['script'] == 'logic':
-        from utils.utils import create_folder_logic
-        return create_folder_logic(dataset, args, baseline_args, seed=seed, root=root)
-    return m.create_folder_proto(dataset, args, baseline_args, seed=seed, root=root)
+    return script_module(model).run_dir(dataset, args, baseline_args, seed=seed, root=root)
 
 
 def study_attrs(dataset, model, fold, teacher=None):

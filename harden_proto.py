@@ -25,11 +25,12 @@ import time
 
 import torch
 
-from train_proto import test_epoch, train_epoch
+from train_proto import train_epoch
 from utils import tracking
 from utils.evaluation import full_eval
 from utils.optim import build_optimizer
 from utils.runs import RunDir, load_run
+from utils.training import test_epoch
 from utils.utils import set_seed
 
 

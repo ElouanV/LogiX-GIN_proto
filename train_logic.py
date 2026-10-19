@@ -1,39 +1,31 @@
-from torch import nn
-import torch
-import torch.nn.functional as F
-from torch_geometric.datasets import TUDataset
-from utils.syn_dataset import SynGraphDataset
-from utils.spmotif_dataset import *
-import torch_geometric.transforms as T
-from torch_geometric.loader import DataLoader
-from torch_geometric.nn import GINConv, global_mean_pool, global_max_pool, global_add_pool
-from utils.utils import *
-from sklearn.model_selection import train_test_split
-import shutil
-import glob
-import pandas as pd
+"""Layer-wise distillation of a frozen GIN teacher into a LogiX-GIN student (GINTELL):
+per-layer BCE on the trunk against the teacher's binary node states, warmup then full
+end-to-end training, ReduceLROnPlateau, one run per seed (upstream training, unchanged).
+
+    python train_logic.py --dataset MUTAG --baseline_path "results/MUTAG/<teacher cfg>" [--seed 0]
+
+Results go to results_logic/<dataset>/<cfg>/<teacher cfg>/<seed> (utils/runs.py).
+"""
 import argparse
-import pickle
 import json
-from models.model import GIN, GINTELL
-from models_proto.gintell import GINTELLPool
+import os
+
+import torch
 from torch.optim.lr_scheduler import ReduceLROnPlateau
+
+from models.model import GINTELL
+from models_proto.gintell import GINTELLPool
 from utils import tracking
-from utils.evaluation import evaluate, held_out
+from utils.evaluation import held_out
+from utils.runs import LOGIC_ROOT, best_teacher_dir, get_device, student_dir
+from utils.training import (class_loss, distill_trunk, eval_student, fresh_dir, log_summary, register_final,
+                            run_seeds, student_data, test_epoch, tracked_student_seed)
+from utils.utils import set_seed, zero_nan_gradients
 
-SEEDS = 10
 
-def get_best_baseline_path(dataset_name):
-    l = glob.glob(f'results/{dataset_name}/*/results.json')
-    fl = [json.load(open(f)) for f in l]
-    df = pd.DataFrame(fl)
-    if df.shape[0] == 0: return None
-    df['fname'] = l
-    df = df.sort_values(by=['val_acc_mean', 'val_acc_std', 'test_acc_std'], ascending=[True,False,False])
-    df = df[df.fname.str.contains('nogumbel=False')]
-    fname = df.iloc[-1]['fname']
-    fname = fname.replace('/results.json', '')
-    return fname
+def run_dir(dataset_name, args, baseline_args, seed=None, root=LOGIC_ROOT):
+    return student_dir(dataset_name, args, baseline_args, seed=seed, root=root)
+
 
 def build_logic_model(args, baseline_args, num_features, num_classes, device):
     """Upstream GINTELL, or GINTELLPool when --pool_ops picks another readout."""
@@ -58,10 +50,10 @@ def _epoch(model, model_tell, loader, device, optimizer, num_classes, train_full
     train = optimizer is not None
     model.train()
     model_tell.train(train)
-    
+
     total_loss = [0]*(len(model_tell.convs)+1)
     total_correct = [0]*(len(model_tell.convs)+1)
-    
+
     for data in loader:
         try:
             if data.x is None:
@@ -74,36 +66,22 @@ def _epoch(model, model_tell, loader, device, optimizer, num_classes, train_full
                 optimizer.zero_grad()
             with torch.no_grad():
                 layers_x, layers_y = model.forward_e(data.x.float().to(device), data.edge_index.to(device), data.batch.to(device))
-            loss = 0
-            last_layer_out = None
-            for i, (layer, layer_x, layer_y) in enumerate(zip(model_tell.convs, layers_x[:-1], layers_y[:-1])):
-                if train_full: layer.nn[0].phi_in.tau = 10
-                if i !=0 and train: layer_x = F.dropout(layer_x, p=0.2)*(1-0.2)
-                layer_out = layer(torch.hstack([layer_x, 1-layer_x]), data.edge_index.to(device))
-                layer_loss = F.binary_cross_entropy(layer_out.reshape(-1), layer_y.reshape(-1)) + conv_reg* (layer.nn[0].reg_loss + layer.nn[0].phi_in.entropy)
-                loss += layer_loss
-                if train_full and i!=0:
-                    layer_x = last_layer_out
-                    layer_out = layer(torch.hstack([layer_x, 1-layer_x]), data.edge_index.to(device))
-                    layer_loss = F.binary_cross_entropy(layer_out.reshape(-1), layer_y.reshape(-1)) + conv_reg* (layer.nn[0].reg_loss + layer.nn[0].phi_in.entropy)
-                    loss += layer_loss
-                last_layer_out = layer_out
-                total_loss[i] += layer_loss.item() / len(loader.dataset)
-                total_correct[i] += ((layer_out >= 0.5).long() == layer_y).sum().item() / (layer_y.shape[-2]*layer_y.shape[-1]*len(loader))
-            
+            loss = distill_trunk(model_tell, layers_x, layers_y, data.edge_index.to(device), train, train_full, conv_reg,
+                                 total_loss, total_correct, len(loader.dataset), len(loader))
+
             pooled = layers_x[-1]           # the teacher's mean ‖ max ‖ sum readout
             if hasattr(model_tell, 'select_pooled'):
                 pooled = model_tell.select_pooled(pooled)
             out = model_tell.fc(torch.hstack([pooled, 1-pooled]))
             pred = out.argmax(-1)
-            loss += F.binary_cross_entropy(out.reshape(-1), torch.nn.functional.one_hot(y, num_classes=num_classes).float().reshape(-1)) + F.nll_loss(F.log_softmax(out, dim=-1), y.long())
-            
+            loss += class_loss(out, y, num_classes)
+
             if train_full:
                 model_tell.fc.phi_in.tau = 10
-                out = model_tell(data.x.float().to(device), data.edge_index.to(device), data.batch.to(device))       
+                out = model_tell(data.x.float().to(device), data.edge_index.to(device), data.batch.to(device))
                 pred = out.argmax(-1)
-                loss += F.binary_cross_entropy(out.reshape(-1), torch.nn.functional.one_hot(y, num_classes=num_classes).float().reshape(-1)) + F.nll_loss(F.log_softmax(out, dim=-1), y.long())
-               
+                loss += class_loss(out, y, num_classes)
+
             loss += fc_reg*(model_tell.fc.reg_loss + model_tell.fc.phi_in.entropy)
 
             if train:
@@ -115,26 +93,9 @@ def _epoch(model, model_tell, loader, device, optimizer, num_classes, train_full
             total_correct[-1] += pred.eq(y).sum().item() / len(loader.dataset)
         except Exception as e:
             print(e)
-            pass
 
     return total_loss, total_correct
 
-@torch.no_grad()
-def test_epoch(model, loader, device):
-    model.eval()
-    total_correct = 0
-    for data in loader:
-        if data.x is None:
-            data.x = torch.ones((data.num_nodes, model.num_features))
-        if data.y.numel() == 0: continue
-        if data.x.isnan().any(): continue
-        if data.y.isnan().any(): continue
-        y = data.y.reshape(-1).to(device)
-        pred = model(data.x.float().to(device), data.edge_index.to(device), data.batch.to(device), tau=1000).argmax(-1)
-        total_correct += pred.eq(y).sum().item()
-    val_acc = total_correct / len(loader.dataset)
-    
-    return val_acc
 
 def train_seed(dataset_name, baseline_path, args, seed, device, out_root=None, epoch_callback=None, tags=None):
     """One seed, logged as one MLflow run of experiment logic/<dataset> (utils/tracking.py).
@@ -143,95 +104,41 @@ def train_seed(dataset_name, baseline_path, args, seed, device, out_root=None, e
     ``epoch_callback(epoch, model, val_loader)`` is called after every epoch (optimize_optuna.py
     reports to Optuna and prunes there); ``tags`` are added to the MLflow run.
     """
-    root = out_root or 'results_logic'
+    root = out_root or LOGIC_ROOT
     baseline_args = json.load(open(os.path.join(baseline_path, 'args.json'), 'r'))
-    path = create_folder_logic(dataset_name, args, baseline_args, seed=seed, root=root)
-    cfg = os.path.relpath(os.path.dirname(path), f'{root}/{dataset_name}')
-    params = {**args, **{f'teacher/{k}': v for k, v in baseline_args.items()},
-              'seed': seed, 'dataset': dataset_name, 'teacher_path': baseline_path}
-    name = f"logic/h{baseline_args['hidden_dim']}/seed{seed}"
-    tags = {'config': cfg, 'seed': seed, 'kind': 'seed', 'dataset': dataset_name,
-            'hidden_dim': baseline_args['hidden_dim'], **(tags or {})}
-    with tracking.ensure_pipeline(dataset_name, name, tags=tags):      # one per seed when run alone
-        tracking.teacher_reference(baseline_path, dataset_name, seed)
-        with tracking.run(f'logic/{dataset_name}', run_name=name, params=params, tags=tags,
-                          stage='distillation', dataset=dataset_name):
-            res = _train_seed(dataset_name, baseline_path, args, seed, device, root, epoch_callback)
-            tracking.write_pipeline(path)
-            return res
+    path = run_dir(dataset_name, args, baseline_args, seed, root)
+    return tracked_student_seed(
+        dataset_name, baseline_path, args, seed, path, root, f'logic/{dataset_name}',
+        f"logic/h{baseline_args['hidden_dim']}/seed{seed}", {'hidden_dim': baseline_args['hidden_dim'], **(tags or {})},
+        lambda: _train_seed(dataset_name, baseline_path, args, seed, device, root, epoch_callback))
 
 
-def _train_seed(dataset_name, baseline_path, args, seed, device, root='results_logic', epoch_callback=None):
+def _train_seed(dataset_name, baseline_path, args, seed, device, root=LOGIC_ROOT, epoch_callback=None):
     set_seed(seed)
-
-        
     baseline_args = json.load(open(os.path.join(baseline_path, 'args.json'), 'r'))
-    path = create_folder_logic(dataset_name, args, baseline_args, seed=seed, root=root)
-    shutil.rmtree(path)
-    path = create_folder_logic(dataset_name, args, baseline_args, seed=seed, root=root)
+    path = fresh_dir(lambda: run_dir(dataset_name, args, baseline_args, seed, root))
+    d = student_data(dataset_name, baseline_path, args, device, f'Training logic model on {dataset_name}', path)
+    args, model = d.args, d.teacher
+    train_loader, val_loader, test_loader = d.loaders['train'], d.loaders['val'], d.loaders['test']
+    model_tell = build_logic_model(args, baseline_args, d.num_features, d.num_classes, device)
 
-    with open(os.path.join(path, 'args.json'), 'w') as f:
-        args = {k: (v.item() if hasattr(v, 'item') else v) for k,v in args.items()}
-        json.dump(args, f)
-
-
-    dataset = get_dataset(dataset_name)
-
-    print(f'Training logic model on {dataset_name}')
-    print(baseline_args)
-
-    
-    num_classes = dataset.num_classes
-    num_features = dataset.num_features
-
-    if num_features == 0: num_features = 10
-    
-    data = pickle.load(open(os.path.join(baseline_path, 'data.pkl'), 'rb'))
-
-    train_dataset = dataset[data['train_indices']]
-    val_dataset = dataset[data['val_indices']]
-    test_dataset = dataset[data['test_indices']]
-    train_loader = DataLoader(train_dataset, batch_size=args['batch_size'], shuffle=True)
-    val_loader = DataLoader(val_dataset, batch_size=64, shuffle=False)
-    test_loader = DataLoader(test_dataset, batch_size=64, shuffle=False)
-
-    with open(os.path.join(path, 'data.pkl'), 'wb') as f:
-        pickle.dump({
-            'train_indices': data['train_indices'],
-            'val_indices': data['val_indices'],
-            'test_indices': data['test_indices'],
-            'train_dataset': train_dataset,
-            'val_dataset': val_dataset,
-            'test_dataset': test_dataset,
-        }, f)
-    
-    model = GIN(num_features=num_features, num_classes=num_classes, hidden_dim=baseline_args['hidden_dim'], num_layers=baseline_args['num_layers'], nogumbel=baseline_args['nogumbel']).to(device)
-    model.load_state_dict(torch.load(os.path.join(baseline_path, 'best.pt'), map_location='cpu'))
-    model.eval()
-    for p in model.parameters():
-        p.requires_grad_ = False
-    print('Baseline Acc:', test_epoch(model, test_loader, device))
-    model_tell = build_logic_model(args, baseline_args, num_features, num_classes, device)
-    
     optimizer = torch.optim.AdamW(model_tell.parameters(), lr=args['lr'], weight_decay=args['l2'])
-
     scheduler = ReduceLROnPlateau(optimizer, mode='max', factor=0.99, patience=300, min_lr=1e-5, verbose=True)
-    
-    # Training loop
+
     best_val_acc = 0
     best_test_acc = 0
-    train_accs = []
-    val_accs = []
-    test_accs = []
     for epoch in range(args['epochs']):
-        train_loss, train_acc = train_epoch(model, model_tell, train_loader, device, optimizer, num_classes, train_full=epoch>args['warmup_epochs'], conv_reg=args['conv_reg'], fc_reg=args['fc_reg'])
-        val_loss, _ = train_epoch(model, model_tell, val_loader, device, None, num_classes, train_full=epoch>args['warmup_epochs'], conv_reg=args['conv_reg'], fc_reg=args['fc_reg'])
+        full = epoch > args['warmup_epochs']
+        train_loss, train_acc = train_epoch(model, model_tell, train_loader, device, optimizer, d.num_classes,
+                                            train_full=full, conv_reg=args['conv_reg'], fc_reg=args['fc_reg'])
+        val_loss, _ = train_epoch(model, model_tell, val_loader, device, None, d.num_classes,
+                                  train_full=full, conv_reg=args['conv_reg'], fc_reg=args['fc_reg'])
         val_acc = test_epoch(model_tell, val_loader, device)
         test_acc = test_epoch(model_tell, test_loader, device)
 
-        if epoch > args['warmup_epochs']:
+        if full:
             scheduler.step(val_acc)
-        if epoch>args['warmup_epochs'] and val_acc >= best_val_acc:
+        if full and val_acc >= best_val_acc:
             torch.save(model_tell, os.path.join(path, 'best.pt'))
             best_val_acc = val_acc
             best_test_acc = test_acc
@@ -240,155 +147,54 @@ def _train_seed(dataset_name, baseline_path, args, seed, device, root='results_l
         tracking.log_metrics({'val_acc': val_acc, 'test_acc': test_acc, 'best_val_acc': best_val_acc,
                               'best_test_acc': best_test_acc, 'train_loss': train_loss[-1], 'val_loss': val_loss[-1],
                               'train_acc': train_acc[-1], 'lr': optimizer.param_groups[0]['lr'],
-                              'phase_full': float(epoch > args['warmup_epochs']),
+                              'phase_full': float(full),
                               **{f'distill/L{i}_loss': l for i, l in enumerate(train_loss[:-1])},
                               **{f'distill/L{i}_val_loss': l for i, l in enumerate(val_loss[:-1])},
                               **{f'distill/L{i}_acc': c for i, c in enumerate(train_acc[:-1])}},
                              step=epoch)
         if epoch_callback is not None:
             epoch_callback(epoch, model_tell, val_loader)
-        
+
         if epoch % 10 == 0:
             print(f'Epoch: {epoch+1}, Train Loss: {train_loss}, Train Acc: {train_acc}, Val Acc: {val_acc:.4f}, Test Acc: {test_acc:.4f}')
             print(f'\t\t Best Val Acc: {best_val_acc:.4f}, Best Test Acc: {best_test_acc:.4f}')
 
-        train_accs.append(train_acc)
-        val_accs.append(val_acc)
-        test_accs.append(test_acc)
-    
     torch.save(model_tell, os.path.join(path, 'last.pt'))
     model_tell = torch.load(os.path.join(path, 'best.pt'))
-
     val_acc = test_epoch(model_tell, val_loader, device)
     test_acc = test_epoch(model_tell, test_loader, device)
-
-    results = {
-        'seed': seed,
-        'val_acc': val_acc,
-        'test_acc': test_acc,
-    }
 
     # final evaluation of the kept checkpoint (imbalance-aware metrics, rule statistics), registration
-    if tracking.enabled():
-        from rule_eval import rule_metrics, rule_stats
-        final = {**evaluate(model_tell, val_loader, device, prefix='final/val_'),
-                 **evaluate(model_tell, test_loader, device, prefix='final/test_')}
-        stats = rule_stats(model_tell, val_loader, device)
-        tracking.log_metrics({**final, **rule_metrics(stats, prefix='final/rules/')})
-        tracking.log_dict({'metrics': final, 'rules': stats}, 'final_evaluation.json')
-        tracking.log_artifact(os.path.join(path, 'args.json'))
-        tracking.log_model(model_tell, f'logix-gin-{dataset_name}', code_dirs=('models',),
-                           tags={'seed': seed, 'hidden_dim': baseline_args['hidden_dim'],
-                                 'val_acc': val_acc, 'test_acc': test_acc, 'path': path})
+    register_final(model_tell, d.loaders, device, path, f'logix-gin-{dataset_name}', ('models',), ('args.json',),
+                   {'seed': seed, 'hidden_dim': baseline_args['hidden_dim'], 'val_acc': val_acc, 'test_acc': test_acc,
+                    'path': path})
+    return {'seed': seed, 'val_acc': val_acc, 'test_acc': test_acc}
 
-    return results
 
 def eval_seed(dataset_name, baseline_path, args, seed, device):
-    set_seed(seed)
-
     baseline_args = json.load(open(os.path.join(baseline_path, 'args.json'), 'r'))
-    path = create_folder_logic(dataset_name, args, baseline_args, seed=seed)
-
-    dataset = get_dataset(dataset_name)
-
-    print(f'Evaluating logic model on {dataset_name}')
-    print(baseline_args)
-
-    num_classes = dataset.num_classes
-    num_features = dataset.num_features
-
-    if num_features == 0: num_features = 10
-    
-    data = pickle.load(open(os.path.join(baseline_path, 'data.pkl'), 'rb'))
-
-    train_dataset = dataset[data['train_indices']]
-    val_dataset = dataset[data['val_indices']]
-    test_dataset = dataset[data['test_indices']]
-    train_loader = DataLoader(train_dataset, batch_size=args['batch_size'], shuffle=True)
-    val_loader = DataLoader(val_dataset, batch_size=64, shuffle=False)
-    test_loader = DataLoader(test_dataset, batch_size=64, shuffle=False)
-
-    
-    model = GIN(num_features=num_features, num_classes=num_classes, hidden_dim=baseline_args['hidden_dim'], num_layers=baseline_args['num_layers'], nogumbel=baseline_args['nogumbel']).to(device)
-    model.load_state_dict(torch.load(os.path.join(baseline_path, 'best.pt'), map_location='cpu'))
-    model.eval()
-    for p in model.parameters():
-        p.requires_grad_ = False
-    print('Baseline Acc:', test_epoch(model, test_loader, device))
-    model_tell = build_logic_model(args, baseline_args, num_features, num_classes, device)
-    model_tell = torch.load(os.path.join(path, 'best.pt'))
-
-    val_acc = test_epoch(model_tell, val_loader, device)
-    test_acc = test_epoch(model_tell, test_loader, device)
-
-    results = {
-        'seed': seed,
-        'val_acc': val_acc,
-        'test_acc': test_acc,
-    }
-
-    return results
+    return eval_student(dataset_name, baseline_path, args, seed, device, run_dir(dataset_name, args, baseline_args, seed),
+                        f'Evaluating logic model on {dataset_name}')
 
 
 def train_eval(dataset_name, baseline_path, args):
-    device = torch.device('cuda') if torch.cuda.is_available() else torch.device('cpu')
+    device = get_device()
     baseline_args = json.load(open(os.path.join(baseline_path, '0', 'args.json'), 'r'))
-    
-    seed_todo = args.pop('seed', None)
+    seed = args.pop('seed', None)
     only_eval = args.pop('only_eval', False)
     if args.get('pool_ops') is None:               # upstream readout: keep existing dir names
         args.pop('pool_ops', None)
-    
-    path = create_folder_logic(dataset_name, args, baseline_args)
+    path = run_dir(dataset_name, args, baseline_args)
+    teacher = lambda s: os.path.join(baseline_path, str(s))  # noqa: E731
+    hidden = baseline_args['hidden_dim']
+    return run_seeds(path, lambda s: train_seed(dataset_name, teacher(s), args, s, device),
+                     lambda s: eval_seed(dataset_name, teacher(s), args, s, device), seed, only_eval,
+                     lambda df, ret: log_summary(dataset_name, f'logic/h{hidden}/summary', args, df, ret, path, LOGIC_ROOT,
+                                                 {'hidden_dim': hidden}))
 
-    seeds = range(SEEDS)
-    if seed_todo is not None:
-        seeds = [seed_todo]
-    
-    results = []
-    if not only_eval:
-        for seed in seeds:
-            results.append(train_seed(dataset_name, os.path.join(baseline_path, str(seed)), args, seed, device))
-
-    print(results)
-
-    if only_eval or seed_todo is not None:
-        results = []
-        for seed in range(SEEDS):
-            try:
-                r = eval_seed(dataset_name, os.path.join(baseline_path, str(seed)), args, seed, device)
-                results.append(r)
-                print(r)
-            except Exception as e: print(e)
-
-    df = pd.DataFrame(results)
-    df.to_csv(os.path.join(path, 'total_results.csv'))
-
-    ret = {
-        'val_acc_mean': df['val_acc'].mean(),
-        'test_acc_mean': df['test_acc'].mean(),
-        'val_acc_std': df['val_acc'].std(),
-        'test_acc_std': df['test_acc'].std()
-    }
-
-    with open(os.path.join(path, 'results.json'), 'w') as f:
-        json.dump(ret, f)
-
-    # parallel single-seed processes each re-evaluate every seed; only a full or
-    # --only_eval pass writes the summary run
-    if only_eval or seed_todo is None:
-        with tracking.run(tracking.pipeline_experiment(dataset_name), run_name=f"logic/h{baseline_args['hidden_dim']}/summary",
-                          params={**args, 'n_seeds': len(df)},
-                          tags={'config': os.path.relpath(path, f'results_logic/{dataset_name}'), 'kind': 'summary',
-                                'dataset': dataset_name, 'hidden_dim': baseline_args['hidden_dim']}):
-            tracking.log_metrics(ret)
-            tracking.log_artifact(os.path.join(path, 'total_results.csv'))
-
-    return ret
-    
 
 def get_parser():
-    parser = argparse.ArgumentParser(description='train_baseline.py')
+    parser = argparse.ArgumentParser(description='train_logic.py')
 
     parser.add_argument('--dataset',       default='PROTEINS', type=str,     help='Dataset to use')
     parser.add_argument('--baseline_path', default=None,       type=str,     help='Baseline path')
@@ -400,8 +206,8 @@ def get_parser():
     parser.add_argument('--conv_reg',      default=0.001,      type=float,   help='Conv layer regularization')
     parser.add_argument('--fc_reg',        default=0.01,      type=float,    help='Last layer regularization')
     parser.add_argument('--pool_ops',      default=None,      type=str,     help='Comma-separated readout pooling, e.g. mean,max (default: upstream mean,max,sum; models_proto/gintell.py)')
-    parser.add_argument('--only_eval',    action='store_true',              help='Number of Convolutional Layers')
-    parser.add_argument('--seed',          default=None,      type=int,    help='Number of Convolutional Layers')
+    parser.add_argument('--only_eval',     action='store_true',              help='Only evaluate the kept checkpoints')
+    parser.add_argument('--seed',          default=None,      type=int,    help='Single seed to run')
     return parser
 
 
@@ -415,6 +221,6 @@ def parse_cli(argv=None):
 if __name__ == '__main__':
     dataset_name, baseline_path, args = parse_cli()
     if baseline_path is None:
-        baseline_path = get_best_baseline_path(dataset_name)
+        baseline_path = best_teacher_dir(dataset_name)
         print('Baseline path found:', baseline_path)
     train_eval(dataset_name, baseline_path, args)

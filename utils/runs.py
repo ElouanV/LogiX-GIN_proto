@@ -68,6 +68,21 @@ def student_dir(dataset, args, teacher_args, seed=None, root=LOGIC_ROOT, hash_lo
     return path
 
 
+def best_teacher_dir(dataset, root=TEACHER_ROOT):
+    """The Gumbel teacher configuration with the best mean val accuracy over seeds (upstream:
+    ties broken towards higher std), or None without any summarized teacher."""
+    import glob
+    import pandas as pd
+    files = glob.glob(f'{root}/{dataset}/*/results.json')
+    df = pd.DataFrame([json.load(open(f)) for f in files])
+    if df.shape[0] == 0:
+        return None
+    df['fname'] = files
+    df = df.sort_values(by=['val_acc_mean', 'val_acc_std', 'test_acc_std'], ascending=[True, False, False])
+    df = df[df.fname.str.contains('nogumbel=False')]
+    return df.iloc[-1]['fname'].replace('/results.json', '')
+
+
 def num_features(dataset):
     return dataset.num_features or FEATURELESS_DIM
 

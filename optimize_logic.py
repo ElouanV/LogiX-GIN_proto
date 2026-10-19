@@ -4,7 +4,8 @@
 """
 import argparse
 
-from train_logic import get_best_baseline_path, train_eval
+from train_logic import train_eval
+from utils.runs import best_teacher_dir
 from utils.grid_search import CustomGridSearch
 
 PARAMS = {
@@ -20,7 +21,7 @@ PARAMS = {
 
 
 def scoring_function(dataset_name, **params):
-    return train_eval(dataset_name, get_best_baseline_path(dataset_name), params)['val_acc_mean']
+    return train_eval(dataset_name, best_teacher_dir(dataset_name), params)['val_acc_mean']
 
 
 if __name__ == '__main__':
