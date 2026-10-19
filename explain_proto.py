@@ -39,7 +39,7 @@ from torch_geometric.loader import DataLoader
 
 from latent_logic import (ATOMS, CLASSES, collect_activations, explain_component,
                           explain_head)
-from utils.runs import RunDir, get_device
+from utils.runs import EVAL_BATCH_SIZE, RunDir, get_device
 
 
 def atom(x_row):
@@ -101,7 +101,7 @@ def provenance(dataset):
     Returns node_graph / node_local (indices back into `dataset`, in loader order),
     graph_y, A (each node's atom index) and NB (closed-neighbourhood atom counts).
     """
-    loader = DataLoader(dataset, batch_size=64, shuffle=False)
+    loader = DataLoader(dataset, batch_size=EVAL_BATCH_SIZE, shuffle=False)
     node_graph, node_local, graph_y, A, NB = [], [], [], [], []
     g_offset = 0
     for data in loader:
@@ -324,7 +324,7 @@ def redundancy(model, level):
 @torch.no_grad()
 def evidence(model, dataset, device, col_desc, top):
     """Does each readout column separate the classes on held-out data?"""
-    loader = DataLoader(dataset, batch_size=64, shuffle=False)
+    loader = DataLoader(dataset, batch_size=EVAL_BATCH_SIZE, shuffle=False)
     S, Y = [], []
     for data in loader:
         data = data.to(device)
@@ -390,7 +390,7 @@ def main():
     print(f'== chemistry on {a.split} ({len(ds_id)} graphs) / '
           f'rules on {a.rule_split} ({len(ds_rule)} graphs)')
 
-    acts = collect_activations(model, DataLoader(ds_id, batch_size=64, shuffle=False), device)
+    acts = collect_activations(model, DataLoader(ds_id, batch_size=EVAL_BATCH_SIZE, shuffle=False), device)
     _, _, H, feats = derive(model, acts)
     node_graph, node_local, graph_y, A, NB = provenance(ds_id)
 
@@ -404,7 +404,7 @@ def main():
         print('\n--- 2. the components each prototype keys on, and their formulas ---')
         if rule_acts is None:
             rule_acts = collect_activations(
-                model, DataLoader(ds_rule, batch_size=64, shuffle=False), device)
+                model, DataLoader(ds_rule, batch_size=EVAL_BATCH_SIZE, shuffle=False), device)
         comp = components(model, level, feats, H, A, NB, rule_acts, a.decode_top,
                           a.max_rule_len, a.max_rules, a.min_support)
 
@@ -414,7 +414,7 @@ def main():
     print('\n--- 4. which prototypes each class reads (latent_logic.explain_head) ---')
     if rule_acts is None:
         rule_acts = collect_activations(
-            model, DataLoader(ds_rule, batch_size=64, shuffle=False), device)
+            model, DataLoader(ds_rule, batch_size=EVAL_BATCH_SIZE, shuffle=False), device)
     head = explain_head(model, level, rule_acts, max_rule_len=a.max_rule_len,
                         max_rules=a.max_rules, min_support=a.min_support)
     for cls, entries in head.items():

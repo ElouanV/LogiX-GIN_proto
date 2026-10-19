@@ -270,17 +270,15 @@ def objective(trial, dataset, model, fold, root, device, report_every=50, teache
 
 def evaluate_run(path, device):
     """val_* / test_* metrics (utils/evaluation.py) of the checkpoint a run kept."""
-    import pickle
-    import torch
     from torch_geometric.loader import DataLoader
     from utils.evaluation import evaluate
-    ckpt = os.path.join(path, 'best.pt')
-    if not os.path.exists(ckpt):                         # no checkpoint was ever kept
+    from utils.runs import EVAL_BATCH_SIZE, RunDir
+    run = RunDir(path)
+    if not os.path.exists(run.file('best.pt')):          # no checkpoint was ever kept
         raise RuntimeError(f'no best.pt in {path}')
-    net = torch.load(ckpt, map_location=device, weights_only=False)
-    data = pickle.load(open(os.path.join(path, 'data.pkl'), 'rb'))
-    return {**evaluate(net, DataLoader(data['val_dataset'], batch_size=64), device, prefix='val_'),
-            **evaluate(net, DataLoader(data['test_dataset'], batch_size=64), device, prefix='test_')}
+    net = run.model(device)
+    return {**evaluate(net, DataLoader(run.pickled('val'), batch_size=EVAL_BATCH_SIZE), device, prefix='val_'),
+            **evaluate(net, DataLoader(run.pickled('test'), batch_size=EVAL_BATCH_SIZE), device, prefix='test_')}
 
 
 def run_worker(dataset, model, fold, n_trials, root=ROOT, sampler_seed=0, report_every=50, teacher=None,
@@ -291,10 +289,10 @@ def run_worker(dataset, model, fold, n_trials, root=ROOT, sampler_seed=0, report
     one worker per study) a trial still RUNNING when the worker starts was interrupted,
     and is marked FAIL so it neither lingers nor counts as in flight."""
     import optuna
-    import torch
     from optuna.study import MaxTrialsCallback
     from optuna.trial import TrialState
-    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    from utils.runs import get_device
+    device = get_device()
     study = open_study(dataset, model, fold, root, sampler_seed, teacher=teacher)
     done = (TrialState.COMPLETE, TrialState.PRUNED, TrialState.FAIL)
     if sole_worker:

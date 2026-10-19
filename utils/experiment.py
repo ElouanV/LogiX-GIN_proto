@@ -229,13 +229,13 @@ class Experiment:
         return best['metrics'], f"{best['n_complete']} complete, {best['n_pruned']} pruned, best #{best['number']}"
 
     def _unit_final(self, dataset, model, fold, rep):
-        import torch
+        from utils.runs import get_device
         params, study, number = self.best_set(dataset, model, fold)
         argv = hps.to_argv(dataset, model, params, fold, self.teacher_dir(dataset))
         d = self.final_dir(dataset, model, fold)
         if os.path.exists(os.path.join(d, 'run')):
             shutil.rmtree(os.path.join(d, 'run'))          # an interrupted attempt
-        device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+        device = get_device()
         tags = {'experiment': self.name, 'kind': 'final', 'model_name': model}
         from utils import tracking
         with tracking.pipeline(dataset, f'{self.name}/{model}/fold{fold}', params=params, tags={**tags, 'fold': fold}):
@@ -260,12 +260,12 @@ class Experiment:
     def _unit_interp(self, dataset, model, fold, rep):
         """interp_metrics.py on the final checkpoint of a fold (the network metrics it repeats,
         acc / auc / ..., are already in final.json and are left out)."""
-        import torch
         import interp_metrics
         from utils import tracking
+        from utils.runs import get_device
         d = self.final_dir(dataset, model, fold)
         rec = json.load(open(os.path.join(d, 'final.json')))
-        device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+        device = get_device()
         res = {s: interp_metrics.run(rec['run_dir'], s, 'best.pt', device, dataset) for s in self.INTERP_SPLITS}
         res = {s: {k: v for k, v in r.items() if k not in self.NETWORK_KEYS} for s, r in res.items()}
         flat = {f'{s}_interp_{k}': v for s, r in res.items() for k, v in r.items() if isinstance(v, (int, float))}

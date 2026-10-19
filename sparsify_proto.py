@@ -53,7 +53,7 @@ from rule_eval import logical_layers, print_stats, rule_metrics, rule_stats
 from utils import tracking
 from utils.evaluation import full_eval, held_out
 from utils.runs import load_run
-from utils.training import test_epoch
+from utils.training import finetune_run, test_epoch
 from utils.utils import set_seed, zero_nan_gradients
 
 
@@ -245,12 +245,7 @@ def main():
     registered = f'logix-proto-sparse-{ds_name}-{level}' if stage == 'proto' else f'logix-gin-sparse-{ds_name}'
     code_dirs = ('models_proto',) if stage == 'proto' else ('models',)
 
-    with tracking.run(f'sparsify/{ds_name}', run_name=f'{level}|{cfg}/seed{run_seed}',
-                      params={**sp_args, **{f'source/{k}': v for k, v in run_args.items()}},
-                      tags={'config': cfg, 'source_config': f'{run.config}/{run.teacher_config}', 'seed': run_seed,
-                            'source_stage': stage, 'kind': 'seed', 'dataset': ds_name, 'proto_level': level,
-                            'source_run_path': a.run_path, 'out_dir': out_dir},
-                      stage='finetune/hoyer', dataset=ds_name, parent_run_id=tracking.fine_tune_parent(a.run_path)):
+    with finetune_run(run, 'sparsify', 'finetune/hoyer', cfg, sp_args, out_dir, level, {'source_stage': stage}):
         tracking.log_metrics({f'before/{k}': v for k, v in before['metrics'].items()})
         tracking.log_metrics(rule_metrics(before['rules'], prefix='before/rules/'))
 

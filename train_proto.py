@@ -174,6 +174,14 @@ def _epoch(model, model_proto, loader, device, optimizer, num_classes, train_ful
     return total_loss, total_correct
 
 
+def loss_weights(args):
+    """train_epoch's regulariser weights of a run, from its arguments (train_proto.py, and the
+    fine-tunes harden_proto.py / qat_proto.py, which keep the objective that trained it)."""
+    return dict(conv_reg=args['conv_reg'], fc_reg=args['fc_reg'], proto_div_reg=args['proto_div_reg'],
+                proto_ent_reg=args['proto_ent_reg'], mask_reg=args.get('mask_reg', 0.0),
+                vocab_reg=args.get('vocab_reg') or 0.0)
+
+
 @torch.no_grad()
 def build_proto_model(args, baseline_args, num_features, num_classes, device):
     """The student. num_layers/hidden_dim must match the teacher: the trunk is
@@ -253,6 +261,7 @@ def _train_seed(dataset_name, baseline_path, args, seed, device, root=PROTO_ROOT
 
     scheduler = ReduceLROnPlateau(optimizer, mode='max', factor=0.99, patience=300, min_lr=1e-5, verbose=True)
 
+    weights = loss_weights(args)
     best_val_acc = 0
     best_test_acc = 0
     push_log = []
@@ -264,9 +273,7 @@ def _train_seed(dataset_name, baseline_path, args, seed, device, root=PROTO_ROOT
         if args.get('harden_to') is not None:
             model_proto.set_sharpness(beta)
         train_loss, train_acc = train_epoch(model, model_proto, train_loader, device, optimizer, d.num_classes,
-                                            train_full=epoch>args['warmup_epochs'], conv_reg=args['conv_reg'], fc_reg=args['fc_reg'],
-                                            proto_div_reg=args['proto_div_reg'], proto_ent_reg=args['proto_ent_reg'],
-                                            mask_reg=args.get('mask_reg', 0.0), vocab_reg=args.get('vocab_reg', 0.0))
+                                            train_full=epoch > args['warmup_epochs'], **weights)
 
         # ProtoPNet push: snap every prototype onto the closest real training example,
         # so each one *is* an observed pattern and the extracted rules stay readable.
@@ -277,9 +284,7 @@ def _train_seed(dataset_name, baseline_path, args, seed, device, root=PROTO_ROOT
             push_log.append({'epoch': epoch, 'indices': [i.cpu().tolist() for i in idxs]})
 
         val_loss, _ = train_epoch(model, model_proto, val_loader, device, None, d.num_classes,
-                                  train_full=epoch>args['warmup_epochs'], conv_reg=args['conv_reg'], fc_reg=args['fc_reg'],
-                                  proto_div_reg=args['proto_div_reg'], proto_ent_reg=args['proto_ent_reg'],
-                                  mask_reg=args.get('mask_reg', 0.0), vocab_reg=args.get('vocab_reg', 0.0))
+                                  train_full=epoch > args['warmup_epochs'], **weights)
         val_acc = test_epoch(model_proto, val_loader, device)
         test_acc = test_epoch(model_proto, test_loader, device)
 

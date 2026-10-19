@@ -201,3 +201,15 @@ def log_summary(dataset_name, run_name, args, df, ret, path, root, tags=None):
                             'dataset': dataset_name, **(tags or {})}):
         tracking.log_metrics(ret)
         tracking.log_artifact(os.path.join(path, 'total_results.csv'))
+
+
+def finetune_run(run, kind, stage, cfg, settings, out_dir, level, tags=None):
+    """The MLflow run of a fine-tune of ``run`` (a utils.runs.RunDir): experiment
+    ``<kind>/<dataset>``, nested under the source run's pipeline (tracking.fine_tune_parent),
+    with the fine-tune ``settings`` and the source run's arguments as params."""
+    return tracking.run(f'{kind}/{run.dataset}', run_name=f'{level}|{cfg}/seed{run.seed}',
+                        params={**settings, **{f'source/{k}': v for k, v in run.args.items()}},
+                        tags={'config': cfg, 'source_config': f'{run.config}/{run.teacher_config}', 'seed': run.seed,
+                              'kind': 'seed', 'dataset': run.dataset, 'proto_level': level,
+                              'source_run_path': run.path, 'out_dir': out_dir, **(tags or {})},
+                        stage=stage, dataset=run.dataset, parent_run_id=tracking.fine_tune_parent(run.path))

@@ -34,6 +34,7 @@ from interp_metrics import (_subgraph_edges, aggregate, head_literal_map, level_
                             symbolic_head, trunk_states)
 from latent_logic import ATOMS, collect_activations, explain_component, literal_name
 from utils.datasets import spec
+from utils.runs import EVAL_BATCH_SIZE
 from utils.evaluation import predict
 from utils.viz import AQUA, BLUE, INK, INK2, ORANGE, save  # noqa: F401  (save re-exported for callers)
 
@@ -63,7 +64,7 @@ def explain_graphs(model, dataset, device='cpu'):
     """
     if level_of(model) != 'node':
         raise ValueError('worked examples need node-level prototypes')
-    loader = DataLoader(dataset, batch_size=64, shuffle=False)
+    loader = DataLoader(dataset, batch_size=EVAL_BATCH_SIZE, shuffle=False)
     out, y = predict(model, loader, device)
     net = out.argmax(1)
     W = model.fc.weight.detach().cpu().numpy()

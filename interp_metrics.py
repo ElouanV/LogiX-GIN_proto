@@ -66,7 +66,7 @@ from explain_proto import proto_dim_map, readout_columns
 from models_proto.model_proto import MODELS
 from utils.datasets import spec
 from utils.evaluation import evaluate, predict
-from utils.runs import RunDir, get_device
+from utils.runs import EVAL_BATCH_SIZE, RunDir, get_device
 
 LEVELS = {cls.__name__: level for level, cls in MODELS.items()}
 
@@ -196,7 +196,7 @@ def head_literal_map(model):
 @torch.no_grad()
 def interp_metrics(model, dataset, device, ds_name=None):
     model.eval()
-    loader = DataLoader(dataset, batch_size=64, shuffle=False)
+    loader = DataLoader(dataset, batch_size=EVAL_BATCH_SIZE, shuffle=False)
     net = evaluate(model, loader, device)
     out, y = predict(model, loader, device)
     net_pred = out.argmax(1)

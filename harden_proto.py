@@ -25,12 +25,12 @@ import time
 
 import torch
 
-from train_proto import train_epoch
+from train_proto import loss_weights, train_epoch
 from utils import tracking
 from utils.evaluation import full_eval
 from utils.optim import build_optimizer
 from utils.runs import RunDir, load_run
-from utils.training import test_epoch
+from utils.training import finetune_run, test_epoch
 from utils.utils import set_seed
 
 
@@ -44,9 +44,7 @@ def harden(teacher, model, run_args, train_loader, val_loader, device, num_class
            optimizer, out_path, log=lambda metrics, step: None):
     """Fine-tune ``model`` along the sharpness ramp; saves the best val epoch at beta = harden_to
     to ``out_path`` and returns the per-epoch history."""
-    common = dict(train_full=True, conv_reg=run_args['conv_reg'], fc_reg=run_args['fc_reg'],
-                  proto_div_reg=run_args['proto_div_reg'], proto_ent_reg=run_args['proto_ent_reg'],
-                  mask_reg=run_args.get('mask_reg', 0.0), vocab_reg=run_args.get('vocab_reg') or 0.0)
+    common = dict(train_full=True, **loss_weights(run_args))
     history, best, t0 = [], -1.0, time.time()
     for epoch in range(epochs):
         beta = ramp(epoch, epochs, harden_to, ramp_frac)
@@ -102,12 +100,7 @@ def main():
     os.makedirs(out_dir, exist_ok=True)
     optimizer = build_optimizer(model, a.optimizer, h_args['lr'], run_args['l2'], muon_lr=a.muon_lr)
 
-    with tracking.run(f"harden/{run.dataset}", run_name=f"{run_args['proto_level']}|{cfg}/seed{run.seed}",
-                      params={**h_args, **{f'source/{k}': v for k, v in run_args.items()}},
-                      tags={'config': cfg, 'source_config': f"{run.config}/{run.teacher_config}", 'seed': run.seed,
-                            'kind': 'seed', 'dataset': run.dataset, 'proto_level': run_args['proto_level'],
-                            'source_run_path': a.run_path, 'out_dir': out_dir},
-                      stage='finetune/harden', dataset=run.dataset, parent_run_id=tracking.fine_tune_parent(a.run_path)):
+    with finetune_run(run, 'harden', 'finetune/harden', cfg, h_args, out_dir, run_args['proto_level']):
         tracking.log_metrics({f'before/{k}': v for k, v in before.items()})
         history = harden(loaded.teacher, model, run_args, loaders['train'], loaders['val'], device, loaded.num_classes,
                          a.harden_to, a.epochs, a.ramp_frac, optimizer, os.path.join(out_dir, 'best.pt'),

@@ -43,11 +43,12 @@ import torch
 import torch.nn.functional as F
 
 from interp_metrics import symbolic_head
-from train_proto import train_epoch
+from train_proto import loss_weights, train_epoch
 from utils import tracking
 from utils.evaluation import full_eval
 from utils.optim import build_optimizer
 from utils.runs import RunDir, load_run
+from utils.training import finetune_run
 from utils.utils import set_seed
 
 
@@ -143,9 +144,7 @@ def qat(teacher, model, run_args, train_loader, val_loader, device, num_classes,
     or the starting model (epoch -1, saved at rate_to) when no QAT epoch beats its rules, so
     the fine-tune never returns a worse rule model than the one it starts from on val.
     Objective: base_weight x the run's own (train_full) + rule_losses(task_weight, distill_weight)."""
-    common = dict(train_full=True, conv_reg=run_args['conv_reg'], fc_reg=run_args['fc_reg'],
-                  proto_div_reg=run_args['proto_div_reg'], proto_ent_reg=run_args['proto_ent_reg'],
-                  mask_reg=run_args.get('mask_reg', 0.0), vocab_reg=run_args.get('vocab_reg') or 0.0)
+    common = dict(train_full=True, **loss_weights(run_args))
     frozen = copy.deepcopy(model).eval()
     frozen.set_quant_noise(0.0)
     for p in frozen.parameters():
@@ -228,12 +227,7 @@ def run_qat(run_path, dataset=None, rate_to=1.0, epochs=300, ramp_frac=2 / 3, lr
     os.makedirs(out_dir, exist_ok=True)
     optimizer = build_optimizer(model, 'adamw', q_args['lr'], run_args['l2'])
 
-    with tracking.run(f"qat/{run.dataset}", run_name=f"{run_args['proto_level']}|{cfg}/seed{run.seed}",
-                      params={**q_args, **{f'source/{k}': v for k, v in run_args.items()}},
-                      tags={'config': cfg, 'source_config': f"{run.config}/{run.teacher_config}", 'seed': run.seed,
-                            'kind': 'seed', 'dataset': run.dataset, 'proto_level': run_args['proto_level'],
-                            'source_run_path': run_path, 'out_dir': out_dir, **(tags or {})},
-                      stage='finetune/qat', dataset=run.dataset, parent_run_id=tracking.fine_tune_parent(run_path)):
+    with finetune_run(run, 'qat', 'finetune/qat', cfg, q_args, out_dir, run_args['proto_level'], tags):
         tracking.log_metrics({f'before/{m}/{k}': v for m, r in before.items() for k, v in r.items()})
         fit = qat(loaded.teacher, model, run_args, loaders['train'], loaders['val'], device, loaded.num_classes,
                   rate_to, epochs, ramp_frac, optimizer, os.path.join(out_dir, 'best.pt'),
