@@ -32,7 +32,7 @@ from torch_geometric.loader import DataLoader
 
 from interp_metrics import (_subgraph_edges, aggregate, head_literal_map, level_of, shortest_explanation,
                             symbolic_head, trunk_states)
-from latent_logic import ATOMS, collect_activations, explain_component, literal_name
+from latent_logic import collect_activations, explain_component, literal_name
 from utils.datasets import spec
 from utils.runs import EVAL_BATCH_SIZE
 from utils.evaluation import predict
@@ -223,9 +223,9 @@ def _layout(edge_index, n):
     return g, nx.kamada_kawai_layout(g) if n > 1 else {0: (0, 0)}
 
 
-def draw_graph(ax, x, edge_index, marks=None, region=None, title=None, node_size=150):
-    """Atoms as grey discs with their symbol; marks = {node: [colours]} concentric rings;
-    region shaded."""
+def draw_graph(ax, x, edge_index, marks=None, region=None, title=None, node_size=150, ds='Mutagenicity'):
+    """Atoms as grey discs with their symbol (the feature name of ``ds``); marks = {node:
+    [colours]} concentric rings; region shaded."""
     marks, region = marks or {}, set(int(v) for v in (region if region is not None else []))
     n = len(x)
     g, pos = _layout(edge_index, n)
@@ -236,7 +236,7 @@ def draw_graph(ax, x, edge_index, marks=None, region=None, title=None, node_size
     if n and bool((x == x[0]).all()):          # constant features (BA datasets): no symbol to show
         labels = {v: '' for v in range(n)}
     else:
-        labels = {v: ATOMS[int(x[v].argmax())] if int(x[v].argmax()) < len(ATOMS) else '?' for v in range(n)}
+        labels = {v: spec(ds).feature_name(int(x[v].argmax())) for v in range(n)}
     small = [v for v in range(n) if labels[v] == 'H']
     big = [v for v in range(n) if labels[v] != 'H']
     nx.draw_networkx_nodes(g, pos, nodelist=big, ax=ax, node_color=NODE_FILL, node_size=node_size,
@@ -360,7 +360,7 @@ def plot_prototypes(model, recs, train_dataset, ds='Mutagenicity', top=6, device
         c = by_class[k].most_common(1)[0][0]              # the class its explanations argue for
         gi, v = best[k][c] if best[k][c] is not None else next(b for b in best[k] if b is not None)
         d = train_dataset[gi]
-        draw_graph(gax, d.x.float(), d.edge_index, marks={v: BLUE},
+        draw_graph(gax, d.x.float(), d.edge_index, marks={v: BLUE}, ds=ds,
                    title=f'a best-matching training node (graph {gi}, {class_name(int(d.y), ds)})')
     fig.suptitle('Most-cited prototypes. Units: L<layer>u<unit>; ¬ = must be 0; layer-0 units decoded '
                  'into atom-count rules (n_X = number of X among the node and its neighbours)',
@@ -383,13 +383,12 @@ def pick_examples(recs, ds='Mutagenicity'):
     scored = truth.classes if truth else ()
     correct = lambda r: r['backed'] and r['y'] == r['net'] == r['rule']  # noqa: E731
     gt = first(lambda r: correct(r) and r['y'] in scored and bool(spec(ds).region(r['x'], r['edge_index']).any()))
-    gt_name = 'mutagen with NO2/NH2' if ds == 'Mutagenicity' else f'{class_name(gt["y"], ds)} with its motif' if gt else ''
-    # Mutagenicity: a correct non-mutagen, as before the ground-truth table; else another class
-    other = first(lambda r: correct(r) and r['y'] not in scored) if ds == 'Mutagenicity' else \
+    gt_name = f'{class_name(gt["y"], ds)} with {truth.motif}' if gt else ''
+    # a correct graph of a class without ground truth, else of another class than the first case
+    other = first(lambda r: correct(r) and r['y'] not in scored) or \
         first(lambda r: correct(r) and (gt is None or r['y'] != gt['y']))
     cases = [(f'correct, {gt_name}', gt),
-             ('correct, non-mutagen' if ds == 'Mutagenicity' else f'correct, {class_name(other["y"], ds)}'
-              if other else '', other),
+             (f'correct, {class_name(other["y"], ds)}' if other else '', other),
              ('wrong prediction', first(lambda r: r['backed'] and r['net'] == r['rule'] != r['y'])),
              ('rules disagree with the network', first(lambda r: r['rule'] != r['net']))]
     return [(name, r) for name, r in cases if r is not None]
@@ -415,7 +414,7 @@ def plot_examples(model, recs, ds='Mutagenicity', examples=None):
                 marks.setdefault(int(v), []).append(color)
         region = spec(ds).region(r['x'], r['edge_index'])
         region = [] if region is None else np.flatnonzero(region.numpy())
-        draw_graph(gax, r['x'], r['edge_index'], marks=marks, region=region,
+        draw_graph(gax, r['x'], r['edge_index'], marks=marks, region=region, ds=ds,
                    title=f'{case}\ntrue {class_name(r["y"], ds)} · network {class_name(r["net"], ds)} · '
                          f'rules {class_name(r["rule"], ds)}')
         tax.set_axis_off()
@@ -455,11 +454,10 @@ def layer_literals(model, x, edge_index):
     return xs, lits
 
 
-def _node_label(x, v):
+def _node_label(x, v, ds='Mutagenicity'):
     if len(x) and bool((x == x[0]).all()):
         return f'node {v}'
-    a = int(x[v].argmax())
-    return f'{ATOMS[a] if a < len(ATOMS) else "?"}{v}'
+    return f'{spec(ds).feature_name(int(x[v].argmax()))}{v}'
 
 
 def plot_trunk_match(model, rec, k, ds='Mutagenicity', max_nodes=14):
@@ -482,7 +480,7 @@ def plot_trunk_match(model, rec, k, ds='Mutagenicity', max_nodes=14):
                           height_ratios=[1, 1], wspace=0.35, hspace=0.5)
     gax = fig.add_subplot(gs[:, 0])
     region = spec(ds).region(rec['x'], rec['edge_index'])
-    draw_graph(gax, rec['x'], rec['edge_index'], marks={v: BLUE},
+    draw_graph(gax, rec['x'], rec['edge_index'], marks={v: BLUE}, ds=ds,
                region=[] if region is None else np.flatnonzero(region.numpy()),
                title=f'test graph {rec["i"]}\ntrue {class_name(rec["y"], ds)}, rules {class_name(rec["rule"], ds)}')
     hax = fig.add_subplot(gs[:, 1])
@@ -494,7 +492,7 @@ def plot_trunk_match(model, rec, k, ds='Mutagenicity', max_nodes=14):
     hax.axhline(0.5, color=BLUE, lw=2)
     hax.set_xticks(range(len(cols)), [unit_name(model, d) for d in cols], rotation=90, fontsize=6)
     hax.set_yticks(range(len(order) + 1), [f'P{k} requires'] +
-                   [f'{_node_label(rec["x"], int(n))}  {sim[n]:.2f}' for n in order], fontsize=6.5)
+                   [f'{_node_label(rec["x"], int(n), ds)}  {sim[n]:.2f}' for n in order], fontsize=6.5)
     for b in np.flatnonzero(np.diff(cols // h)) + 0.5:
         hax.axvline(b, color=INK, lw=0.8)
     hax.grid(False)
@@ -509,7 +507,7 @@ def plot_trunk_match(model, rec, k, ds='Mutagenicity', max_nodes=14):
     tax.set_yticks(range(L), [f'L{l}' for l in range(L)], fontsize=8)
     tax.set_xticks(range(0, h, 8), [f'u{u}' for u in range(0, h, 8)], fontsize=6.5)
     tax.grid(False)
-    tax.set_title(f'full trunk of {_node_label(rec["x"], v)} ({int(full.sum())} of {L * h} units on)\n'
+    tax.set_title(f'full trunk of {_node_label(rec["x"], v, ds)} ({int(full.sum())} of {L * h} units on)\n'
                   f'outlined: P{k} needs 1 (blue) / 0 (orange)', loc='left', fontsize=8.5)
     fig.suptitle(textwrap.fill(f'Trunk activation against prototype P{k} ({len(cols)} cared bits): '
                                f'{prototype_rule(model, k)}', 200), x=0.01, ha='left', fontsize=9, y=1.02)
@@ -603,7 +601,7 @@ def plot_unfolding(model, rec, ds='Mutagenicity', k=None, max_bits=8, max_lits=3
         if c not in marks[w]:
             marks[w].append(c)
     region = spec(ds).region(x, ei)
-    draw_graph(gax, x, ei, marks=marks, region=[] if region is None else np.flatnonzero(region.numpy()),
+    draw_graph(gax, x, ei, marks=marks, region=[] if region is None else np.flatnonzero(region.numpy()), ds=ds,
                title=f'test graph {rec["i"]}: true {class_name(rec["y"], ds)} · rules {class_name(rec["rule"], ds)}\n'
                      f'rings = nodes used below (L0 aqua, L1 orange, L2 blue)')
     ax = fig.add_subplot(gs[1])
@@ -625,7 +623,7 @@ def plot_unfolding(model, rec, ds='Mutagenicity', k=None, max_bits=8, max_lits=3
         body = '\n'.join(t for t, _ in lines) + (f'\n+{more} more' if more else '')
         val = int(xs[l][w, u] > 0.5)
         miss = w == v and l * h + u in bits and val != int(want[l * h + u])
-        head_line = f'L{l}u{u} = {val} at {_node_label(x, w)}' + (f'  ✗ P{k} needs {1 - val}' if miss else '')
+        head_line = f'L{l}u{u} = {val} at {_node_label(x, w, ds)}' + (f'  ✗ P{k} needs {1 - val}' if miss else '')
         ax.text(bx, by, f'{head_line}\n{body}', ha='center', va='center', fontsize=6.3,
                 color=INK, family='monospace',
                 bbox=dict(boxstyle='round,pad=0.35', fc='#fdeee6' if miss else 'white',
@@ -636,7 +634,7 @@ def plot_unfolding(model, rec, ds='Mutagenicity', k=None, max_bits=8, max_lits=3
                         arrowprops=dict(arrowstyle='->', color=INK2, lw=0.8, shrinkA=2, shrinkB=2))
     # prototype, head, class
     sim = float(rec['s_node'][v, k])
-    ptxt = (f'P{k} at {_node_label(x, v)}: similarity {sim:.2f}\n'
+    ptxt = (f'P{k} at {_node_label(x, v, ds)}: similarity {sim:.2f}\n'
             f'needs {n_pos} units = 1, {len(bits) - n_pos} = 0 (shown: {len(shown)})\n'
             + textwrap.fill(prototype_rule(model, k), 46))
     ax.text(L, 0.55, ptxt, ha='center', va='center', fontsize=6.6, family='monospace', color=INK,

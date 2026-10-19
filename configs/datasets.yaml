@@ -16,6 +16,9 @@
 #
 # A dataset not listed here loads as a TUDataset of that name with use_node_attr: true.
 
+MUTAG:
+  loader: tu
+  features: [C, N, O, F, I, Cl, Br]
 Mutagenicity:
   loader: tu
   features: [C, O, Cl, H, N, F, Br, S, P, I, Na, K, Li, Ca]

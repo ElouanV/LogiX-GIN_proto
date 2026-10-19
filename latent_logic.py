@@ -571,7 +571,7 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__.split('\n')[0])
     ap.add_argument('--run_path', required=True, help='a seed directory holding best.pt')
     ap.add_argument('--ckpt', default='best.pt')
-    ap.add_argument('--dataset', default='Mutagenicity')
+    ap.add_argument('--dataset', default=None, help='default: read from the run path')
     ap.add_argument('--split', default='val', choices=['train', 'val', 'test'],
                     help="split the activations are measured on (the notebook uses val)")
     ap.add_argument('--layer', type=int, default=None)

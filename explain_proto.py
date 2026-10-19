@@ -39,19 +39,20 @@ from torch_geometric.loader import DataLoader
 
 from latent_logic import (ATOMS, CLASSES, collect_activations, explain_component,
                           explain_head)
+from utils.datasets import spec
 from utils.runs import EVAL_BATCH_SIZE, RunDir, get_device
 
 
-def atom(x_row):
+def atom(x_row, names=ATOMS):
     i = int(x_row.argmax())
-    return ATOMS[i] if i < len(ATOMS) else f'?{i}'
+    return names[i] if i < len(names) else f'?{i}'
 
 
-def describe_node(data, n):
+def describe_node(data, n, names=ATOMS):
     """Atom plus its 1-hop environment, e.g. 'N bonded to [C, O, O]'."""
     nbrs = data.edge_index[1][data.edge_index[0] == n]
-    env = sorted(atom(data.x[int(j)]) for j in nbrs)
-    return atom(data.x[n]), env
+    env = sorted(atom(data.x[int(j)], names) for j in nbrs)
+    return atom(data.x[n], names), env
 
 
 def env_string(sym, env):
@@ -137,8 +138,10 @@ def derive(model, acts):
 # 1. IDENTITY
 # ---------------------------------------------------------------------------
 
-def identity(model, level, feats, node_graph, node_local, graph_y, dataset, top, fire_thr):
-    """What population of nodes (or graphs) each prototype stands for."""
+def identity(model, level, feats, node_graph, node_local, graph_y, dataset, top, fire_thr, names=ATOMS,
+             classes=CLASSES):
+    """What population of nodes (or graphs) each prototype stands for (``names``: node feature
+    names, ``classes``: class names)."""
     out = {}
     for li, layer in enumerate(model.proto_layers):
         lname = 'node' if (level == 'node' or (level == 'both' and li == 0)) else 'graph'
@@ -157,8 +160,8 @@ def identity(model, level, feats, node_graph, node_local, graph_y, dataset, top,
             if lname == 'graph':
                 gi = int(order[0])
                 d = dataset[gi]
-                entry['nearest'] = f'graph #{gi} (y={CLASSES[int(d.y)]}, {d.num_nodes} atoms)'
-                lab = Counter(CLASSES[int(graph_y[int(g)])] for g in order[:top])
+                entry['nearest'] = f'graph #{gi} (y={classes[int(d.y)]}, {d.num_nodes} atoms)'
+                lab = Counter(classes[int(graph_y[int(g)])] for g in order[:top])
                 entry['class_mix'] = dict(lab)
                 print(f'  p{k:<3d} sim max/p99/mean={entry["max_sim"]:.3f}/{q99:.3f}/'
                       f'{entry["mean_sim"]:.3f} fired={entry["frac_fired"]:6.2%}'
@@ -168,17 +171,17 @@ def identity(model, level, feats, node_graph, node_local, graph_y, dataset, top,
                 for r in order[:top].tolist():
                     gi, ni = int(node_graph[r]), int(node_local[r])
                     d = dataset[gi]
-                    sym, env = describe_node(d, ni)
+                    sym, env = describe_node(d, ni, names)
                     syms[sym] += 1
                     envs[env_string(sym, env)] += 1
                     degs.append(len(env))
-                    labs[CLASSES[int(d.y)]] += 1
+                    labs[classes[int(d.y)]] += 1
                 entry['atoms'] = dict(syms.most_common())
                 entry['envs'] = dict(envs.most_common(4))
                 entry['mean_degree'] = sum(degs) / max(len(degs), 1)
                 entry['class_mix'] = dict(labs)
                 r0 = int(order[0])
-                sym0, env0 = describe_node(dataset[int(node_graph[r0])], int(node_local[r0]))
+                sym0, env0 = describe_node(dataset[int(node_graph[r0])], int(node_local[r0]), names)
                 entry['nearest'] = env_string(sym0, env0)
                 atom_s = ' '.join(f'{a}:{c/top:.0%}' for a, c in syms.most_common(3))
                 env_s = ' '.join(f'{e}({c})' for e, c in envs.most_common(2))
@@ -195,7 +198,7 @@ def identity(model, level, feats, node_graph, node_local, graph_y, dataset, top,
 # ---------------------------------------------------------------------------
 
 def components(model, level, feats, H, A, NB, rule_acts, top_dims,
-               max_rule_len, max_rules, min_support):
+               max_rule_len, max_rules, min_support, names=ATOMS):
     """Per prototype, its most characteristic components and each one's formula.
 
     A prototype is a full binary vector, so about half its dims are 1 and most carry
@@ -259,12 +262,12 @@ def components(model, level, feats, H, A, NB, rule_acts, top_dims,
                 if lname == 'node':
                     m = H[:, d] > 0.5
                     if int(m.sum()) > 0:
-                        ac = torch.bincount(A[m], minlength=len(ATOMS)).float()
+                        ac = torch.bincount(A[m], minlength=len(names)).float()
                         ac = ac / ac.sum()
-                        atop = ' '.join(f'{ATOMS[i]}:{ac[i]:.0%}'
+                        atop = ' '.join(f'{names[i]}:{ac[i]:.0%}'
                                         for i in ac.argsort(descending=True)[:2] if ac[i] > 0.05)
                         nbm = NB[m].mean(0)
-                        ntop = ' '.join(f'{ATOMS[i]}:{nbm[i]:.1f}'
+                        ntop = ' '.join(f'{names[i]}:{nbm[i]:.1f}'
                                        for i in nbm.argsort(descending=True)[:3] if nbm[i] > 0.15)
                         cov = float((H[top_nodes, d] > 0.5).float().mean())
                         entry.update({'atoms': atop, 'nbrs': ntop, 'cov_top200': cov})
@@ -322,7 +325,7 @@ def redundancy(model, level):
 # ---------------------------------------------------------------------------
 
 @torch.no_grad()
-def evidence(model, dataset, device, col_desc, top):
+def evidence(model, dataset, device, col_desc, top, classes=CLASSES):
     """Does each readout column separate the classes on held-out data?"""
     loader = DataLoader(dataset, batch_size=EVAL_BATCH_SIZE, shuffle=False)
     S, Y = [], []
@@ -339,9 +342,9 @@ def evidence(model, dataset, device, col_desc, top):
     S, Y = torch.cat(S), torch.cat(Y)
     m0, m1 = S[Y == 0].mean(0), S[Y == 1].mean(0)
     gap = (m0 - m1) / S.std(0).clamp(min=1e-8)
-    print(f'  (mean over {CLASSES[0]} minus mean over {CLASSES[1]}, in std units)')
+    print(f'  (mean over {classes[0]} minus mean over {classes[1]}, in std units)')
     for i in gap.abs().argsort(descending=True)[:top].tolist():
-        arrow = CLASSES[0] if gap[i] > 0 else CLASSES[1]
+        arrow = classes[0] if gap[i] > 0 else classes[1]
         print(f'    {gap[i]:+7.3f} sd -> {arrow:<11s} {col_desc[i]:<20s} '
               f'(mut {m0[i]:.3f} / non {m1[i]:.3f})')
     return gap.tolist(), m0.tolist(), m1.tolist()
@@ -351,7 +354,7 @@ def evidence(model, dataset, device, col_desc, top):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument('--run_path', required=True, help='a seed directory under results_proto/')
-    ap.add_argument('--dataset', default='Mutagenicity')
+    ap.add_argument('--dataset', default=None, help='default: read from the run path')
     ap.add_argument('--ckpt', default='best.pt')
     ap.add_argument('--split', default='train', choices=['train', 'val', 'test'],
                     help='split the prototype chemistry is measured on')
@@ -380,6 +383,9 @@ def main():
     model = run.model(device, a.ckpt).eval()
     sub = run.subsets({a.split, a.rule_split, 'test'})
     ds_id, ds_rule, ds_test = sub[a.split], sub[a.rule_split], sub['test']
+    info = spec(run.dataset)
+    names = info.feature_names(model.num_features)
+    classes = [info.class_name(c) for c in range(model.num_classes)]
 
     level = args['proto_level']
     cols = readout_columns(model, level)
@@ -396,7 +402,7 @@ def main():
 
     print('\n--- 1. what each prototype stands for (top nodes by Hamming agreement) ---')
     ident = identity(model, level, feats, node_graph, node_local, graph_y,
-                     ds_id, a.top, a.fire_thr)
+                     ds_id, a.top, a.fire_thr, names, classes)
 
     rule_acts = acts if a.rule_split == a.split else None
     comp = None
@@ -406,7 +412,7 @@ def main():
             rule_acts = collect_activations(
                 model, DataLoader(ds_rule, batch_size=EVAL_BATCH_SIZE, shuffle=False), device)
         comp = components(model, level, feats, H, A, NB, rule_acts, a.decode_top,
-                          a.max_rule_len, a.max_rules, a.min_support)
+                          a.max_rule_len, a.max_rules, a.min_support, names)
 
     print('\n--- 3. are the prototypes distinct? ---')
     red = redundancy(model, level)
@@ -429,7 +435,7 @@ def main():
                 print(f"    {' AND '.join(e['literals'])}   [support {e['support']:.2%}]")
 
     print('\n--- 5. is each column discriminative? (test split) ---')
-    gap, m0, m1 = evidence(model, ds_test, device, col_desc, 2 * a.top_cols)
+    gap, m0, m1 = evidence(model, ds_test, device, col_desc, 2 * a.top_cols, classes)
 
     out = os.path.join(a.run_path, 'explanations.json')
     with open(out, 'w') as f:
