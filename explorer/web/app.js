@@ -319,7 +319,7 @@ function renderHeader() {
   const bar = clear($('runbar'));
   if (S.runs.length > 1) {
     const sel = el('select', { title: 'run', onchange: ev => openRun(+ev.target.value).catch(fail) },
-      S.runs.map(r => el('option', { value: r.id, selected: r.id === S.run }, `${r.label}${r.level ? ` · ${r.level}` : ''}`)));
+      S.runs.map(r => el('option', { value: r.id, selected: r.id === S.run }, `${r.label}${r.finetunes && !r.finetunes.length ? ' / base' : ''}${r.level ? ` · ${r.level}` : ''}`)));
     bar.append(sel);
   }
   const c = card(), m = S.meta;
