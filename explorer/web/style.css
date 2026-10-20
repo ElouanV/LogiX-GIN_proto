@@ -211,3 +211,29 @@ svg text { fill: var(--ink); font-family: system-ui, sans-serif; }
 .hist .markt { fill: var(--accent); font-weight: 700; font-size: 9.5px; }
 .hist path { stroke: var(--panel); stroke-width: .5; }
 .histwrap { margin: 2px 0 4px; }
+/* what-if */
+.gsvg .edge.deleted { stroke: var(--bad); stroke-dasharray: 3 3; opacity: .7; }
+.gsvg .edge.added { stroke: var(--accent); stroke-width: 2.4; opacity: 1; }
+.gsvg .edgehit { stroke: transparent; stroke-width: 10; cursor: pointer; }
+.gsvg .edgehit:hover { stroke: color-mix(in srgb, var(--bad) 30%, transparent); }
+.gsvg .edited { fill: none; stroke: var(--orange); stroke-width: 2; stroke-dasharray: 2 2; }
+.gsvg .node.pending { stroke: var(--orange); stroke-width: 3.5; }
+.editor { border-top: 1px solid var(--line); margin-top: 6px; padding-top: 6px; display: grid; gap: 6px; }
+.editrow { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
+.whatif { background: var(--chip); border-radius: 8px; padding: 6px 8px; margin-bottom: 8px; font-size: 12.5px; }
+.whatif.flip { box-shadow: inset 3px 0 0 var(--orange); }
+.netsvg .cell.changed { stroke: var(--orange); stroke-width: 2; }
+/* explanation tree */
+#treep details { margin-left: 14px; }
+#treep > details { margin-left: 0; }
+#treep summary, .tleaf { cursor: pointer; padding: 2px 4px; border-radius: 5px; list-style-position: outside; }
+.tleaf { margin-left: 14px; cursor: default; }
+#treep summary:hover, .tleaf:hover { background: var(--hover); }
+.tkids { border-left: 1px solid var(--line); margin-left: 6px; padding-left: 4px; }
+.tline { font-size: 12.5px; }
+.tsub { color: var(--muted); font-size: 11.5px; }
+.tok { color: var(--good); font-weight: 700; } .tko { color: var(--bad); font-weight: 700; }
+.tgo { margin-left: 8px; font-size: 11px; }
+.tleaf.muted .tline { color: var(--muted); }
+.rulesblock .rhead { margin: 6px 0 2px; font-size: 12px; }
+.rule.here { box-shadow: inset 3px 0 0 var(--good); }

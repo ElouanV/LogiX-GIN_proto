@@ -103,6 +103,7 @@ const S = {
   trace: null, adj: null, node: 0, sel: null, hoverLit: null, step: null, timer: null,
   tab: 'predict', filter: 'all', query: '', unitLayer: 0, unitSel: null, unitSort: 'u',
   protoSort: 'cites', hideTrivial: true, showAllLits: false, showConst: false,
+  base: null, edits: null, editMode: false, pending: null, hoverNodes: null,
 };
 
 async function busy(text, fn) {
@@ -227,9 +228,8 @@ async function loadIndex() {
 async function openGraph(split, i, opts = {}) {
   try {
     const t = await S.src.trace(S.run, split, i);
-    S.trace = t;
-    S.adj = Array.from({ length: t.n }, () => []);
-    for (const [a, b] of t.edges) { S.adj[a].push(b); S.adj[b].push(a); }
+    setTrace(t);
+    S.base = null; S.edits = { x: {}, del: [], add: [] }; S.editMode = false; S.pending = null;
     S.node = opts.node !== null && opts.node !== undefined && opts.node < t.n ? opts.node : defaultNode();
     S.sel = opts.sel || { type: 'class', c: t.rule };
     stopPlay();
@@ -237,6 +237,82 @@ async function openGraph(split, i, opts = {}) {
     renderTabs(); renderMain();
     location.hash = new URLSearchParams({ run: S.run, split, i, node: S.node }).toString();
   } catch (e) { fail(e); }
+}
+
+function setTrace(t) {
+  S.trace = t;
+  S.adj = Array.from({ length: t.n }, () => []);
+  for (const [a, b] of t.edges) { S.adj[a].push(b); S.adj[b].push(a); }
+}
+
+// ------------------------------------------------------------------ what-if edits
+
+const edgeKey = (a, b) => a < b ? `${a}-${b}` : `${b}-${a}`;
+const editCount = () => S.edits ? Object.keys(S.edits.x).length + S.edits.del.length + S.edits.add.length : 0;
+function toggleEdit() {
+  if (S.src.kind !== 'server') { alert('What-if edits need the model: run python -m explorer serve.'); return; }
+  S.editMode = !S.editMode; S.pending = null;
+  if (S.editMode && !S.base) S.base = S.trace;
+  stopPlay(); refresh();
+}
+async function applyEdits() {
+  if (!editCount()) { setTrace(S.base); refresh(); return; }
+  try {
+    const t = await S.src.get('whatif', { run: S.run, split: S.base.split, i: S.base.i, edits: JSON.stringify(S.edits) });
+    t.pos = S.base.pos;                    // keep the drawing still
+    setTrace(t);
+    if (S.sel.type === 'class') S.sel = { type: 'class', c: t.rule };
+    refresh();
+  } catch (e) { fail(e); }
+}
+function editNodeFeatures(v, bitsStr) {
+  if (bitsStr === S.base.x[v]) delete S.edits.x[v]; else S.edits.x[v] = bitsStr;
+  applyEdits();
+}
+function clickEdge(a, b) {
+  const k = edgeKey(a, b), ia = S.edits.add.findIndex(([x, y]) => edgeKey(x, y) === k);
+  if (ia >= 0) S.edits.add.splice(ia, 1); else S.edits.del.push([a, b]);
+  applyEdits();
+}
+function shiftNode(v) {
+  if (S.pending === null || S.pending === v) { S.pending = S.pending === v ? null : v; renderGraph(); return; }
+  const a = S.pending, k = edgeKey(a, v);
+  S.pending = null;
+  const id = S.edits.del.findIndex(([x, y]) => edgeKey(x, y) === k);
+  if (id >= 0) S.edits.del.splice(id, 1);
+  else if (!T().edges.some(([x, y]) => edgeKey(x, y) === k)) S.edits.add.push([a, v]);
+  applyEdits();
+}
+function resetEdits() { S.edits = { x: {}, del: [], add: [] }; S.pending = null; applyEdits(); }
+
+function editorBar() {
+  const c = card(), v = S.node, t = T();
+  const bar = el('div', { class: 'editor' });
+  bar.append(el('div', { class: 'muted small' }, 'What-if: click a node, then change its features below · click an edge to delete it · shift-click two nodes to add an edge. The rules are recomputed exactly.'));
+  const cur = t.x[v], one = cur.split('').filter(b => b === '1').length === 1 && S.base.x.every(r => r.split('').filter(b => b === '1').length === 1);
+  const row = el('div', { class: 'editrow' }, el('b', {}, nodeName(v)));
+  if (one) {
+    row.append(el('select', { onchange: ev => editNodeFeatures(v, c.features.map((_, j) => j === +ev.target.value ? '1' : '0').join('')) },
+      c.features.map((f, j) => el('option', { value: j, selected: cur[j] === '1' }, f))));
+  } else {
+    c.features.forEach((f, j) => row.append(el('label', { class: 'chip' }, el('input', { type: 'checkbox', checked: cur[j] === '1',
+      onchange: ev => editNodeFeatures(v, cur.split('').map((b, jj) => jj === j ? (ev.target.checked ? '1' : '0') : b).join('')) }), ' ' + f)));
+  }
+  bar.append(row);
+  const list = el('div', { class: 'chips' });
+  for (const [vv, b] of Object.entries(S.edits.x)) list.append(el('span', { class: 'chip' }, `${S.base.labels[vv] || 'node '}${vv} → ${c.features.filter((_, j) => b[j] === '1').join('+') || '∅'}`));
+  for (const [a, b] of S.edits.del) list.append(el('span', { class: 'chip' }, `− edge ${a}–${b}`));
+  for (const [a, b] of S.edits.add) list.append(el('span', { class: 'chip' }, `+ edge ${a}–${b}`));
+  if (S.pending !== null) list.append(el('span', { class: 'chip' }, `edge from ${S.pending}… shift-click the other end`));
+  if (editCount()) list.append(el('button', { onclick: resetEdits }, 'reset'));
+  bar.append(list);
+  return bar;
+}
+
+/* units whose value changed (any node) between the original graph and the edited one */
+function changedUnits() {
+  if (!S.base || S.base === S.trace) return null;
+  return S.trace.layers.map((L, l) => { let n = 0; L.out.forEach((r, v) => { const o = S.base.layers[l].out[v]; for (let u = 0; u < r.length; u++) if (r[u] !== o[u]) n++; }); return n; });
 }
 
 function renderHeader() {
@@ -283,14 +359,15 @@ function renderPredict(main) {
     el('aside', { class: 'panel list', id: 'list' }),
     el('section', { class: 'center' },
       el('div', { class: 'row1' }, el('div', { class: 'panel', id: 'graphp' }), el('div', { class: 'panel decision', id: 'decision' })),
-      el('div', { class: 'panel', id: 'netp' })),
+      el('div', { class: 'panel', id: 'netp' }),
+      el('div', { class: 'panel', id: 'treep' })),
     el('aside', { class: 'panel inspector', id: 'inspector' })));
   renderList(); refresh();
 }
 
 function refresh() {
   if (S.tab !== 'predict') return;
-  renderGraph(); renderDecision(); renderNetwork(); renderInspector();
+  renderGraph(); renderDecision(); renderNetwork(); renderInspector(); renderTree();
 }
 
 function select(sel, node = null) {
@@ -372,7 +449,9 @@ function renderGraph() {
   box.append(el('div', { class: 'graph-head' },
     el('h2', {}, `${t.split} #${t.i}`),
     el('span', { class: 'muted' }, `${t.n} nodes · true ${t.y === null ? '?' : className(t.y)}`),
-    el('span', { class: 'lens' }, lens.title)));
+    el('span', { class: 'lens' }, lens.title),
+    S.src.kind === 'server' ? el('button', { class: S.editMode ? 'on' : '', title: 'edit the graph and see how the decision changes', onclick: toggleEdit },
+      S.editMode ? '✎ editing' : '✎ what-if') : null));
   const W = Math.max(box.clientWidth - 24, 260), H = 330, pad = 22;
   const xs = t.pos.map(p => p[0]), ys = t.pos.map(p => p[1]);
   const [x0, x1, y0, y1] = [Math.min(...xs), Math.max(...xs), Math.min(...ys), Math.max(...ys)];
@@ -381,19 +460,33 @@ function renderGraph() {
   const r = t.n > 120 ? 4 : t.n > 50 ? 6 : 9;
   const svg = sv('svg', { class: 'gsvg', width: W, height: H, viewBox: `0 0 ${W} ${H}` });
   if (t.region) t.region.forEach((g, v) => { if (g) svg.append(sv('circle', { class: 'halo', cx: X(t.pos[v][0]), cy: Y(t.pos[v][1]), r: r * 2 })); });
+  const added = new Set((S.edits ? S.edits.add : []).map(([a, b]) => edgeKey(a, b)));
+  const line = (a, b, cls, style) => sv('line', { class: cls, x1: X(t.pos[a][0]), y1: Y(t.pos[a][1]), x2: X(t.pos[b][0]), y2: Y(t.pos[b][1]), style });
+  if (S.base && S.base !== t) {                       // edges the what-if deleted
+    const now = new Set(t.edges.map(([a, b]) => edgeKey(a, b)));
+    for (const [a, b] of S.base.edges) if (!now.has(edgeKey(a, b))) svg.append(line(a, b, 'edge deleted'));
+  }
   for (const [a, b] of t.edges) {
     const near = S.node === a || S.node === b;
-    svg.append(sv('line', { class: 'edge' + (lens.pulse ? ' pulse' : ''), x1: X(t.pos[a][0]), y1: Y(t.pos[a][1]), x2: X(t.pos[b][0]), y2: Y(t.pos[b][1]),
-      style: near && !lens.pulse ? { stroke: 'var(--ink2)', opacity: 1 } : null }));
+    svg.append(line(a, b, 'edge' + (lens.pulse ? ' pulse' : '') + (added.has(edgeKey(a, b)) ? ' added' : ''),
+      near && !lens.pulse ? { stroke: 'var(--ink2)', opacity: 1 } : null));
+    if (S.editMode) {
+      const hit = line(a, b, 'edgehit');
+      hit.addEventListener('click', () => clickEdge(a, b));
+      hoverTip(hit, `edge ${a}–${b}: click to delete`);
+      svg.append(hit);
+    }
   }
-  const witness = new Set();
+  const witness = new Set(S.hoverNodes || []);
   if (S.hoverLit) for (const w of nbh(S.node)) if (subjectHolds(S.hoverLit.l, S.hoverLit.i, w)) witness.add(w);
   for (let v = 0; v < t.n; v++) {
     const cx = X(t.pos[v][0]), cy = Y(t.pos[v][1]);
     let fill = 'var(--panel)';
     if (lens.bit) fill = lens.bit(v) ? 'var(--on)' : 'var(--off)';
     else if (lens.value) fill = `color-mix(in srgb, var(--blue) ${Math.round(100 * Math.max(0, Math.min(1, lens.value(v))))}%, var(--off))`;
-    const circ = sv('circle', { class: 'node' + (v === S.node ? ' selnode' : ''), cx, cy, r, fill, onclick: () => setNode(v) });
+    const circ = sv('circle', { class: 'node' + (v === S.node ? ' selnode' : '') + (S.pending === v ? ' pending' : ''), cx, cy, r, fill,
+      onclick: ev => S.editMode && ev.shiftKey ? shiftNode(v) : setNode(v) });
+    if (S.edits && S.edits.x[v] !== undefined) svg.append(sv('circle', { class: 'edited', cx, cy, r: r + 3.5 }));
     hoverTip(circ, () => nodeTip(v));
     svg.append(circ);
     if (lens.exact && lens.exact(v)) svg.append(sv('circle', { class: 'ring', cx, cy, r: r + 4, stroke: 'var(--blue)' }));
@@ -405,6 +498,7 @@ function renderGraph() {
     }
   }
   box.append(svg);
+  if (S.editMode) box.append(editorBar());
   const leg = el('div', { class: 'legend' });
   if (t.region && c.ground_truth) leg.append(el('span', {}, el('i', { style: { background: 'var(--gt)' } }), `ground truth: ${c.ground_truth.shading}`));
   leg.append(el('span', {}, el('i', { style: { background: 'var(--panel)', border: '3px solid var(--accent)' } }), `selected: ${nodeName(S.node)}`));
@@ -429,6 +523,14 @@ function nodeTip(v) {
 function renderDecision() {
   const box = clear($('decision')), t = T(), c = card();
   const ok = t.y === null ? null : t.rule === t.y;
+  if (S.base && S.base !== t) {
+    const b = S.base, flipped = b.rule !== t.rule, ch = changedUnits();
+    box.append(el('div', { class: 'whatif ' + (flipped ? 'flip' : '') },
+      el('b', {}, `What-if (${editCount()} edit${editCount() > 1 ? 's' : ''}): `),
+      `original → ${className(b.rule)} (${sgn(b.margin[b.rule])}) · now → ${className(t.rule)} (${sgn(t.margin[t.rule])})`,
+      flipped ? el('span', { class: 'badge warn', style: { marginLeft: '6px' } }, 'decision flipped') : el('span', { class: 'muted' }, ' · same decision'),
+      el('div', { class: 'small muted' }, `units that changed value (all nodes): ${ch.map((n, l) => `L${l} ${n}`).join(' · ')} · network now → ${className(t.net.pred)} (${f2(t.net.prob[t.net.pred])})`)));
+  }
   box.append(el('h2', {}, 'Decision'),
     el('div', { class: 'verdict' },
       el('span', { class: 'badge' }, 'true ', el('b', {}, t.y === null ? '?' : className(t.y))),
@@ -634,7 +736,8 @@ function renderNetwork() {
           sv('text', { x, y: y + 19, 'text-anchor': 'middle', style: { fontWeight: 700, fill: idx === t.rule ? '#fff' : 'var(--ink)', fontSize: '12px' } }, className(idx)),
           sv('text', { x, y: y + 35, 'text-anchor': 'middle', class: 'mono', style: { fill: idx === t.rule ? '#fff' : 'var(--ink2)', fontSize: '11px' } }, sgn(t.margin[idx])));
       } else {
-        const cls = ['cell', info.bin === undefined ? '' : info.bin ? 'on' : 'off', focus === `${ci}:${idx}` ? 'focus' : chain.has(`${ci}:${idx}`) ? 'chain' : '', info.disagree ? 'disagree' : ''].join(' ');
+        const changed = S.base && S.base !== t && col.key === 'L' && S.base.layers[col.l].out[v][idx] !== t.layers[col.l].out[v][idx];
+        const cls = ['cell', info.bin === undefined ? '' : info.bin ? 'on' : 'off', focus === `${ci}:${idx}` ? 'focus' : chain.has(`${ci}:${idx}`) ? 'chain' : '', info.disagree ? 'disagree' : '', changed ? 'changed' : ''].join(' ');
         node = sv('rect', { class: cls, x: x - cw / 2, y, width: cw, height: ch, rx: Math.min(2, ch / 3),
           fill: info.bin === undefined ? `color-mix(in srgb, var(--blue) ${Math.round(100 * info.val)}%, var(--off))` : null });
       }
@@ -732,6 +835,178 @@ document.addEventListener('keydown', ev => {
   else if (ev.key === 'Escape') { stopPlay(); refresh(); }
 });
 window.addEventListener('resize', () => { if (S.tab === 'predict' && T()) refresh(); });
+
+// ------------------------------------------------------------------ readable rules of a unit
+
+/* unpack_rules.unit_rules of a conv unit, fetched once per unit (server only) */
+S.rules = {};
+function rulesBlock(l, u, v = null) {
+  const box = el('div', { class: 'rulesblock' });
+  if (S.src.kind !== 'server') {
+    box.append(el('div', { class: 'muted small' }, 'Readable rules of deep units are computed on demand: open the run with python -m explorer serve.'));
+    return box;
+  }
+  const key = `${S.run}:${l}:${u}`;
+  const draw = r => {
+    clear(box);
+    if (r.error) { box.append(el('div', { class: 'error' }, r.error)); return; }
+    if (!r.pos) { box.append(el('div', { class: 'muted' }, r.dead ? 'the unit can never fire' : 'the unit always fires (S ≤ 0)')); return; }
+    for (const [key2, title] of [['pos', 'fires when one of these holds'], ['neg', 'is 0 when one of these holds']]) {
+      const rr = r[key2];
+      box.append(el('div', { class: 'rhead' }, el('b', {}, title),
+        el('span', { class: 'muted small' }, ` · ${rr.n_rules} rules cover ${pct(rr.coverage, 0)} of the ${r.split} nodes where it ${key2 === 'pos' ? 'fires' : 'is 0'}` +
+          ` · ${rr.mode === 'all observed' ? `${rr.n_rules_observed} observed minimal rules` : 'read by the shortest rule of each observed literal pattern'}` +
+          ` · ≈ ${sci(rr.n_rules_formal_est)} formal`)));
+      const shown = S.allRules ? rr.rules : rr.rules.slice(0, 3);
+      shown.forEach(rule => box.append(ruleLine(l, rule, key2 === 'pos', v)));
+      if (rr.n_rules > shown.length) box.append(el('div', { class: 'muted small' }, `… ${rr.n_rules - shown.length} more rule${rr.n_rules - shown.length > 1 ? 's' : ''}` +
+        (rr.rules.length > shown.length ? '' : ' (not listed)')));
+    }
+    box.append(el('button', { onclick: () => { S.allRules = !S.allRules; draw(r); } }, S.allRules ? 'show 3 rules per side' : 'show 8 rules per side'));
+    box.append(el('div', { class: 'muted small' }, `Rules from unpack_rules.py on the ${r.split} split: a covering set of observed minimal rules, each shortened while its precision on the data does not drop (grey: the exact rule's length). ✓ = the exact rule holds at the selected node (it decides the unit); ~ = only the shortened one does.`));
+  };
+  if (S.rules[key]) draw(S.rules[key]);
+  else {
+    box.append(el('div', { class: 'muted small' }, `computing the rules of ${unitName(l, u)} (a few seconds the first time)…`));
+    S.src.get('rules', { run: S.run, l, u }).then(r => { S.rules[key] = r; draw(r); }).catch(e => draw({ error: e.message }));
+  }
+  return box;
+}
+
+function ruleLine(l, rule, pos, v) {
+  const t = T(), simple = rule.simple || rule.literals;
+  const holds = (idx, w) => idx.every(i => litBit(l, w, i) === pos);
+  const exact = v !== null && t && holds(rule.literals, v), loose = v !== null && t && holds(simple, v);
+  const line = el('div', { class: 'rule' + (exact ? ' here' : '') },
+    el('span', { class: 'sup' }, `${pct(rule.simple_support ?? rule.support, 1)} · prec ${pct(rule.simple_precision ?? rule.precision, 0)}`),
+    v !== null && t ? el('span', { class: exact ? 'tok' : 'muted' }, exact ? '✓ ' : loose ? '~ ' : '  ') : null,
+    (rule.simple_text || rule.text || []).join('  ∧  ') || 'TRUE',
+    el('span', { class: 'muted' }, `  [${simple.length}/${rule.literals.length}]`));
+  if (t) {
+    const nodes = [...Array(t.n).keys()].filter(w => holds(simple, w));
+    line.addEventListener('mouseenter', () => { S.hoverNodes = nodes; renderGraph(); });
+    line.addEventListener('mouseleave', () => { S.hoverNodes = null; renderGraph(); });
+    hoverTip(line, `holds at ${nodes.length} of ${t.n} nodes of this graph (ringed)`);
+  }
+  return line;
+}
+
+// ------------------------------------------------------------------ explanation tree
+
+/* The prediction unfolded as a proof: every line is a fact of the rule model, its children
+ * are its exact reason (the shortest one the reader computed), down to atom counts.
+ * Children are built when a line is opened, so deep trees cost nothing until explored. */
+function tItem({ text, sub = null, kids = null, open = false, nodes = null, onclick = null, cls = '' }) {
+  const head = el('span', { class: 'tline' }, text, sub ? el('span', { class: 'tsub' }, ' ', sub) : null);
+  if (onclick) head.append(el('a', { href: '#', class: 'tgo', onclick: ev => { ev.preventDefault(); ev.stopPropagation(); onclick(); } }, 'inspect'));
+  const hover = target => {
+    if (!nodes) return;
+    target.addEventListener('mouseenter', () => { S.hoverNodes = nodes; renderGraph(); });
+    target.addEventListener('mouseleave', () => { S.hoverNodes = null; renderGraph(); });
+  };
+  if (!kids) { const leaf = el('div', { class: 'tleaf ' + cls }, head); hover(leaf); return leaf; }
+  const det = el('details', { class: 'titem ' + cls });
+  const sum = el('summary', {}, head);
+  hover(sum);
+  det.append(sum);
+  let filled = false;
+  const fill = () => {
+    if (filled) return;
+    filled = true;
+    const box = el('div', { class: 'tkids' });
+    for (const k of kids()) box.append(k);
+    det.append(box);
+  };
+  det.addEventListener('toggle', () => { if (det.open) fill(); });
+  if (open) { det.open = true; fill(); }
+  return det;
+}
+const mark = ok => el('span', { class: ok ? 'tok' : 'tko' }, ok ? ' ✓' : ' ✗');
+
+function renderTree() {
+  const box = clear($('treep')), t = T(), c = card();
+  box.append(el('div', { class: 'net-head' }, el('h2', {}, 'Why: the prediction unfolded'),
+    el('span', { class: 'muted small' }, 'every line is an exact fact of the rule model; open it for its reason (the fewest literals that settle it), down to atom counts · hover: the nodes involved')));
+  const W = c.head.W[t.rule];
+  const bias = c.head.literals.reduce((a, lit, i) => a + (lit.constant === true ? W[i] : 0), 0);
+  const lits = t.evidence !== null && t.evidence !== undefined ? t.evidence : null;
+  box.append(tItem({
+    text: el('b', {}, `${className(t.rule)}`), sub: `margin ${sgn(t.margin[t.rule])} · ${t.backed ? 'its rule fires' : 'no class rule fires (largest margin)'}`, open: true,
+    kids: () => [
+      tItem({ text: `always-true head literals: +${f2(bias)} of S = ${f2(c.head.S[t.rule])}`, sub: '(constant on every input, a bias)', cls: 'muted' }),
+      ...(lits || []).map(i => headLitTree(i, true)),
+      ...(lits && !lits.length ? [tItem({ text: 'the bias alone reaches S: this class rule fires on every graph', cls: 'muted' })] : []),
+    ],
+  }));
+}
+
+function headLitTree(i, open = false) {
+  const c = card(), t = T(), lit = c.head.literals[i], on = t.head_lit[i] === '1';
+  const col = c.readout[lit.col];
+  const sub = `${lit.what} = ${f2(t.s[lit.col], 3)} · weight ${f2(c.head.W[t.rule][i])}`;
+  let kids = null;
+  if (col.k !== undefined) {
+    const p = c.protos[col.proto_layer];
+    kids = () => p.kind === 'node' ? [protoTree(col.proto_layer, col.k, bestNode(col.k, col.proto_layer), col.op)] : [graphProtoTree(col.proto_layer, col.k)];
+  } else {
+    const l = Math.floor(col.unit / c.hidden), u = col.unit % c.hidden;
+    kids = () => [...Array(t.n).keys()].filter(w => outBit(l, w, u)).slice(0, 30).map(w => unitTree(l, u, w))
+      .concat([tItem({ text: `${unitName(l, u)} holds on ${[...Array(t.n).keys()].filter(w => outBit(l, w, u)).length} of ${t.n} nodes`, cls: 'muted' })]);
+  }
+  return tItem({ text: [lit.text, mark(on)], sub, kids, open, onclick: () => select({ type: 'headlit', i }) });
+}
+
+function protoTree(li, k, v, op = 'max') {
+  const c = card(), p = c.protos[li], cared = caredBits(li, k), inp = protoBitsAt(li, v);
+  const bad = cared.filter(d => (inp[d] >= 0.5) !== (p.bits[k][d] === '1')).length;
+  const why = op === 'max' ? 'the closest node decides "max"' : op === 'mean' ? 'the closest node, one term of the mean' : '';
+  return tItem({
+    text: `${protoName(li, k)} at ${nodeName(v)}: ${bad} mismatch${bad === 1 ? '' : 'es'} on ${cared.length} cared bits`,
+    sub: `similarity ${f2(protoSim(li, k, v), 3)} · ${why}`, nodes: [v], open: true,
+    onclick: () => select({ type: 'proto', li, k }, v),
+    kids: () => cared.map(d => {
+      const unit = p.bit_unit[d], l = Math.floor(unit / c.hidden), u = unit % c.hidden, need = p.bits[k][d] === '1';
+      return unitTree(l, u, v, need);
+    }),
+  });
+}
+
+function graphProtoTree(li, k) {
+  const c = card(), p = c.protos[li], inp = T().protos[li].input;
+  return tItem({
+    text: `${protoName(li, k)} (graph prototype): similarity ${f2(protoSim(li, k), 3)}`, onclick: () => select({ type: 'proto', li, k }),
+    kids: () => caredBits(li, k).map(d => tItem({ text: [`${p.bit_labels[d]} = ${f2(inp[d], 2)} over the graph, needs ${p.bits[k][d]}`, mark((inp[d] >= 0.5) === (p.bits[k][d] === '1'))],
+      sub: 'pooled over all nodes', cls: 'muted' })),
+  });
+}
+
+function unitTree(l, u, v, need = null) {
+  const c = card(), conv = c.conv[l], t = T(), on = outBit(l, v, u), why = t.layers[l].why[v][u] || [];
+  const W = conv.W[u], S_ = conv.S[u], total = W.reduce((a, b) => a + b, 0);
+  const sub = on ? `fires: ${why.length} true literal${why.length === 1 ? '' : 's'} reach S = ${f2(S_)}`
+    : total < S_ ? 'can never fire' : `stays 0: ${why.length} false literal${why.length === 1 ? '' : 's'} keep it below S`;
+  return tItem({
+    text: [`${unitName(l, u)} = ${on ? 1 : 0} at ${nodeName(v)}`, need === null ? null : el('span', { class: 'muted' }, ` (needs ${need ? 1 : 0})`), need === null ? null : mark(on === need)],
+    sub, nodes: [v], onclick: () => select({ type: 'unit', l, u }, v),
+    kids: why.length ? () => why.map(i => literalTree(l, i, v)) : null,
+  });
+}
+
+function literalTree(l, i, v) {
+  const c = card(), conv = c.conv[l], t = T(), n = conv.n_in, on = litBit(l, v, i), count = t.layers[l].count[v][i];
+  const N = nbh(v), holds = N.filter(w => subjectHolds(l, i, w));
+  const subj = conv.subjects[i];
+  const text = [`#{n ∈ N[${nodeName(v)}] : ${subj}(n)} = ${count}`, el('span', { class: 'muted' }, on ? ' → true' : ' → false')];
+  const sub = `true when: ${conv.literals[i].text.replace(/^#\{[^}]*\}\s*/, '')}`;
+  if (l === 0) {
+    return tItem({ text, sub: `${sub} · counted: ${holds.map(nodeName).join(', ') || 'none'}`, nodes: holds });
+  }
+  const base = i % n;
+  return tItem({
+    text, sub, nodes: holds,
+    kids: () => N.map(w => unitTree(l - 1, base, w)),
+  });
+}
 
 // ------------------------------------------------------------------ small plots
 
@@ -960,17 +1235,20 @@ function unitInspector(box) {
     el('dt', {}, 'minimal rules'), el('dd', {}, `≈ ${sci(conv.n_covers[u])}${conv.n_covers[u] > 1e5 ? ' (too many to list: read the per-node reason below)' : ''}`),
     el('dt', {}, 'fires on'), el('dd', {}, `${pct(conv.rate[u])} of ${c.ref_split} nodes`)));
   const items = [];
-  for (let i = 0; i < W.length; i++) if (W[i] > 0) items.push({ w: W[i], state: why.includes(i) ? 'expl' : litBit(l, v, i) ? 'true' : 'false', label: conv.literals[i].text, onclick: null });
+  for (let i = 0; i < W.length; i++) if (W[i] > 0) items.push({ w: W[i], state: on && why.includes(i) ? 'expl' : litBit(l, v, i) ? 'true' : 'false', label: conv.literals[i].text, onclick: null });
   box.append(el('h3', {}, 'threshold'), thresholdBar(items, S_));
+  const total = W.reduce((a, b) => a + b, 0), held = why.reduce((a, i) => a + W[i], 0);
   box.append(el('div', { class: 'why-line' }, on
     ? `Fires because the ${why.length} purple literal${why.length > 1 ? 's' : ''} alone reach S (the fewest true literals that do: exact).`
-    : 'Does not fire: even all its true literals together stay below S.'));
+    : total < S_ ? 'Can never fire: all its weights together stay below S.'
+      : `Stays 0 because the ${why.length} purple literal${why.length > 1 ? 's are' : ' is'} false: they weigh ${f2(held)} > Σw − S = ${f2(total - S_)}, so even with every other literal true the sum stays below S (the fewest false literals that guarantee it: exact).`));
   box.append(el('h3', {}, `literals (${S.showAllLits ? 'all' : 'weight ≥ 3% of max'}) · hover: the nodes counted`),
     el('div', { class: 'muted small' }, 'Plots: the step phi(w·count + b); green = true. Counts are integers, so only the dots matter (filled = true, hollow = false); purple = the count at this node.'),
     litTable(l, u, v),
     el('button', { onclick: () => { S.showAllLits = !S.showAllLits; renderInspector(); } }, S.showAllLits ? 'only the heavy literals' : 'show every literal'));
+  box.append(el('h3', {}, 'readable rules (data-simplified)'), rulesBlock(l, u, v));
   if (l === 0 && conv.rules && conv.rules[u]) {
-    box.append(el('h3', {}, `observed rules (DNF) on ${c.ref_split}`));
+    box.append(el('h3', {}, `exact minimal rules observed on ${c.ref_split}`));
     const rules = conv.rules[u];
     if (!rules.length) box.append(el('div', { class: 'muted' }, 'no minimal rule holds on any reference node'));
     for (const r of rules) {
@@ -1184,8 +1462,9 @@ function unitCard(box, l, u) {
       el('dt', {}, 'shortest rule'), el('dd', {}, conv.min_card[u] === null ? 'never fires' : `${conv.min_card[u]} literals`),
       el('dt', {}, 'minimal rules'), el('dd', {}, `≈ ${sci(conv.n_covers[u])}`)));
   if (T()) box.append(el('button', { onclick: () => { S.tab = 'predict'; renderTabs(); renderMain(); select({ type: 'unit', l, u }); } }, `show at ${nodeName(S.node)} of ${T().split} #${T().i}`));
+  box.append(el('h3', {}, 'readable rules (data-simplified)'), rulesBlock(l, u, null));
   if (l === 0 && conv.rules) {
-    box.append(el('h3', {}, `observed rules on ${c.ref_split}`));
+    box.append(el('h3', {}, `exact minimal rules observed on ${c.ref_split}`));
     for (const r of conv.rules[u]) box.append(el('div', { class: 'rule' }, el('span', { class: 'sup' }, pct(r.support, 2)), r.literals.length ? r.literals.map(i => conv.literals[i].text).join('  ∧  ') : 'TRUE'));
   }
   box.append(el('h3', {}, 'literals (weight ≥ 3% of max)'));

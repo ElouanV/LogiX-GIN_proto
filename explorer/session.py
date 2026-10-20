@@ -4,7 +4,7 @@ import json
 import os
 import re
 
-from explorer.reader import SymbolicReader
+from explorer.reader import SymbolicReader, edit_graph
 from utils.runs import SPLITS, RunDir
 from utils.tracking import _git
 
@@ -21,7 +21,7 @@ class RunSession:
             raise ValueError(f'{path} is a teacher run: the explorer reads LogiX-GIN students')
         self.ckpt, self.ref_split, self.ref_max = ckpt, ref_split, ref_max
         self.reader = SymbolicReader(self.run.model(device, ckpt), self.run.dataset, device)
-        self._card, self._index = None, {}
+        self._card, self._index, self._acts, self._rules = None, {}, None, {}
 
     def meta(self):
         r = self.run
@@ -54,6 +54,26 @@ class RunSession:
         if not 0 <= i < len(ds):
             raise IndexError(f'{split} has {len(ds)} graphs, no #{i}')
         return self.reader.trace(ds[i], split, i)
+
+    def rules(self, l, u):
+        """Readable rules of conv unit (l, u) on the reference split (cached)."""
+        if not (0 <= l < self.reader.L and 0 <= u < self.reader.h):
+            raise IndexError(f'no unit L{l}u{u}')
+        if (l, u) not in self._rules:
+            if self._acts is None:
+                ds = self.run.pickled(self.ref_split)
+                self._acts = self.reader.layer_activations(ds if self.ref_max is None else ds[:self.ref_max])
+            self._rules[(l, u)] = {'split': self.ref_split, **self.reader.unit_rules(l, u, self._acts)}
+        return self._rules[(l, u)]
+
+    def whatif(self, split, i, edits):
+        """The trace of graph i after the edits of reader.edit_graph (a counterfactual)."""
+        ds = self.run.pickled(split)
+        if not 0 <= i < len(ds):
+            raise IndexError(f'{split} has {len(ds)} graphs, no #{i}')
+        t = self.reader.trace(edit_graph(ds[i], edits), split, i)
+        t['edits'] = edits
+        return t
 
 
 HASHED = re.compile(r'^(node|graph|both)-[0-9a-f]{12}$')

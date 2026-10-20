@@ -7,6 +7,8 @@ path from a request would run arbitrary code). It binds to 127.0.0.1 by default.
     GET /api/open?run=<id>                {meta, card}           (first call reads the model)
     GET /api/index?run=<id>&split=test    graph rows + split summary
     GET /api/trace?run=<id>&split=test&i=3
+    GET /api/rules?run=<id>&l=1&u=10             readable rules of a conv unit
+    GET /api/whatif?run=<id>&split=test&i=3&edits={"x": {"5": "0100…"}, "del": [[1, 2]], "add": [[0, 7]]}
 """
 import json
 import mimetypes
@@ -56,6 +58,10 @@ class Explorer:
             return s.index(q.get('split', 'test'))
         if route == 'trace':
             return s.trace(q.get('split', 'test'), int(q['i']))
+        if route == 'rules':
+            return s.rules(int(q['l']), int(q['u']))
+        if route == 'whatif':
+            return s.whatif(q.get('split', 'test'), int(q['i']), json.loads(q['edits']))
         raise KeyError(f'unknown route {route}')
 
 

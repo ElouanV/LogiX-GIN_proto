@@ -33,11 +33,13 @@ from explain_proto import proto_dim_map, readout_columns
 from interp_metrics import (base_literal_map, head_literal_map, level_of, readout_values, shortest_explanation,
                             symbolic_head, trunk_shape, trunk_states)
 from min_covers import count_min_covers, literal_true_intervals, supported_min_covers, unique_rows
-from unpack_rules import fmt_counts
+from unpack_rules import ConvLiterals, fmt_counts, unit_rules
 from utils.datasets import spec
 from utils.runs import EVAL_BATCH_SIZE
 from utils.viz_proto import _layout, layer_literals
 
+RULES_SHOWN = 8           # data-simplified rules listed per unit and polarity
+RULES_EXHAUSTIVE = 300    # formal rules above which a unit is read by its shortest rule per observed pattern
 TOP_MATCHES = 6           # best-matching reference nodes / graphs listed per prototype
 L0_RULES = 8              # observed rules listed per layer-0 unit
 
@@ -68,6 +70,52 @@ def rule_stats(W, S):
     with np.errstate(over='ignore', invalid='ignore'):
         n = [float(count_min_covers(W[u], S[u]).sum()) for u in range(len(S))]
     return [min_cardinality(W[u], S[u]) for u in range(len(S))], [x if np.isfinite(x) else None for x in n]
+
+
+def unit_reason(w, S, lit, on):
+    """Exact shortest reason of a unit's value at one node, as literal indices.
+
+    on:  the fewest TRUE literals whose weights reach S (they alone make it fire).
+    off: the fewest FALSE literals whose weights exceed sum(w) - S: with those false, even
+         every other literal true stays below S (the dual reading unpack_rules.py uses for
+         NOT u). [] for a unit that can never fire (sum(w) < S).
+    Greedy by weight in both cases (weights >= 0), so the count is the minimum."""
+    lit = np.asarray(lit, dtype=bool)
+    if on:
+        e = shortest_explanation(w, S, lit)
+        if e is None:                    # float rounding at the threshold: every true literal
+            e = np.flatnonzero(lit)[np.argsort(-w[lit], kind='stable')]
+    else:
+        T = float(w.sum()) - S
+        e = shortest_explanation(w, T + 1e-9 * max(1.0, abs(T)), ~lit & (w > 0))
+        if e is None:                    # float rounding: every false literal
+            e = np.flatnonzero(~lit & (w > 0))[np.argsort(-w[~lit & (w > 0)], kind='stable')]
+    return [int(i) for i in e]
+
+
+def edit_graph(data, edits):
+    """A copy of ``data`` with what-if edits applied: ``x`` {node: '0110…'} new feature
+    bits, ``del`` / ``add`` [[a, b], ...] undirected edges to remove / add."""
+    d = data.clone()
+    n = d.num_nodes
+    if edits.get('x'):
+        x = d.x.clone().float()
+        for v, b in edits['x'].items():
+            v = int(v)
+            if not 0 <= v < n or len(b) != x.shape[1] or set(b) - {'0', '1'}:
+                raise ValueError(f'bad feature edit for node {v}')
+            x[v] = torch.tensor([float(c) for c in b])
+        d.x = x
+    pairs = {tuple(e) for e in d.edge_index.t().tolist()}
+    for a, b in edits.get('del', []):
+        pairs -= {(a, b), (b, a)}
+    for a, b in edits.get('add', []):
+        if not (0 <= a < n and 0 <= b < n) or a == b:
+            raise ValueError(f'bad edge {a}-{b}')
+        pairs |= {(a, b), (b, a)}
+    d.edge_index = torch.tensor(sorted(pairs), dtype=torch.long).t().reshape(2, -1)
+    d.edge_attr = None
+    return d
 
 
 class SymbolicReader:
@@ -425,6 +473,42 @@ class SymbolicReader:
                 f'every node has ≥ {ms[0]} mismatches with P{k}'
         return f'closest node to P{k} has m* {fmt_counts(ms, 0, d)} mismatches (of {d} cared bits)'
 
+    # ------------------------------------------------------------------ readable rules of any unit
+
+    @torch.no_grad()
+    def layer_activations(self, dataset):
+        """Per conv layer, over every node of ``dataset``: the counts (x_sum, what
+        unpack_rules.ConvLiterals reads), the literals (x_bin) and the units (y_bin) of the
+        symbolic model."""
+        acc = [{'x_sum': [], 'x_bin': [], 'y_bin': []} for _ in self.model.convs]
+        for data in DataLoader(dataset, batch_size=256, shuffle=False):
+            for a, lay in zip(acc, self.run_batch(data)['layers']):
+                a['x_sum'].append(torch.round(lay['count']).short().cpu())
+                a['x_bin'].append(lay['lit'].cpu().numpy())
+                a['y_bin'].append(lay['out'].cpu().numpy() > 0.5)
+        return [{'x_sum': torch.cat(a['x_sum']), 'x_bin': np.vstack(a['x_bin']), 'y_bin': np.vstack(a['y_bin'])}
+                for a in acc]
+
+    def unit_rules(self, l, u, acts):
+        """unpack_rules.unit_rules of unit (l, u), when it fires and when it is 0, measured on
+        ``acts`` (layer_activations): a covering set of observed minimal rules, each also
+        shortened while its precision on the data does not drop (simplify_tol 0). A unit
+        with more than RULES_EXHAUSTIVE formal rules is read by the shortest rule of each
+        observed literal pattern."""
+        ll = self.model.convs[l].nn[0]
+        W, S = ll.weight.detach().double().cpu().numpy()[u], float(-ll.b.detach()[u])
+        if S <= 0 or W.sum() < S:
+            return {'constant': S <= 0, 'dead': bool(W.sum() < S)}
+        lits = ConvLiterals(self.model, l, acts, self.features)
+        X, fire = acts[l]['x_bin'], acts[l]['y_bin'][:, u]
+        out = {}
+        for key, pol in (('pos', True), ('neg', False)):
+            r = unit_rules(W, S, X, fire, lits, pol, RULES_SHOWN, 0.0, exhaustive_limit=RULES_EXHAUSTIVE)
+            r.pop('signature', None)
+            r['rules'] = r['rules'][:RULES_SHOWN]
+            out[key] = r
+        return out
+
     # ------------------------------------------------------------------ one graph
 
     @torch.no_grad()
@@ -445,18 +529,7 @@ class SymbolicReader:
             ll = self.model.convs[l].nn[0]
             W, S = ll.weight.detach().cpu().numpy(), (-ll.b).detach().cpu().numpy()
             lit, out = lay['lit'].cpu().numpy(), lay['out'].cpu().numpy() > 0.5
-            why = []
-            for v in range(n):
-                row = []
-                for u in range(self.h):
-                    if not out[v, u]:
-                        row.append(None)
-                        continue
-                    e = shortest_explanation(W[u], S[u], lit[v])
-                    if e is None:            # float rounding at the threshold: every true literal
-                        e = np.flatnonzero(lit[v])[np.argsort(-W[u][lit[v]], kind='stable')]
-                    row.append([int(i) for i in e])
-                why.append(row)
+            why = [[unit_reason(W[u], S[u], lit[v], out[v, u]) for u in range(self.h)] for v in range(n)]
             layers.append({'count': np.rint(lay['count'].cpu().numpy()).astype(int).tolist(),
                            'lit': [bits(r) for r in lit], 'out': [bits(r) for r in out],
                            'margin': rnd(lay['margin'], 3), 'net': rnd(net, 3), 'why': why})

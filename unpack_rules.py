@@ -278,8 +278,10 @@ def simplify(lits, full, mult, hits, tol):
     return lits
 
 
-def unit_rules(W_u, S_u, X, fire, lits, polarity, max_show, simplify_tol=0.0, all_rules=False):
-    """Rules of one unit (polarity=True) or of its negation (polarity=False); see module doc."""
+def unit_rules(W_u, S_u, X, fire, lits, polarity, max_show, simplify_tol=0.0, all_rules=False,
+               exhaustive_limit=EXHAUSTIVE_LIMIT):
+    """Rules of one unit (polarity=True) or of its negation (polarity=False); see module doc.
+    ``exhaustive_limit``: formal rules above which the shortest rule per example is used."""
     if polarity:
         T, Xl = S_u, X                                   # literals that must be TRUE
     else:                                                # NOT u: FALSE literals weighing > W - S
@@ -295,7 +297,7 @@ def unit_rules(W_u, S_u, X, fire, lits, polarity, max_show, simplify_tol=0.0, al
     full = np.zeros((len(rows), Xl.shape[1]), dtype=bool)
     full[:, cols] = rows
     total = float(count_min_covers(W_u, T).sum())
-    if total <= EXHAUSTIVE_LIMIT:
+    if total <= exhaustive_limit:
         covers, mode = [c for c, _ in supported_min_covers(W_u, T, full, 1, counts=mult.astype(np.int64))], 'all observed'
     else:
         covers, mode = shortest_per_pattern(W_u, T, full), 'shortest per example'

@@ -10,6 +10,7 @@ import sys
 import tempfile
 import threading
 import unittest
+import urllib.parse
 import urllib.request
 
 import numpy as np
@@ -19,7 +20,7 @@ from torch_geometric.data import Batch, Data
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from explorer.bundle import build_bundle, pick_graphs, write_html  # noqa: E402
-from explorer.reader import SymbolicReader, min_cardinality  # noqa: E402
+from explorer.reader import SymbolicReader, edit_graph, min_cardinality  # noqa: E402
 from explorer.server import Explorer, handler  # noqa: E402
 from explorer.session import RunSession, discover  # noqa: E402
 from interp_metrics import shortest_explanation, symbolic_head, trunk_states  # noqa: E402
@@ -120,11 +121,45 @@ class TestTrace(unittest.TestCase):
                     for u in range(rd.h):
                         why = lay['why'][v][u]
                         if lay['out'][v][u] == '0':
-                            self.assertIsNone(why)
+                            # the fewest FALSE literals whose weight exceeds sum(w) - S
+                            T = W[u].sum() - S[u]
+                            self.assertFalse(lit[why].any())
+                            if T >= 0:
+                                self.assertGreater(W[u][why].sum(), T - 1e-6)
+                                best = np.sort(W[u][~lit & (W[u] > 0)])[::-1][:len(why) - 1].sum()
+                                self.assertLessEqual(best, T + 1e-6)
                             continue
                         self.assertTrue(lit[why].all())
                         self.assertGreaterEqual(W[u][why].sum(), S[u] - 1e-5)
                         self.assertEqual(len(why), len(shortest_explanation(W[u], S[u], lit)))
+
+
+class TestWhatIf(unittest.TestCase):
+    def test_edit_graph(self):
+        d = graphs(1)[0]
+        a, b = d.edge_index[:, 0].tolist()
+        bits = '0' * (F - 1) + '1'
+        e = edit_graph(d, {'x': {'0': bits}, 'del': [[a, b]], 'add': [[0, d.num_nodes - 1]]})
+        self.assertEqual(e.x[0].tolist(), [0.0] * (F - 1) + [1.0])
+        pairs = set(map(tuple, e.edge_index.t().tolist()))
+        self.assertNotIn((a, b), pairs)
+        self.assertNotIn((b, a), pairs)
+        self.assertIn((0, d.num_nodes - 1), pairs)
+        self.assertIn((d.num_nodes - 1, 0), pairs)
+        self.assertTrue(torch.equal(d.x, graphs(1)[0].x))       # the original is untouched
+        for bad in ({'x': {'0': '01'}}, {'add': [[0, 0]]}, {'x': {'99': bits}}):
+            with self.assertRaises(ValueError):
+                edit_graph(d, bad)
+
+    def test_whatif_trace_is_the_trace_of_the_edited_graph(self):
+        model = models()['node'].eval()
+        rd = SymbolicReader(model, 'Mutagenicity')
+        d = graphs(1)[0]
+        edits = {'x': {'1': '1' + '0' * (F - 1)}, 'del': [d.edge_index[:, 0].tolist()]}
+        t = rd.trace(edit_graph(d, edits))
+        xs = trunk_states(model, edit_graph(d, edits).x, edit_graph(d, edits).edge_index)
+        out = np.array([[c == '1' for c in r] for r in t['layers'][-1]['out']])
+        np.testing.assert_array_equal(out, xs[-1].numpy() > 0.5)
 
 
 class TestConstants(unittest.TestCase):
@@ -271,8 +306,14 @@ class TestRunsAndServer(unittest.TestCase):
             self.assertEqual(get('/api/open?run=0')['card']['level'], 'node')
             self.assertEqual(get('/api/index?run=0&split=test')['summary']['graphs'], 2)
             self.assertEqual(get('/api/trace?run=0&split=test&i=1')['i'], 1)
+            edits = urllib.parse.quote(json.dumps({'del': [[0, 1]]}))
+            w = get(f'/api/whatif?run=0&split=test&i=0&edits={edits}')
+            self.assertEqual(w['edits'], {'del': [[0, 1]]})
+            r = get('/api/rules?run=0&l=1&u=0')
+            self.assertEqual(r['split'], 'train')
+            self.assertTrue('pos' in r or r.get('dead') or r.get('constant'))
             self.assertIn(b'LogiX-GIN Explorer', urllib.request.urlopen(base + '/').read())
-            for bad in ('/api/open?run=5', '/api/trace?run=0&split=test&i=9'):
+            for bad in ('/api/open?run=5', '/api/trace?run=0&split=test&i=9', '/api/rules?run=0&l=7&u=0'):
                 with self.assertRaises(urllib.error.HTTPError) as e:
                     urllib.request.urlopen(base + bad)
                 self.assertEqual(e.exception.code, 400)
