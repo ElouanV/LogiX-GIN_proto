@@ -327,7 +327,10 @@ function renderHeader() {
     S.src.splits().map(s => el('option', { value: s, selected: s === S.split }, s)));
   const sum = S.index ? S.index.summary : {};
   bar.append(
-    el('span', { class: 'chip' }, el('b', {}, c.dataset), ` · ${c.model_class} · ${c.level}`, m.finetunes.length ? ` · ${m.finetunes.join('→')}` : ''),
+    el('span', { class: 'chip', title: `${c.model_class}\n${m.path}` }, el('b', {}, c.dataset), ` · ${c.level}`,
+      (m.path.match(/\/fold(\d+)\//) || [])[1] !== undefined ? ` · fold ${m.path.match(/\/fold(\d+)\//)[1]}` : '',
+      c.protos.length ? ` · ${c.protos.map(p => `${p.K} protos`).join(' + ')}` : '',
+      ` · ${m.finetunes.length ? m.finetunes.join('→') : 'base'}`),
     splitSel,
     el('div', { class: 'chips' },
       el('span', { class: 'chip', title: 'network accuracy on this split' }, 'acc ', el('b', {}, pct(sum.acc))),
