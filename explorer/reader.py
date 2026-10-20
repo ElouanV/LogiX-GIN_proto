@@ -226,7 +226,7 @@ class SymbolicReader:
             node_where.append(torch.stack([b + g0, local], 1))
             graph_y.append(data.y.view(-1).cpu())
             for li, p in enumerate(st['protos']):
-                (node_sims if self.proto_kind(li) == 'node' else graph_sims).append((li, p['sim'].cpu()))
+                (node_sims if self.proto_kind(li) == 'node' else graph_sims).append((li, p['sim'].cpu(), p['mism'].cpu()))
             g0 += data.num_graphs
         node_where, graph_y = torch.cat(node_where), torch.cat(graph_y)
 
@@ -261,8 +261,9 @@ class SymbolicReader:
             P = (p.prototypes.detach().cpu().numpy() > 0.5)
             care = (p.care.detach().cpu().numpy() > 0.5)
             labels = [(f'{op}:' if op else '') + f'L{l}u{u}' for op, l, u in dmap]
-            sims = torch.cat([s for i, s in (node_sims if kind == 'node' else graph_sims) if i == li])
-            top, exact = [], []
+            rows = [(s, mm) for i, s, mm in (node_sims if kind == 'node' else graph_sims) if i == li]
+            sims, mism = torch.cat([r[0] for r in rows]), torch.cat([r[1] for r in rows])
+            top, exact, dist = [], [], []
             for k in range(p.num_prototypes):
                 col = sims[:, k]
                 order = torch.argsort(col, descending=True, stable=True)[:TOP_MATCHES].tolist()
@@ -275,13 +276,15 @@ class SymbolicReader:
                     hit = torch.nonzero(col >= 1 - 1e-6).flatten()
                 mix = torch.bincount(graph_y[hit], minlength=self.n_classes).tolist() if len(hit) else [0] * self.n_classes
                 exact.append({'graphs': int(len(hit)), 'class_mix': mix})
+                dist.append(self._agreement(kind, col, mism[:, k], care[k], node_where[:, 0] if kind == 'node' else None,
+                                            graph_y))
             protos.append({'kind': kind, 'K': p.num_prototypes, 'd': p.in_features, 'masked': bool(p.masked),
                            'T': float(p.mask_temp) if p.masked else None, 'bit_labels': labels,
                            'bit_unit': [l * self.h + u for _, l, u in dmap],
                            'bits': [bits(r) for r in P], 'care': [bits(r) for r in care],
                            'rule': [' ∧ '.join(('' if P[k, d] else '¬') + labels[d] for d in np.flatnonzero(care[k]))
                                     or 'TRUE (cares about no bit)' for k in range(p.num_prototypes)],
-                           'top': top, 'exact': exact})
+                           'top': top, 'exact': exact, 'dist': dist})
 
         head = self._head_card(head_lo.cpu().numpy(), head_hi.cpu().numpy())
         mc, nc = rule_stats(self.W_head, self.S_head)
@@ -350,6 +353,35 @@ class SymbolicReader:
             if len(ms) == d + 1:
                 return True
         return None
+
+    def _agreement(self, kind, sim, mism, care, node_graph, graph_y, bins=20):
+        """How the reference graphs agree with one prototype, per class (counts):
+
+            node prototype   closest  [C x (d+1)]  per graph, mismatches m* of its closest node
+                                                   (what "max sim" reads; d = cared bits)
+                             nodes    [d+1]        every node's mismatches
+                             mean     [C x bins]   per graph, mean similarity over its nodes, binned over
+                                                   its observed range mean_range
+            graph prototype  graph    [C x bins]   per graph, similarity of its pooled trunk
+
+        On binary node states the mismatches are integers (masked: sim = exp(-m/T);
+        unmasked: sim = 1 - m/d)."""
+        C, G = self.n_classes, len(graph_y)
+
+        def by_class(v, n):
+            return [torch.bincount(v[graph_y == c], minlength=n)[:n].tolist() for c in range(C)]
+
+        def hist(x, lo=0.0, hi=1.0):
+            return torch.clamp(((x - lo) / max(hi - lo, 1e-9) * bins).long(), 0, bins - 1)
+        if kind == 'graph':
+            return {'graph': by_class(hist(sim), bins), 'bins': bins}
+        d = int(care.sum())
+        m = torch.round(mism).long().clamp(0, d)
+        closest = torch.full((G,), d, dtype=torch.long).scatter_reduce(0, node_graph, m, 'amin', include_self=True)
+        mean = torch.zeros(G).index_add_(0, node_graph, sim.float()) / torch.bincount(node_graph, minlength=G).clamp(min=1)
+        lo, hi = float(mean.min()), float(mean.max())
+        return {'d': d, 'closest': by_class(closest, d + 1), 'nodes': torch.bincount(m, minlength=d + 1).tolist(),
+                'mean': by_class(hist(mean, lo, hi), bins), 'mean_range': [lo, hi], 'bins': bins}
 
     def _head_card(self, lo, hi):
         """Head literals: what each one reads, its step function, where it is true and

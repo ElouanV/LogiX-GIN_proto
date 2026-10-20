@@ -215,7 +215,7 @@ async function openRun(id, split = null, gi = null, node = null) {
   S.split = split && splits.includes(split) ? split : splits[0];
   await loadIndex();
   const rows = S.index.rows;
-  const first = gi !== null ? gi : (rows.find(r => S.src.has(S.split, r.i)) || rows[0]).i;
+  const first = gi !== null && S.src.has(S.split, gi) ? gi : (rows.find(r => S.src.has(S.split, r.i)) || rows[0]).i;
   await openGraph(S.split, first, { node });
 }
 
@@ -735,6 +735,8 @@ window.addEventListener('resize', () => { if (S.tab === 'predict' && T()) refres
 
 // ------------------------------------------------------------------ small plots
 
+const STEP_KEY = 'curve: phi(w·x + b), the step the literal reads\ngreen band: where the literal is true (phi ≥ 0.5, dotted line)';
+const STEP_KEY_INT = '\ndots: the counts that can occur (counts are integers, so only these points matter); filled = true, hollow = false';
 /* the step function of one literal: phi(w * map(x) + b) over [lo, hi], green where the
  * literal is true; integer = counts (dots at each count); x = the current value */
 function stepPlot({ w, b, tau, lo, hi, x = null, integer = false, map = z => z, width = 200, height = 58 }) {
@@ -744,6 +746,7 @@ function stepPlot({ w, b, tau, lo, hi, x = null, integer = false, map = z => z, 
   const X = u => pad.l + (u - a) / span * (width - pad.l - pad.r);
   const Y = y => pad.t + (1 - y) * (height - pad.t - pad.b);
   const g = sv('svg', { class: 'stepplot', width, height, viewBox: `0 0 ${width} ${height}` });
+  hoverTip(g, STEP_KEY + (integer ? STEP_KEY_INT : '') + (x !== null ? `\npurple: the value here (${integer ? Math.round(x) : f2(x)}), ${litTrue(w * map(x) + b) ? 'true' : 'false'}` : ''));
   const N = 300;
   let start = null;
   for (let j = 0; j <= N; j++) {
@@ -812,6 +815,95 @@ function bitGrid(li, k, v = null, cellPx = 6) {
   return g;
 }
 
+/* grouped histogram, one series per class, each class normalised to its own total (classes
+ * are imbalanced); x = bins; marker = this graph / node; trueAt(x) shades where the head
+ * literal reading this distribution is true */
+const CLASS_COLORS = ['var(--c0)', 'var(--c1)', 'var(--c2)', 'var(--c3)'];
+function histChart({ series, labels, marker = null, markerText = '', trueAt = null, xTitle, width = 360, height = 120, normalise = true }) {
+  const n = labels.length, padL = 30, padR = 6, padT = 8, padB = 30;
+  const shares = series.map(sr => { const tot = sr.counts.reduce((a, b) => a + b, 0) || 1; return sr.counts.map(c => normalise ? c / tot : c); });
+  const ymax = Math.max(...shares.flat(), 1e-9);
+  const bw = (width - padL - padR) / n, inner = Math.max(bw - 2, 1), gw = inner / series.length;
+  const X = i => padL + i * bw, Y = v => padT + (1 - v / ymax) * (height - padT - padB);
+  const g = sv('svg', { width, height, class: 'hist' });
+  if (trueAt) for (let i = 0; i < n; i++) if (trueAt(i)) g.append(sv('rect', { class: 'truezone', x: X(i), y: padT, width: bw, height: height - padT - padB }));
+  for (const t of [0, ymax / 2, ymax]) {
+    g.append(sv('line', { class: 'grid', x1: padL, x2: width - padR, y1: Y(t), y2: Y(t) }),
+      sv('text', { x: padL - 4, y: Y(t) + 3, 'text-anchor': 'end' }, normalise ? `${Math.round(100 * t)}%` : t >= 1e3 ? `${(t / 1e3).toFixed(t >= 1e4 ? 0 : 1)}k` : String(Math.round(t))));
+  }
+  for (let i = 0; i < n; i++) {
+    series.forEach((sr, j) => {
+      const v = shares[j][i];
+      if (!v) return;
+      const h = Math.max(Y(0) - Y(v), 1), x = X(i) + 1 + j * gw;
+      const bar = sv('path', { fill: sr.color, d: `M${x},${Y(0)} v${-h + Math.min(2, h)} q0,-${Math.min(2, h)} ${Math.min(2, gw / 2)},-${Math.min(2, h)} h${Math.max(gw - 2 * Math.min(2, gw / 2), 0)} q${Math.min(2, gw / 2)},0 ${Math.min(2, gw / 2)},${Math.min(2, h)} v${h - Math.min(2, h)} z` });
+      hoverTip(bar, `${sr.name} · ${xTitle} ${labels[i]}\n${sr.counts[i]} (${pct(shares[j][i] * (normalise ? 1 : 1 / (sr.counts.reduce((a, b) => a + b, 0) || 1)))} of ${sr.name})`);
+      g.append(bar);
+    });
+    const step = Math.ceil(n / 12);
+    if (i % step === 0 || i === n - 1) g.append(sv('text', { x: X(i) + bw / 2, y: height - padB + 11, 'text-anchor': 'middle' }, labels[i]));
+  }
+  g.append(sv('line', { class: 'axis', x1: padL, x2: width - padR, y1: Y(0), y2: Y(0) }),
+    sv('text', { x: padL + (width - padL - padR) / 2, y: height - 4, 'text-anchor': 'middle', class: 'xt' }, xTitle));
+  if (marker !== null) {
+    const mx = X(marker) + bw / 2;
+    g.append(sv('line', { class: 'mark', x1: mx, x2: mx, y1: padT - 4, y2: Y(0) }),
+      sv('text', { x: Math.min(Math.max(mx, 30), width - 30), y: padT - 0, 'text-anchor': 'middle', class: 'markt' }, markerText));
+  }
+  const legend = el('div', { class: 'legend' }, series.map(sr => el('span', {}, el('i', { style: { background: sr.color } }), sr.name)),
+    trueAt ? el('span', {}, el('i', { style: { background: 'color-mix(in srgb, var(--good) 25%, transparent)' } }), 'head literal true') : null);
+  return el('div', { class: 'histwrap' }, g, legend);
+}
+
+/* the head literal reading (proto li, k) through `op`, if one is not constant */
+function literalOn(li, k, op) {
+  const c = card();
+  const i = c.head.literals.findIndex(lit => { const col = c.readout[lit.col]; return col.proto_layer === li && col.k === k && col.op === op && lit.constant === null; });
+  return i < 0 ? null : i;
+}
+function literalTrueAt(i, s) {
+  const lit = card().head.literals[i];
+  return litTrue(lit.phi_w * (lit.pos ? s : 1 - s) + lit.phi_b);
+}
+
+/* agreement of the reference graphs with prototype (li, k), the current graph marked */
+function protoAgreement(li, k, { width = 360, compact = false } = {}) {
+  const c = card(), p = c.protos[li], dist = p.dist[k], out = el('div', {});
+  const series = counts => counts.map((cs, cl) => ({ name: className(cl), color: CLASS_COLORS[cl % 4], counts: cs }));
+  const here = !compact && !!T();
+  if (p.kind === 'graph') {
+    const lab = [...Array(dist.bins).keys()].map(b => f2(b / dist.bins, 2));
+    const s = here ? protoSim(li, k) : null;
+    const lit = literalOn(li, k, 'pooled');
+    out.append(el('div', { class: 'small muted' }, `similarity of each ${c.ref_split} graph to ${protoName(li, k)}, share of each class`),
+      histChart({ series: series(dist.graph), labels: lab, xTitle: 'similarity', width, height: compact ? 90 : 120,
+        marker: s === null ? null : Math.min(dist.bins - 1, Math.floor(s * dist.bins)), markerText: 'this graph',
+        trueAt: lit === null ? null : b => literalTrueAt(lit, (b + 0.5) / dist.bins) }));
+    return out;
+  }
+  const d = dist.d, lab = [...Array(d + 1).keys()].map(String);
+  const sim = m => p.masked ? Math.exp(-m / p.T) : 1 - m / Math.max(d, 1);
+  const mmax = here && card().protos[li].kind === 'node' ? Math.round(Math.min(...T().protos[li].mism.map(r => r[k]))) : null;
+  const litMax = literalOn(li, k, 'max');
+  out.append(el('div', { class: 'small muted' }, `${c.ref_split} graphs by the mismatches m* of their closest node (what "max sim" reads), share of each class`),
+    histChart({ series: series(dist.closest), labels: lab, xTitle: `m* (of ${d} cared bits)`, width, height: compact ? 90 : 120,
+      marker: mmax, markerText: 'this graph', trueAt: litMax === null ? null : m => literalTrueAt(litMax, sim(m)) }));
+  if (compact) return out;
+  const litMean = literalOn(li, k, 'mean');
+  const meanHere = here ? T().s[c.readout.findIndex(r => r.proto_layer === li && r.k === k && r.op === 'mean')] : null;
+  const [lo, hi] = dist.mean_range || [0, 1], bw = Math.max(hi - lo, 1e-9) / dist.bins;
+  const at = v => Math.max(0, Math.min(dist.bins - 1, Math.floor((v - lo) / bw)));
+  out.append(el('div', { class: 'small muted', style: { marginTop: '8px' } }, `${c.ref_split} graphs by the mean similarity of their nodes (what "mean sim" reads; observed range ${f2(lo, 3)}–${f2(hi, 3)})`),
+    histChart({ series: series(dist.mean), labels: [...Array(dist.bins).keys()].map(b => f2(lo + b * bw, 3)), xTitle: 'mean similarity', width,
+      marker: meanHere === null || meanHere === undefined ? null : at(meanHere), markerText: 'this graph',
+      trueAt: litMean === null ? null : b => literalTrueAt(litMean, lo + (b + 0.5) * bw) }));
+  const mv = here ? Math.round(protoMism(li, k)) : null;
+  out.append(el('div', { class: 'small muted', style: { marginTop: '8px' } }, `every ${c.ref_split} node by its mismatches with ${protoName(li, k)} (${c.ref_nodes} nodes)`),
+    histChart({ series: [{ name: 'nodes', color: 'var(--ink2)', counts: dist.nodes }], labels: lab, xTitle: 'mismatches m', width, normalise: false,
+      marker: mv, markerText: nodeName(S.node) }));
+  return out;
+}
+
 function mixText(mix) {
   const tot = mix.reduce((a, b) => a + b, 0);
   if (!tot) return '';
@@ -873,7 +965,9 @@ function unitInspector(box) {
   box.append(el('div', { class: 'why-line' }, on
     ? `Fires because the ${why.length} purple literal${why.length > 1 ? 's' : ''} alone reach S (the fewest true literals that do: exact).`
     : 'Does not fire: even all its true literals together stay below S.'));
-  box.append(el('h3', {}, `literals (${S.showAllLits ? 'all' : 'weight ≥ 3% of max'}) · hover: the nodes counted`), litTable(l, u, v),
+  box.append(el('h3', {}, `literals (${S.showAllLits ? 'all' : 'weight ≥ 3% of max'}) · hover: the nodes counted`),
+    el('div', { class: 'muted small' }, 'Plots: the step phi(w·count + b); green = true. Counts are integers, so only the dots matter (filled = true, hollow = false); purple = the count at this node.'),
+    litTable(l, u, v),
     el('button', { onclick: () => { S.showAllLits = !S.showAllLits; renderInspector(); } }, S.showAllLits ? 'only the heavy literals' : 'show every literal'));
   if (l === 0 && conv.rules && conv.rules[u]) {
     box.append(el('h3', {}, `observed rules (DNF) on ${c.ref_split}`));
@@ -918,6 +1012,7 @@ function protoInspector(box) {
     p.kind === 'node' ? el('dt', {}, 'best node') : null,
     p.kind === 'node' ? el('dd', {}, (() => { const b = bestNode(k, li); return el('a', { href: '#', onclick: ev => { ev.preventDefault(); setNode(b); } }, `${nodeName(b)} (${f2(protoSim(li, k, b), 3)})`); })()) : null,
     el('dt', {}, `exact on ${c.ref_split}`), el('dd', {}, `${p.exact[k].graphs} graphs contain an exact match${mixText(p.exact[k].class_mix)}`, mixBar(p.exact[k].class_mix))));
+  if (p.dist) box.append(el('h3', {}, `agreement on ${c.ref_split}`), protoAgreement(li, k, { width: 360 }));
   box.append(el('h3', {}, 'rule (AND of its cared bits)'));
   const inp = protoBitsAt(li, v);
   const chips = el('div', { class: 'rulebox' });
@@ -1028,6 +1123,7 @@ function renderProtos(main) {
       chips,
       bitGrid(li, k, null, 4),
       el('div', { class: 'small' }, `exact match in ${p.exact[k].graphs} ${c.ref_split} graphs${mixText(p.exact[k].class_mix)}`, mixBar(p.exact[k].class_mix)),
+      p.dist ? protoAgreement(li, k, { width: 300, compact: true }) : null,
       top ? el('button', { onclick: () => openGraph(c.ref_split, top.graph, { node: top.node === undefined ? null : top.node, sel: { type: 'proto', li, k } }) },
         `open best match: ${c.ref_split} #${top.graph}${top.node !== undefined ? ` node ${top.node}` : ''}`) : null));
   }

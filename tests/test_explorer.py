@@ -199,6 +199,21 @@ class TestCard(unittest.TestCase):
                     for u in range(rd.h):
                         self.assertEqual(conv['min_card'][u], min_cardinality(conv['W'][u], conv['S'][u]))
 
+    def test_agreement_distributions(self):
+        """Graphs whose closest node has 0 mismatches are the exact matches; every node and
+        every graph is counted once."""
+        data = graphs(10, seed=2)
+        rd = SymbolicReader(models()['node'].eval(), 'Mutagenicity')
+        card = rd.card(data)
+        n_nodes = sum(d.num_nodes for d in data)
+        for p in card['protos']:
+            for k, dist in enumerate(p['dist']):
+                closest = np.array(dist['closest'])
+                self.assertEqual(closest.sum(), len(data))
+                self.assertEqual(sum(dist['nodes']), n_nodes)
+                self.assertEqual(list(closest[:, 0]), p['exact'][k]['class_mix'])
+                self.assertEqual(np.array(dist['mean']).sum(), len(data))
+
     def test_min_cardinality(self):
         self.assertEqual(min_cardinality([3, 1, 1], 4), 2)
         self.assertEqual(min_cardinality([1, 1], 0), 0)
