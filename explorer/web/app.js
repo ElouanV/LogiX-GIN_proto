@@ -597,8 +597,10 @@ function netColumns() {
   for (let l = 0; l < c.num_layers; l++) cols.push({ key: 'L', l, title: `conv ${l}`, sub: `${c.hidden} units`, n: c.hidden });
   if (c.protos.length) {
     const items = [];
-    c.protos.forEach((p, li) => { for (let k = 0; k < p.K; k++) items.push({ li, k }); });
-    cols.push({ key: 'P', title: 'prototypes', sub: c.protos.map(p => `${p.K} ${p.kind}`).join(' + '), n: items.length, items });
+    c.protos.forEach((p, li) => { for (let k = 0; k < p.K; k++) if (!S.hideTrivial || hasCare(li, k)) items.push({ li, k }); });
+    const kinds = c.protos.map((p, li) => `${items.filter(it => it.li === li).length} ${p.kind}`).join(' + ');
+    const hidden = c.protos.reduce((a, p) => a + p.K, 0) - items.length;
+    cols.push({ key: 'P', title: 'prototypes', sub: kinds + (hidden ? ` (${hidden} empty hidden)` : ''), n: items.length, items });
   }
   cols.push({ key: 'R', title: 'readout', sub: `${c.readout.length} pooled`, n: c.readout.length });
   cols.push({ key: 'C', title: 'classes', sub: 'margin Σ − S', n: c.classes.length });
@@ -707,7 +709,9 @@ function renderNetwork() {
     el('button', { class: playing ? 'on' : 'primary', title: 'animate the forward pass layer by layer (space)', onclick: togglePlay }, playing ? '❚❚ pause' : '▶ play forward pass'),
     el('button', { title: 'previous step (←)', onclick: () => stepBy(-1) }, '‹'),
     el('button', { title: 'next step (→)', onclick: () => stepBy(1) }, '›'),
-    S.step !== null ? el('button', { onclick: () => { stopPlay(); refresh(); } }, 'show all') : null));
+    S.step !== null ? el('button', { onclick: () => { stopPlay(); refresh(); } }, 'show all') : null,
+    c.protos.length ? el('label', { class: 'small', title: 'a prototype with no cared bit has similarity 1 on every node: its head literals are constants' },
+      el('input', { type: 'checkbox', checked: S.hideTrivial, onchange: ev => { S.hideTrivial = ev.target.checked; refresh(); } }), ' hide empty prototypes') : null));
   const W = Math.max(box.clientWidth - 24, 640), H = 600, top = 42, bottom = 16;
   const plotH = H - top - bottom;
   const maxN = Math.max(...cols.map(col => col.key === 'C' ? 0 : col.n));
