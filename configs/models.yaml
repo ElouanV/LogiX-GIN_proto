@@ -3,16 +3,17 @@
 # (configs/search_spaces.yaml). The *_sum / *_nosum pairs share their space, so the
 # sum-pooling ablation compares two models tuned the same way.
 #
-# Every student fixes the head saturation (--head_init center --logit_loss of train_logic.py
-# and train_proto.py) since 2026-10-19: results_final/ and results_hps/ runs from before were
-# trained without (their final.json / trials.csv argv say so).
+# Every prototype student fixes the head saturation (--head_init center --logit_loss of
+# train_proto.py) since 2026-10-19: results_final/ and results_hps/ runs from before were
+# trained without (their final.json / trials.csv argv say so). classic / classic_nosum stay
+# upstream: with the fix, 5/7 classic validation runs predicted one class (PROTEINS fold 0
+# included, 0.70 -> 0.50 test bacc).
 classic:
   script: logic                     # train_logic.py (upstream GINTELL, mean | max | sum readout)
-  fixed: {head_init: center, logit_loss: true}
   space: common
 classic_nosum:
   script: logic
-  fixed: {pool_ops: "mean,max", head_init: center, logit_loss: true}     # models_proto/gintell.py GINTELLPool
+  fixed: {pool_ops: "mean,max"}     # models_proto/gintell.py GINTELLPool
   space: common
 node_mask_push:                     # NMP: node prototypes + care mask + push
   script: proto                     # train_proto.py

@@ -45,7 +45,8 @@ class TestHPS(unittest.TestCase):
             if model.startswith('node'):
                 self.assertTrue(args['proto_mask'])
                 self.assertEqual(args['proto_level'], 'node')
-            self.assertEqual((args['head_init'], args['logit_loss']), ('center', True), model)   # head saturation fix
+            fix = (None, False) if model.startswith('classic') else ('center', True)   # head saturation fix, proto only
+            self.assertEqual((args.get('head_init'), args.get('logit_loss', False)), fix, model)
 
     def test_qat_parameters_go_to_run_qat_not_to_the_training_script(self):
         params = some_params('node_mask_push_qat')
