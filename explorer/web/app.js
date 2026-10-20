@@ -102,7 +102,7 @@ const S = {
   src: null, runs: [], run: null, meta: null, card: null, split: 'test', index: null,
   trace: null, adj: null, node: 0, sel: null, hoverLit: null, step: null, timer: null,
   tab: 'predict', filter: 'all', query: '', unitLayer: 0, unitSel: null, unitSort: 'u',
-  protoSort: 'cites', hideTrivial: true, showAllLits: false, showConst: false,
+  protoSort: 'cites', hideTrivial: true, showAllLits: false, showAllFwd: false, showConst: false,
   base: null, edits: null, editMode: false, pending: null, hoverNodes: null,
 };
 
@@ -628,6 +628,22 @@ function protoFlows(cols, li, k, v) {
   }
   return out;
 }
+/* the forward edges of unit (l, u) at node v: the layer l+1 units that read it (through
+   count(u) or count(¬u)), the prototypes with a cared bit on it, the readout columns pooling it */
+function unitFwdFlows(cols, l, u, v) {
+  const c = card(), t = T(), unit = l * c.hidden + u, L = colIndex(cols, 'L', l), out = [];
+  if (l + 1 < c.num_layers)
+    for (let u2 = 0; u2 < c.hidden; u2++) out.push(...unitFlows(cols, l + 1, u2, v).filter(f => f.from[1] === u));
+  c.protos.forEach((p, li) => {
+    for (let k = 0; k < p.K; k++) out.push(...protoFlows(cols, li, k, v).filter(f => f.from[0] === L && f.from[1] === u));
+  });
+  c.readout.forEach((col, j) => {
+    if (col.k !== undefined || col.unit !== unit) return;
+    const cited = litsOfCol(j).some(i => (t.evidence || []).includes(i));
+    out.push({ from: [L, u], to: [colIndex(cols, 'R'), j], w: 0.8, kind: cited ? 'expl' : 'true' });
+  });
+  return out.map(f => ({ ...f, fwd: true }));
+}
 function readoutSource(cols, j) {
   const col = card().readout[j];
   if (col.k === undefined) return [colIndex(cols, 'L', Math.floor(col.unit / card().hidden)), col.unit % card().hidden];
@@ -654,7 +670,7 @@ const allClasses = () => card().classes.map((_, k) => k);
 function flowsForSel(cols) {
   const s = S.sel, v = S.node;
   switch (s.type) {
-    case 'unit': return unitFlows(cols, s.l, s.u, v);
+    case 'unit': return [...unitFlows(cols, s.l, s.u, v), ...unitFwdFlows(cols, s.l, s.u, v)];
     case 'proto': return protoFlows(cols, s.li, s.k, v);
     case 'readout': return [{ from: readoutSource(cols, s.j), to: [colIndex(cols, 'R'), s.j], w: 0.8, kind: 'expl' }, ...headFlows(cols, litsOfCol(s.j), allClasses())];
     case 'headlit': return [{ from: readoutSource(cols, card().head.literals[s.i].col), to: [colIndex(cols, 'R'), card().head.literals[s.i].col], w: 0.8, kind: 'expl' }, ...headFlows(cols, [s.i], allClasses())];
@@ -719,7 +735,7 @@ function renderNetwork() {
     eg.append(sv('path', { class: `e e-${f.kind}` + (f.neg ? ' neg' : '') + (S.step !== null ? ' flow' : ''),
       d: `M${x1},${y1} C${mx},${y1} ${mx},${y2} ${x2},${y2}`, 'stroke-width': ((dense ? 0.4 : 0.6) + (dense ? 1.2 : 2.6) * f.w).toFixed(2),
       style: dense ? { opacity: 0.3 } : null }));
-    if (f.kind === 'expl' || f.kind === 'need1' || f.kind === 'need0' || f.kind === 'miss') chain.add(`${a}:${i}`);
+    if (f.kind === 'expl' || f.kind === 'need1' || f.kind === 'need0' || f.kind === 'miss') chain.add(f.fwd ? `${b}:${j}` : `${a}:${i}`);
   }
   svg.append(eg);
 
@@ -764,6 +780,7 @@ function renderNetwork() {
     el('span', {}, el('i', { style: { background: 'var(--blue)' } }), 'prototype needs 1'),
     el('span', {}, el('i', { style: { background: 'var(--orange)' } }), 'needs 0'),
     el('span', {}, '- - - negated literal (counts NOT u)'),
+    S.sel.type === 'unit' ? el('span', {}, 'selected unit: edges in = what it reads, edges out = what reads it at this node') : null,
     el('span', { class: 'muted' }, 'a unit\'s edge is a count over the node and its neighbours, not the lower unit at this node alone')));
 }
 
@@ -1268,6 +1285,7 @@ function unitInspector(box) {
     ? `Fires because the ${why.length} purple literal${why.length > 1 ? 's' : ''} alone reach S (the fewest true literals that do: exact).`
     : total < S_ ? 'Can never fire: all its weights together stay below S.'
       : `Stays 0 because the ${why.length} purple literal${why.length > 1 ? 's are' : ' is'} false: they weigh ${f2(held)} > Σw − S = ${f2(total - S_)}, so even with every other literal true the sum stays below S (the fewest false literals that guarantee it: exact).`));
+  box.append(el('h3', {}, 'feeds forward'), forwardBlock(l, u, v));
   box.append(el('h3', {}, `literals (${S.showAllLits ? 'all' : 'weight ≥ 3% of max'}) · hover: the nodes counted`),
     el('div', { class: 'muted small' }, 'Plots: the step phi(w·count + b); green = true. Counts are integers, so only the dots matter (filled = true, hollow = false); purple = the count at this node.'),
     litTable(l, u, v),
@@ -1283,6 +1301,58 @@ function unitInspector(box) {
     }
     box.append(el('div', { class: 'muted small' }, 'Each line is a minimal set of literals reaching S; the unit is their OR. Support: share of reference nodes where the set holds.'));
   }
+}
+
+/* what unit (l, u) at node v takes part in: the layer l+1 units of N[v] whose exact reason
+   holds a literal over it (their counts run over N[w], which holds v), the prototypes that
+   care about it and the readout columns pooling it */
+const FWD_SHOWN = 8;
+function forwardBlock(l, u, v) {
+  const c = card(), t = T(), unit = l * c.hidden + u, on = outBit(l, v, u), box = el('div', {});
+  if (l + 1 < c.num_layers) {
+    const conv = c.conv[l + 1], n = conv.n_in, rows = [];
+    let readers = 0;
+    for (let u2 = 0; u2 < c.hidden; u2++) {
+      const W = conv.W[u2], mx = Math.max(...W);
+      if (W[u] >= 0.03 * mx || W[u + n] >= 0.03 * mx) readers++;
+    }
+    for (const w of nbh(v)) for (let u2 = 0; u2 < c.hidden; u2++)
+      for (const i of t.layers[l + 1].why[w][u2] || []) if (i % n === u) rows.push({ w, u2, i, fires: outBit(l + 1, w, u2) });
+    rows.sort((a, b) => (a.w !== v) - (b.w !== v) || b.fires - a.fires || a.u2 - b.u2);
+    box.append(el('div', { class: 'why-line' }, rows.length
+      ? `${rows.length} reason${rows.length > 1 ? 's' : ''} in conv ${l + 1} over ${nodeName(v)} and its neighbours hold a literal on ${unitName(l, u)} (${readers} of its units read it with weight ≥ 3% of their max). ${unitName(l, u)} = ${on ? 1 : 0} here is one of the nodes each such count runs over: flipping it changes the count.`
+      : `No exact reason in conv ${l + 1} over ${nodeName(v)} and its neighbours uses ${unitName(l, u)} (${readers} of its units read it with weight ≥ 3% of their max).`));
+    for (const [fires, title] of [[true, 'helps fire (a true literal of its reason)'], [false, 'keeps at 0 (a false literal of its reason)']]) {
+      const group = rows.filter(r => r.fires === fires);
+      if (!group.length) continue;
+      box.append(el('div', { class: 'muted small' }, `${title}: ${group.length}`));
+      for (const r of S.showAllFwd ? group : group.slice(0, FWD_SHOWN)) {
+        const counted = subjectHolds(l + 1, r.i, v);
+        box.append(el('div', { class: 'rule', style: { cursor: 'pointer' }, title: `click: open ${unitName(l + 1, r.u2)} at ${nodeName(r.w)}`,
+          onclick: () => select({ type: 'unit', l: l + 1, u: r.u2 }, r.w) },
+          el('span', { class: 'sup' }, counted ? `counts ${nodeName(v)}` : `${nodeName(v)} not in the count`),
+          `${unitName(l + 1, r.u2)} at ${nodeName(r.w)}: ${conv.literals[r.i].text}`));
+      }
+    }
+    if (rows.filter(r => r.fires).length > FWD_SHOWN || rows.filter(r => !r.fires).length > FWD_SHOWN)
+      box.append(el('button', { onclick: () => { S.showAllFwd = !S.showAllFwd; renderInspector(); } }, S.showAllFwd ? 'fewer' : 'show all'));
+  }
+  c.protos.forEach((p, li) => {
+    for (let k = 0; k < p.K; k++) for (const d of caredBits(li, k)) {
+      if (p.bit_unit[d] !== unit) continue;
+      const need = p.bits[k][d] === '1', has = protoBitsAt(li, v)[d] >= 0.5;
+      box.append(el('div', { class: 'rule', style: { cursor: 'pointer' }, onclick: () => select({ type: 'proto', li, k }) },
+        el('span', { class: 'sup' }, p.kind === 'node' ? (has === need ? 'matches here' : 'mismatch here') : 'graph prototype'),
+        `${protoName(li, k)} needs ${unitName(l, u)} = ${need ? 1 : 0}`));
+    }
+  });
+  c.readout.forEach((col, j) => {
+    if (col.k === undefined && col.unit === unit)
+      box.append(el('div', { class: 'rule', style: { cursor: 'pointer' }, onclick: () => select({ type: 'readout', j }) },
+        `readout ${col.op}(${unitName(l, u)}) over the graph = ${f2(t.s[j], 3)}`));
+  });
+  if (!box.childNodes.length) box.append(el('div', { class: 'muted' }, 'Nothing downstream reads this unit.'));
+  return box;
 }
 
 function litTable(l, u, v) {
