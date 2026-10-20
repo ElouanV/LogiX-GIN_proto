@@ -5,10 +5,8 @@ mlartifacts/
 mlruns/
 logs/
 
-# datasets (downloaded and processed on first use) and run outputs; the upstream MUTAG
-# files tracked before stay tracked
-/data/*
-!/data/MUTAG/
+# datasets (downloaded and processed on first use) and run outputs
+/data/
 /results/
 /results_*/
 /figures/*/
@@ -27,3 +25,6 @@ __pycache__/
 # build products of deps/ (rebuilt by pip install deps/pygcanl)
 deps/*/build/
 deps/*/*.egg-info/
+
+# local Claude Code settings and skills
+.claude/
