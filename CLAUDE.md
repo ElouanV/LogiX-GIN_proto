@@ -129,7 +129,12 @@ Compute has a carbon cost. Spend it deliberately.
    (rules/unit + fidelity), `explain_proto.py` (prototype-level explanations),
    `binarise_ablation.py` (accuracy with one part binarised at a time: head, trunk, each layer), `interp_metrics.py` (interpretability metrics of the symbolic model: fidelity, explanation
    size per prediction, prototype purity, ground-truth precision where `configs/datasets.yaml` defines a region), to compare methods beside acc/AUC.
-5. Rule-extraction core: `latent_logic.py` (port of `nbs/LayerWiseRules.ipynb`, the
+5. Explorer (`explorer/`, `python -m explorer serve|export`): interactive web view of one run's
+   symbolic model (literal step functions, unit thresholds and per-node reasons, prototypes,
+   head decision, animated forward pass). Read-only; kept apart from the training code. Head
+   literals that are constant on every input are flagged (`SymbolicReader.literal_constant`)
+   and the decision is also explained without them (`evidence`).
+6. Rule-extraction core: `latent_logic.py` (port of `nbs/LayerWiseRules.ipynb`, the
    canonical reading; keep its logic unchanged) and `min_covers.py` (exact DNF of a unit =
    its minimal covers).
 - **Experiments are YAML configs** run by `run_experiment.py <config> run --datasets ...`

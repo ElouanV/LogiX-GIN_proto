@@ -13,6 +13,8 @@ logs/
 # PLEX/ is a separate nested clone (CLAUDE.md)
 /PLEX/
 
+# static explorer pages (python -m explorer export)
+explorer_exports/
 # teacher bundles for other machines (python -m utils.teachers pack)
 bundles/
 # hyper-parameter studies (utils/hps.py)

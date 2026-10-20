@@ -57,6 +57,21 @@ It is possible to train the models using the following commands
 - `nbs/PatternAnalysis.ipynb` allows studying the effects of pruning
 - `nbs/LayerWiseRules.ipynb` allows obtaining layerwise rules of the models
 
+## Explorer: navigate a trained model
+`explorer/` is an interactive web view of a trained LogiX-GIN (prototype or classic). It shows
+the *symbolic* model exactly as `interp_metrics.py` scores it: every literal's step function and
+neighbourhood count, every unit's threshold and its shortest sufficient reason at each node,
+the prototypes' cared bits and matches, and the head's decision, with an animated forward pass.
+It only reads checkpoints; nothing in a run directory is written.
+
+```bash
+python -m explorer serve --root results_final            # browse every run, http://127.0.0.1:8765/
+python -m explorer serve --run "<seed dir>[/qat/<cfg>]"   # one run
+python -m explorer export "<seed dir>" --split test --graphs 40   # self-contained HTML in explorer_exports/
+```
+The first open of a run measures literal ranges, firing rates, rule counts and prototype matches
+on the training split (~10 s on Mutagenicity, CPU). `--ref_max N` caps that pass.
+
 ## Example:
 The repository contains a simple example of a model trained on MUTAG with 2 layers using seed 0. This example was obtained by running the following commands: 
 - `python train_baseline.py --dataset MUTAG --seed 0 --epochs 3000 --batch_size 128 --hidden_dim 32 --num_layers 2 --dropout 0.5 --l2 0.0001 --nogumbel --lr 0.001`
