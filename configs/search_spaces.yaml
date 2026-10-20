@@ -28,3 +28,6 @@ nmp_qat:                            # NMP + QAT fine-tune: qat_<arg> are qat_pro
   qat_lr:             {type: float, low: 1.0e-4, high: 3.0e-3, log: true}
   qat_task_weight:    {type: float, low: 0.3, high: 3.0, log: true}
   qat_distill_weight: {type: categorical, choices: [0.0, 0.3, 1.0]}
+nmp_qat_p8:                         # nmp_qat with at most 8 prototypes (node_mask_push_qat_p8)
+  extends: nmp_qat
+  num_prototypes:     {type: categorical, choices: [4, 8]}
