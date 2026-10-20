@@ -59,6 +59,8 @@ main { padding: 12px 16px 40px; }
 .list { max-height: calc(100vh - 90px); display: flex; flex-direction: column; position: sticky; top: 64px; }
 .list .filters { display: flex; flex-wrap: wrap; gap: 4px; margin-bottom: 6px; }
 .list .filters button { padding: 1px 7px; font-size: 11.5px; }
+.list .filters button .n { color: var(--muted); font-size: 10.5px; }
+.list .filters button.on .n { color: inherit; opacity: .75; }
 .list .rows { overflow-y: auto; flex: 1; border-top: 1px solid var(--line); }
 .grow { display: grid; grid-template-columns: 42px 1fr auto; gap: 4px; padding: 3px 4px; border-bottom: 1px solid var(--line); cursor: pointer; align-items: center; font-size: 12px; }
 .grow:hover { background: var(--hover); }

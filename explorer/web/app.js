@@ -378,13 +378,15 @@ function select(sel, node = null) {
 }
 function setNode(v) { select(S.sel, v); }
 
-const FILTERS = [['all', 'all'], ['wrong', 'rule wrong'], ['unfaithful', 'rule ≠ net'], ['unbacked', 'no rule fires'], ['exported', 'exported']];
+const FILTERS = [['all', 'all', r => true], ['faithful', 'rule = net', r => r.rule === r.net], ['unfaithful', 'rule ≠ net', r => r.rule !== r.net],
+  ['right', 'rule right', r => r.rule === r.y], ['wrong', 'rule wrong', r => r.rule !== r.y], ['unbacked', 'no rule fires', r => !r.backed],
+  ['exported', 'exported', r => S.src.has(S.split, r.i)]];
 function rowKind(r) { return r.rule !== r.net ? 'unfaithful' : !r.backed ? 'unbacked' : r.rule === r.y ? 'correct' : 'wrong'; }
 
 function renderList() {
   const box = clear($('list'));
-  const filters = el('div', { class: 'filters' }, FILTERS.filter(([k]) => k !== 'exported' || S.src.kind === 'bundle').map(([k, label]) =>
-    el('button', { class: S.filter === k ? 'on' : '', onclick: () => { S.filter = k; renderList(); } }, label)));
+  const filters = el('div', { class: 'filters' }, FILTERS.filter(([k]) => k !== 'exported' || S.src.kind === 'bundle').map(([k, label, keep]) =>
+    el('button', { class: S.filter === k ? 'on' : '', onclick: () => { S.filter = k; renderList(); } }, label, el('span', { class: 'n' }, ` ${S.index.rows.filter(keep).length}`))));
   const q = el('input', { type: 'search', placeholder: 'graph # or class', value: S.query, oninput: ev => { S.query = ev.target.value; drawRows(); } });
   const rows = el('div', { class: 'rows' });
   box.append(el('h2', {}, `${S.split} graphs`), q, filters, rows);
@@ -394,10 +396,7 @@ function renderList() {
     let shown = 0;
     for (const r of S.index.rows) {
       const kind = rowKind(r);
-      if (S.filter === 'wrong' && r.rule === r.y) continue;
-      if (S.filter === 'unfaithful' && kind !== 'unfaithful') continue;
-      if (S.filter === 'unbacked' && r.backed) continue;
-      if (S.filter === 'exported' && !S.src.has(S.split, r.i)) continue;
+      if (!(FILTERS.find(f => f[0] === S.filter) || FILTERS[0])[2](r)) continue;
       if (qq && !(String(r.i) === qq || className(r.y).toLowerCase().includes(qq))) continue;
       if (++shown > 1500) break;
       const sel = T() && T().split === S.split && T().i === r.i;
@@ -549,11 +548,12 @@ function renderDecision() {
       sv('rect', { x: m >= 0 ? zero : zero - w, y: y + 4, width: Math.max(w, 1), height: rowH - 9, rx: 2,
         fill: m >= 0 ? (k === t.rule ? 'var(--accent)' : 'var(--ink2)') : 'var(--muted)' }),
       sv('text', { x: m >= 0 ? zero + w + 4 : zero + 4, y: y + 14, class: 'mono', style: { fontSize: '11px' } }, sgn(m)));
-    hoverTip(g, `class ${className(k)}: margin Σ w·lit − S = ${sgn(m)}\n≥ 0: its rule fires. Click: the threshold view.`);
+    hoverTip(g, `class ${className(k)}: Σ w·lit = ${f2(m + c.head.S[k], 3)}, threshold S = ${f2(c.head.S[k], 3)}\nmargin = Σ − S = ${sgn(m)}; ≥ 0: its rule fires. Click: the threshold view.`);
     msvg.append(g);
   });
   msvg.append(sv('line', { x1: zero, x2: zero, y1: 0, y2: rowH * c.classes.length + 4, stroke: 'var(--line)' }));
-  box.append(msvg);
+  box.append(el('div', { class: 'small muted' }, 'margin = Σ w·lit − S: the bar is how far each class is above (right) or below (left) its own threshold, not the sum itself. ',
+    c.classes.map((_, k) => `${className(k)}: Σ ${f2(t.margin[k] + c.head.S[k])} vs S ${f2(c.head.S[k])}`).join(' · ')), msvg);
   // explanation: constant literals counted as a bias, then the input-dependent evidence
   const W_ = c.head.W[t.rule], S_ = c.head.S[t.rule];
   const bias = c.head.literals.reduce((acc, lit, i) => acc + (lit.constant === true ? W_[i] : 0), 0);
@@ -598,7 +598,7 @@ function netColumns() {
     cols.push({ key: 'P', title: 'prototypes', sub: c.protos.map(p => `${p.K} ${p.kind}`).join(' + '), n: items.length, items });
   }
   cols.push({ key: 'R', title: 'readout', sub: `${c.readout.length} pooled`, n: c.readout.length });
-  cols.push({ key: 'C', title: 'classes', sub: 'margins', n: c.classes.length });
+  cols.push({ key: 'C', title: 'classes', sub: 'margin Σ − S', n: c.classes.length });
   return cols;
 }
 const colIndex = (cols, key, l) => cols.findIndex(c => c.key === key && (l === undefined || c.l === l));
@@ -1116,7 +1116,7 @@ function histChart({ series, labels, marker = null, markerText = '', trueAt = nu
       g.append(bar);
     });
     const step = Math.ceil(n / 12);
-    if (i % step === 0 || i === n - 1) g.append(sv('text', { x: X(i) + bw / 2, y: height - padB + 11, 'text-anchor': 'middle' }, labels[i]));
+    if (i % step === 0 || (i === n - 1 && i % step >= step / 2)) g.append(sv('text', { x: X(i) + bw / 2, y: height - padB + 11, 'text-anchor': 'middle' }, labels[i]));
   }
   g.append(sv('line', { class: 'axis', x1: padL, x2: width - padR, y1: Y(0), y2: Y(0) }),
     sv('text', { x: padL + (width - padL - padR) / 2, y: height - 4, 'text-anchor': 'middle', class: 'xt' }, xTitle));
@@ -1160,20 +1160,23 @@ function protoAgreement(li, k, { width = 360, compact = false } = {}) {
   const sim = m => p.masked ? Math.exp(-m / p.T) : 1 - m / Math.max(d, 1);
   const mmax = here && card().protos[li].kind === 'node' ? Math.round(Math.min(...T().protos[li].mism.map(r => r[k]))) : null;
   const litMax = literalOn(li, k, 'max');
-  out.append(el('div', { class: 'small muted' }, `${c.ref_split} graphs by the mismatches m* of their closest node (what "max sim" reads), share of each class`),
-    histChart({ series: series(dist.closest), labels: lab, xTitle: `m* (of ${d} cared bits)`, width, height: compact ? 90 : 120,
+  const simKey = p.masked ? `m = mismatches on the ${d} cared bits; similarity = exp(−m / T), T = ${f2(p.T)}: m = 0 → 1, ${[1, 2, 3].map(m => `${m} → ${f2(sim(m), 2)}`).join(', ')}.`
+    : `m = mismatches on the ${d} bits; similarity = 1 − m / ${d}.`;
+  if (!compact) out.append(el('div', { class: 'small', style: { marginBottom: '4px' } }, simKey));
+  out.append(el('div', { class: 'small muted' }, `${c.ref_split} graphs by m* = the fewest mismatches over their nodes (the closest node; what "max sim" reads). m* = 0: the graph contains an exact match, max sim = 1. Share of each class`),
+    histChart({ series: series(dist.closest), labels: lab, xTitle: `m* = min over nodes of m (of ${d} cared bits)`, width, height: compact ? 90 : 120,
       marker: mmax, markerText: 'this graph', trueAt: litMax === null ? null : m => literalTrueAt(litMax, sim(m)) }));
   if (compact) return out;
   const litMean = literalOn(li, k, 'mean');
   const meanHere = here ? T().s[c.readout.findIndex(r => r.proto_layer === li && r.k === k && r.op === 'mean')] : null;
   const [lo, hi] = dist.mean_range || [0, 1], bw = Math.max(hi - lo, 1e-9) / dist.bins;
   const at = v => Math.max(0, Math.min(dist.bins - 1, Math.floor((v - lo) / bw)));
-  out.append(el('div', { class: 'small muted', style: { marginTop: '8px' } }, `${c.ref_split} graphs by the mean similarity of their nodes (what "mean sim" reads; observed range ${f2(lo, 3)}–${f2(hi, 3)})`),
+  out.append(el('div', { class: 'small muted', style: { marginTop: '8px' } }, `${c.ref_split} graphs by the similarity averaged over all their nodes (what "mean sim" reads; observed range ${f2(lo, 3)}–${f2(hi, 3)}). It is 1 only if every node matches; a graph with one exact node among 20 gets about 0.05, so this stays far below 1 even where max sim is 1.`),
     histChart({ series: series(dist.mean), labels: [...Array(dist.bins).keys()].map(b => f2(lo + b * bw, 3)), xTitle: 'mean similarity', width,
       marker: meanHere === null || meanHere === undefined ? null : at(meanHere), markerText: 'this graph',
       trueAt: litMean === null ? null : b => literalTrueAt(litMean, lo + (b + 0.5) * bw) }));
   const mv = here ? Math.round(protoMism(li, k)) : null;
-  out.append(el('div', { class: 'small muted', style: { marginTop: '8px' } }, `every ${c.ref_split} node by its mismatches with ${protoName(li, k)} (${c.ref_nodes} nodes)`),
+  out.append(el('div', { class: 'small muted', style: { marginTop: '8px' } }, `every ${c.ref_split} node by its own mismatches m with ${protoName(li, k)} (${c.ref_nodes} nodes; m = 0 is an exact match)`),
     histChart({ series: [{ name: 'nodes', color: 'var(--ink2)', counts: dist.nodes }], labels: lab, xTitle: 'mismatches m', width, normalise: false,
       marker: mv, markerText: nodeName(S.node) }));
   return out;
@@ -1351,7 +1354,7 @@ function classInspector(box, k = null, compact = false) {
   const c = card(), t = T(), W = c.head.W[k], S_ = c.head.S[k];
   const expl = k === t.rule ? (t.evidence || []) : [];
   if (!compact) box.append(el('div', { class: 'ihead' }, el('span', { class: 'big' }, `class ${className(k)}`),
-    el('span', { class: 'muted' }, `margin ${sgn(t.margin[k])}${k === t.rule ? ' · predicted' : ''}`)));
+    el('span', { class: 'muted' }, `Σ w·lit ${f2(t.margin[k] + S_, 3)} vs S ${f2(S_, 3)}: margin ${sgn(t.margin[k])}${k === t.rule ? ' · predicted' : ''}`)));
   box.append(el('dl', { class: 'kv' },
     el('dt', {}, 'rule'), el('dd', {}, `Σ w·lit ≥ S = ${f2(S_, 3)} over ${W.length} head literals`),
     el('dt', {}, 'shortest rule'), el('dd', {}, c.head.min_card[k] === null ? 'never fires' : `${c.head.min_card[k]} literals`),
