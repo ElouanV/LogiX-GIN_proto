@@ -1116,7 +1116,7 @@ function histChart({ series, labels, marker = null, markerText = '', trueAt = nu
       g.append(bar);
     });
     const step = Math.ceil(n / 12);
-    if (i % step === 0 || (i === n - 1 && i % step >= step / 2)) g.append(sv('text', { x: X(i) + bw / 2, y: height - padB + 11, 'text-anchor': 'middle' }, labels[i]));
+    if (i % step === 0 || (i === n - 1 && i % step >= 0.8 * step)) g.append(sv('text', { x: X(i) + bw / 2, y: height - padB + 11, 'text-anchor': 'middle' }, labels[i]));
   }
   g.append(sv('line', { class: 'axis', x1: padL, x2: width - padR, y1: Y(0), y2: Y(0) }),
     sv('text', { x: padL + (width - padL - padR) / 2, y: height - 4, 'text-anchor': 'middle', class: 'xt' }, xTitle));
@@ -1156,16 +1156,20 @@ function protoAgreement(li, k, { width = 360, compact = false } = {}) {
         trueAt: lit === null ? null : b => literalTrueAt(lit, (b + 0.5) / dist.bins) }));
     return out;
   }
-  const d = dist.d, lab = [...Array(d + 1).keys()].map(String);
-  const sim = m => p.masked ? Math.exp(-m / p.T) : 1 - m / Math.max(d, 1);
+  // bins are indexed by mismatches m = 0..d; the charts run by agreement a = 1 − m/d (utils/agreement.py), so bin i is m = d − i
+  const d = dist.d, D = Math.max(d, 1), byAgree = counts => [...counts].reverse();
+  const lab = [...Array(d + 1).keys()].map(i => f2(i / D, 2));
+  const sim = m => p.masked ? Math.exp(-m / p.T) : 1 - m / D;
   const mmax = here && card().protos[li].kind === 'node' ? Math.round(Math.min(...T().protos[li].mism.map(r => r[k]))) : null;
   const litMax = literalOn(li, k, 'max');
-  const simKey = p.masked ? `m = mismatches on the ${d} cared bits; similarity = exp(−m / T), T = ${f2(p.T)}: m = 0 → 1, ${[1, 2, 3].map(m => `${m} → ${f2(sim(m), 2)}`).join(', ')}.`
-    : `m = mismatches on the ${d} bits; similarity = 1 − m / ${d}.`;
-  if (!compact) out.append(el('div', { class: 'small', style: { marginBottom: '4px' } }, simKey));
-  out.append(el('div', { class: 'small muted' }, `${c.ref_split} graphs by m* = the fewest mismatches over their nodes (the closest node; what "max sim" reads). m* = 0: the graph contains an exact match, max sim = 1. Share of each class`),
-    histChart({ series: series(dist.closest), labels: lab, xTitle: `m* = min over nodes of m (of ${d} cared bits)`, width, height: compact ? 90 : 120,
-      marker: mmax, markerText: 'this graph', trueAt: litMax === null ? null : m => literalTrueAt(litMax, sim(m)) }));
+  const sep = separation(dist.closest);
+  const key = p.masked
+    ? `agreement a = share of the ${d} cared bits a node matches (m mismatches: a = 1 − m/${d}), as in agreement.png of the training run. The model itself reads the similarity exp(−m / T), T = ${f2(p.T)}: a = 1 → 1, ${[1, 2, 3].filter(m => m <= d).map(m => `a = ${f2(1 - m / D, 2)} → ${f2(sim(m), 2)}`).join(', ')}; the green zone is where the head literal is true.`
+    : `agreement a = share of the ${d} bits a node matches; for an unmasked prototype it is also the similarity the model reads.`;
+  if (!compact) out.append(el('div', { class: 'small', style: { marginBottom: '4px' } }, key));
+  out.append(el('div', { class: 'small muted' }, `${c.ref_split} graphs by the agreement of their best node (what "max sim" reads). 1: the graph contains an exact match. Share of each class${sep === null ? '' : `; separation ${f2(sep, 3)}`}`),
+    histChart({ series: series(dist.closest.map(byAgree)), labels: lab, xTitle: `agreement of the best node (of ${d} cared bits)`, width, height: compact ? 90 : 120,
+      marker: mmax === null ? null : d - mmax, markerText: 'this graph', trueAt: litMax === null ? null : i => literalTrueAt(litMax, sim(d - i)) }));
   if (compact) return out;
   const litMean = literalOn(li, k, 'mean');
   const meanHere = here ? T().s[c.readout.findIndex(r => r.proto_layer === li && r.k === k && r.op === 'mean')] : null;
@@ -1176,10 +1180,26 @@ function protoAgreement(li, k, { width = 360, compact = false } = {}) {
       marker: meanHere === null || meanHere === undefined ? null : at(meanHere), markerText: 'this graph',
       trueAt: litMean === null ? null : b => literalTrueAt(litMean, lo + (b + 0.5) * bw) }));
   const mv = here ? Math.round(protoMism(li, k)) : null;
-  out.append(el('div', { class: 'small muted', style: { marginTop: '8px' } }, `every ${c.ref_split} node by its own mismatches m with ${protoName(li, k)} (${c.ref_nodes} nodes; m = 0 is an exact match)`),
-    histChart({ series: [{ name: 'nodes', color: 'var(--ink2)', counts: dist.nodes }], labels: lab, xTitle: 'mismatches m', width, normalise: false,
-      marker: mv, markerText: nodeName(S.node) }));
+  out.append(el('div', { class: 'small muted', style: { marginTop: '8px' } }, `every ${c.ref_split} node by its own agreement with ${protoName(li, k)} (${c.ref_nodes} nodes; 1 is an exact match)`),
+    histChart({ series: [{ name: 'nodes', color: 'var(--ink2)', counts: byAgree(dist.nodes) }], labels: lab, xTitle: 'agreement of the node', width, normalise: false,
+      marker: mv === null ? null : d - mv, markerText: nodeName(S.node) }));
   return out;
+}
+
+/* utils/agreement.separation from per-class histograms over the same bins:
+   max over classes of |2·AUC(class vs rest) − 1| (ties count one half), null with one class */
+function separation(counts) {
+  const present = counts.filter(cs => cs.some(n => n > 0));
+  if (present.length < 2) return null;
+  let best = 0;
+  for (const cs of present) {
+    const rest = cs.map((_, b) => counts.reduce((a, o) => a + o[b], 0) - cs[b]);
+    const nc = cs.reduce((a, b) => a + b, 0), nr = rest.reduce((a, b) => a + b, 0);
+    let below = 0, auc = 0;
+    cs.forEach((n, b) => { auc += n * (below + rest[b] / 2); below += rest[b]; });
+    best = Math.max(best, Math.abs(2 * auc / (nc * nr) - 1));
+  }
+  return best;
 }
 
 function mixText(mix) {
@@ -1289,7 +1309,8 @@ function protoInspector(box) {
   box.append(el('div', { class: 'ihead' }, el('span', { class: 'big' }, name), el('span', { class: 'muted' }, `${p.kind} prototype · ${cared.length} cared bit${cared.length === 1 ? '' : 's'} of ${p.d}`)),
     p.kind === 'node' ? nodeHeader() : el('div', { class: 'muted small' }, 'compared with the pooled trunk of the whole graph'));
   box.append(el('dl', { class: 'kv' },
-    el('dt', {}, 'similarity'), el('dd', {}, `${f2(sim, 3)}${p.masked ? ` = exp(−${f2(protoMism(li, k), 2)} / T), T = ${f2(p.T)}` : ' (Hamming agreement)'}`),
+    el('dt', {}, 'agreement'), el('dd', {}, cared.length ? `${f2(1 - protoMism(li, k) / cared.length, 3)} (${cared.length - Math.round(protoMism(li, k))} of ${cared.length} cared bits match)` : '1 (no cared bit)'),
+    el('dt', {}, 'similarity'), el('dd', {}, `${f2(sim, 3)}${p.masked ? ` = exp(−${f2(protoMism(li, k), 2)} / T), T = ${f2(p.T)}: what the model reads` : ' (Hamming agreement, what the model reads)'}`),
     p.kind === 'node' ? el('dt', {}, 'best node') : null,
     p.kind === 'node' ? el('dd', {}, (() => { const b = bestNode(k, li); return el('a', { href: '#', onclick: ev => { ev.preventDefault(); setNode(b); } }, `${nodeName(b)} (${f2(protoSim(li, k, b), 3)})`); })()) : null,
     el('dt', {}, `exact on ${c.ref_split}`), el('dd', {}, `${p.exact[k].graphs} graphs contain an exact match${mixText(p.exact[k].class_mix)}`, mixBar(p.exact[k].class_mix))));
