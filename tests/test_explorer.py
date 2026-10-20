@@ -249,6 +249,36 @@ class TestCard(unittest.TestCase):
                 self.assertEqual(list(closest[:, 0]), p['exact'][k]['class_mix'])
                 self.assertEqual(np.array(dist['mean']).sum(), len(data))
 
+    def test_class_rules_are_the_head_rule(self):
+        """A complete class-rule list holds on a graph iff the class's head rule fires, also on
+        graphs outside the reference set; every listed rule is minimal. The thresholds are
+        raised so the input-dependent literals decide (at init the constants already reach S)."""
+        checked = 0
+        for name, model in models().items():
+            with self.subTest(model=name):
+                rd = SymbolicReader(model.eval(), 'Mutagenicity')
+                for k in range(rd.n_classes):
+                    W, c = rd.W_head[k], np.array([v for v in rd.head_const], dtype=object)
+                    rd.S_head[k] = W[c == True].sum() + 0.3 * W[c == None].sum()  # noqa: E711, E712
+                card = rd.card(graphs(12, seed=1))
+                X = rd.run_batch(Batch.from_data_list(graphs(40, seed=7)))['head_lit'].cpu().numpy().astype(bool)
+                for k, cr in enumerate(card['head']['class_rules']):
+                    fires = X.astype(float) @ rd.W_head[k] >= rd.S_head[k] - 1e-9
+                    if cr.get('always'):
+                        self.assertTrue(fires.all())
+                        continue
+                    for r in cr['rules']:
+                        w = rd.W_head[k][r['lits']]
+                        self.assertGreaterEqual(w.sum(), cr['need'] - 1e-3)
+                        self.assertLess(w.sum() - w.min(), cr['need'] + 1e-3)
+                    if cr['complete'] and cr['n_rules'] == len(cr['rules']):
+                        held = np.zeros(len(X), bool)
+                        for r in cr['rules']:
+                            held |= X[:, r['lits']].all(1)
+                        np.testing.assert_array_equal(held, fires)
+                        checked += cr['n_rules'] > 1
+        self.assertGreater(checked, 0)
+
     def test_min_cardinality(self):
         self.assertEqual(min_cardinality([3, 1, 1], 4), 2)
         self.assertEqual(min_cardinality([1, 1], 0), 0)

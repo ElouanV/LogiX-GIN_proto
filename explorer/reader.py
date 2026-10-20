@@ -42,6 +42,8 @@ RULES_SHOWN = 8           # data-simplified rules listed per unit and polarity
 RULES_EXHAUSTIVE = 300    # formal rules above which a unit is read by its shortest rule per observed pattern
 TOP_MATCHES = 6           # best-matching reference nodes / graphs listed per prototype
 L0_RULES = 8              # observed rules listed per layer-0 unit
+CLASS_RULES_ENUM = 2000   # class rules enumerated before falling back to the observed ones
+CLASS_RULES_SHOWN = 40    # class rules kept per class (most supported first)
 
 
 def bits(row):
@@ -255,7 +257,7 @@ class SymbolicReader:
         on = [0.0] * self.L
         l0_rows, n_nodes = [], 0
         head_lo = head_hi = None
-        node_sims, graph_sims, node_where, graph_y = [], [], [], []
+        node_sims, graph_sims, node_where, graph_y, head_bits = [], [], [], [], []
         g0 = 0
         for data in loader:
             st = self.run_batch(data)
@@ -273,6 +275,7 @@ class SymbolicReader:
             local = torch.cat([torch.arange(int(k)) for k in torch.bincount(b, minlength=data.num_graphs)])
             node_where.append(torch.stack([b + g0, local], 1))
             graph_y.append(data.y.view(-1).cpu())
+            head_bits.append(st['head_lit'].cpu().numpy().astype(bool))
             for li, p in enumerate(st['protos']):
                 (node_sims if self.proto_kind(li) == 'node' else graph_sims).append((li, p['sim'].cpu(), p['mism'].cpu()))
             g0 += data.num_graphs
@@ -337,6 +340,8 @@ class SymbolicReader:
         head = self._head_card(head_lo.cpu().numpy(), head_hi.cpu().numpy())
         mc, nc = rule_stats(self.W_head, self.S_head)
         head.update({'W': rnd(self.W_head, 4), 'S': rnd(self.S_head, 4), 'min_card': mc, 'n_covers': nc})
+        head['class_rules'] = [self.class_rules(k, head['literals'], np.vstack(head_bits), graph_y.numpy())
+                               for k in range(self.n_classes)]
         return {'level': self.level, 'model_class': type(m).__name__, 'dataset': self.dataset,
                 'num_layers': self.L, 'hidden': self.h, 'features': self.features, 'classes': self.classes,
                 'ground_truth': None if self.spec.ground_truth is None else
@@ -461,6 +466,95 @@ class SymbolicReader:
                          'intervals': [list(v) for v in ivs], 's_intervals': [list(v) for v in s_ivs],
                          'phi_w': round(float(w[i]), 5), 'phi_b': round(float(b[i]), 5)})
         return {'literals': lits, 'phi_tau': getattr(phi, 'tau', None) or 0}
+
+    def class_rules(self, k, lits, X, y):
+        """The rules over the readout that make class k's head rule fire, exactly.
+
+        The always-true literals are counted in (a bias b) and the never-true ones dropped, so
+        the class fires iff its true input-dependent literals reach S' = S - b: its rules are
+        the minimal covers of S' by their weights that can hold together (no two literals
+        asking one readout column for disjoint values, no mean above its max: a set that
+        cannot hold is pruned with all its supersets during the search). Each rule gets its
+        support on the reference split (graphs where all its literals are true, ``X``
+        [G x literals]) and its class mix.
+
+        A head with hundreds of input-dependent literals (classic models) has far more rules
+        than CLASS_RULES_ENUM; the search then stops (``complete`` False) and the rules shown
+        are the observed ones instead: the evidence (shortest sufficient set) of every
+        reference graph where the class fires, deduplicated. Each is a real minimal rule;
+        rules that fire on no reference graph are then not listed."""
+        W, S = self.W_head[k].astype(np.float64), float(self.S_head[k])
+        const = self.head_const
+        bias = float(sum(W[i] for i, v in enumerate(const) if v is True))
+        free = [i for i, v in enumerate(const) if v is None and W[i] > 0]
+        need = S - bias
+        cols = self.readout_layout()
+        out = {'bias': round(bias, 4), 'S': round(S, 4), 'need': round(need, 4), 'free': len(free),
+               'rules': [], 'complete': True}
+        if need <= 0:
+            out['always'] = True
+            return out
+        found = []
+        for idx in self._feasible_covers(W, need, free, lits, cols):
+            if len(found) >= CLASS_RULES_ENUM:
+                out['complete'] = False
+                found = sorted({tuple(sorted(e)) for e in (self.evidence(k, row) for row in X) if e})
+                break
+            found.append(idx)
+        rules = []
+        for idx in found:
+            idx = list(idx)
+            hold = X[:, idx].all(1)
+            rules.append({'lits': idx, 'support': int(hold.sum()),
+                          'mix': np.bincount(y[hold], minlength=self.n_classes).tolist()})
+        out['n_rules'] = len(rules)
+        rules.sort(key=lambda r: (-r['support'], len(r['lits'])))
+        out['rules'] = rules[:CLASS_RULES_SHOWN]
+        out['covered'] = int(np.any([X[:, r['lits']].all(1) for r in rules], 0).sum()) if rules else 0
+        return out
+
+    def _feasible_covers(self, W, need, free, lits, cols):
+        """iter_min_covers(W[free], need) restricted to literal sets that can hold together.
+        Heaviest first; a cover is minimal because its last (lightest) literal crosses need."""
+        order = sorted(free, key=lambda i: -W[i])
+        w = [float(W[i]) for i in order]
+        suffix = np.concatenate([np.cumsum(w[::-1])[::-1], [0.0]]).tolist()   # most the rest can add
+        path = []
+
+        def grow(j, total):
+            for q in range(j, len(order)):
+                if total + suffix[q] < need:
+                    return
+                path.append(order[q])
+                if self._feasible([lits[i] for i in path], cols):
+                    if total + w[q] >= need:
+                        yield list(path)
+                    else:
+                        yield from grow(q + 1, total + w[q])
+                path.pop()
+        return grow(0, 0.0)
+
+    @staticmethod
+    def _feasible(lits, cols):
+        """False if the literals ask one readout column for disjoint values, or a node
+        pooled value's mean above anything its max can be."""
+        span = {}
+        for lit in lits:
+            ivs = lit['s_intervals']
+            if lit['col'] in span:
+                ivs = [(max(a, c), min(b, d)) for a, b in span[lit['col']] for c, d in ivs if max(a, c) <= min(b, d)]
+            if not ivs:
+                return False
+            span[lit['col']] = ivs
+        what = lambda o: (o.get('proto_layer'), o.get('k'), o.get('unit'))      # the pooled quantity
+        for c, ivs in span.items():
+            col = cols[c]
+            if col.get('op') != 'mean':
+                continue
+            twin = next((j for j, o in enumerate(cols) if o.get('op') == 'max' and what(o) == what(col)), None)
+            if twin is not None and twin in span and min(a for a, _ in ivs) > max(b for _, b in span[twin]):
+                return False
+        return True
 
     @staticmethod
     def _mismatch_text(k, ms, d):

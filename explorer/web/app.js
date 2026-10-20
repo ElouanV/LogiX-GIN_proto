@@ -1381,8 +1381,9 @@ function classInspector(box, k = null, compact = false) {
     el('span', { class: 'muted' }, `Σ w·lit ${f2(t.margin[k] + S_, 3)} vs S ${f2(S_, 3)}: margin ${sgn(t.margin[k])}${k === t.rule ? ' · predicted' : ''}`)));
   box.append(el('dl', { class: 'kv' },
     el('dt', {}, 'rule'), el('dd', {}, `Σ w·lit ≥ S = ${f2(S_, 3)} over ${W.length} head literals`),
-    el('dt', {}, 'shortest rule'), el('dd', {}, c.head.min_card[k] === null ? 'never fires' : `${c.head.min_card[k]} literals`),
-    el('dt', {}, 'minimal rules'), el('dd', {}, `≈ ${sci(c.head.n_covers[k])}`)));
+    el('dt', {}, 'shortest rule'), el('dd', {}, c.head.min_card[k] === null ? 'never fires' : `${c.head.min_card[k]} literals, constants included`),
+    el('dt', {}, 'minimal rules'), el('dd', {}, `≈ ${sci(c.head.n_covers[k])} over all ${W.length} literals`)));
+  if (c.head.class_rules) box.append(el('h3', {}, `rules over the readout that make ${className(k)} fire`), classRulesBlock(k, compact ? 3 : null));
   const items = W.map((w, i) => ({ w, state: expl.includes(i) ? 'expl' : c.head.literals[i].constant === true ? 'const' : t.head_lit[i] === '1' ? 'true' : 'false', label: c.head.literals[i].text, onclick: () => select({ type: 'headlit', i }) })).filter(it => it.w > 0);
   box.append(el('h3', {}, 'threshold'), thresholdBar(items, S_),
     el('div', { class: 'muted small' }, 'purple: the evidence (fewest input-dependent literals) · hatched grey: always-true literals (a bias) · grey: other true literals'));
@@ -1398,6 +1399,39 @@ function classInspector(box, k = null, compact = false) {
       el('td', {}, el('span', { class: 'tf ' + (on ? 't' : 'f') }, on ? 'T' : 'F'))));
   }
   box.append(tb);
+}
+
+/* class k's head rule as a DNF over the readout (reader.class_rules), each rule checked on this graph */
+function classRulesBlock(k, limit = null) {
+  const c = card(), t = T(), cr = c.head.class_rules[k], box = el('div', { class: 'rulesblock' });
+  const nConst = c.head.literals.filter(l => l.constant === true).length;
+  if (cr.always) {
+    box.append(el('div', {}, `The ${nConst} always-true literals already give ${f2(cr.bias)} ≥ S = ${f2(cr.S)}: this class rule fires on every graph, whatever the readout.`));
+    return box;
+  }
+  const holds = r => r.lits.every(i => t.head_lit[i] === '1');
+  box.append(el('div', { class: 'small' },
+    `${nConst} always-true literals give ${f2(cr.bias)} of S = ${f2(cr.S)}, so the ${cr.free} input-dependent literals must add ${f2(cr.need)}. `,
+    cr.complete ? el('b', {}, `${className(k)} fires iff one of these ${cr.n_rules} rules holds (exact, all of them):`)
+      : el('span', {}, `That has too many rules to list (over 2000); these are the ${cr.n_rules} distinct ones observed on ${c.ref_split} (each graph's shortest), most frequent first:`)));
+  if (!cr.n_rules) box.append(el('div', { class: 'muted' }, 'no combination of literals can reach it: this class rule never fires.'));
+  const all = S.allClassRules || limit === null && cr.rules.length <= 8 ? cr.rules : cr.rules.slice(0, limit || 8);
+  for (const r of all) {
+    const here = holds(r), tot = r.mix.reduce((a, b) => a + b, 0);
+    const line = el('div', { class: 'rule crule' + (here ? ' here' : '') },
+      el('span', { class: here ? 'tok' : 'muted', title: here ? 'holds on this graph' : 'does not hold on this graph' }, here ? '✓' : '·'),
+      el('span', { class: 'lits' }, ...r.lits.flatMap((i, j) => [j ? el('span', { class: 'muted' }, ' ∧ ') : null,
+        el('a', { href: '#', class: t.head_lit[i] === '1' ? '' : 'isfalse', title: `weight ${f2(c.head.W[k][i])} · ${c.head.literals[i].what} = ${f2(t.s[c.head.literals[i].col], 3)} here`,
+          onclick: ev => { ev.preventDefault(); select({ type: 'headlit', i }); } }, c.head.literals[i].text)])),
+      el('span', { class: 'sup' }, `${c.ref_split}: ${r.support} graph${r.support === 1 ? '' : 's'}${tot ? ` · ${pct(r.mix[k] / tot, 0)} ${className(k)}` : ''}`),
+      tot ? mixBar(r.mix) : null);
+    box.append(line);
+  }
+  if (cr.rules.length > all.length || S.allClassRules) box.append(el('button', { onclick: () => { S.allClassRules = !S.allClassRules; renderInspector(); } },
+    S.allClassRules ? 'show fewer' : `show all ${cr.rules.length}${cr.n_rules > cr.rules.length ? ` most frequent of ${cr.n_rules}` : ''}`));
+  box.append(el('div', { class: 'muted small' }, `✓: holds on this graph · literals in grey are false here · the share is the true class mix of the ${c.ref_split} graphs where the rule holds. ` +
+    `Two classes can both fire; the prediction is the larger margin Σ − S.` + (cr.complete ? ` Rule sets whose literals ask one readout value for disjoint ranges were dropped (they can never hold).` : '')));
+  return box;
 }
 
 // ------------------------------------------------------------------ prototypes tab

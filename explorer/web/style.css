@@ -239,3 +239,8 @@ svg text { fill: var(--ink); font-family: system-ui, sans-serif; }
 .tleaf.muted .tline { color: var(--muted); }
 .rulesblock .rhead { margin: 6px 0 2px; font-size: 12px; }
 .rule.here { box-shadow: inset 3px 0 0 var(--good); }
+.crule { display: grid; grid-template-columns: 14px 1fr; gap: 2px 6px; align-items: baseline; }
+.crule .sup, .crule .mix { grid-column: 2; }
+.crule .sup { float: none; }
+.crule .lits a { color: inherit; text-decoration: none; border-bottom: 1px dotted var(--muted); }
+.crule .lits a.isfalse { color: var(--muted); }
