@@ -31,11 +31,13 @@ The trunk is shape-identical to models.model.GINTELL (same state-dict keys
 under `convs`), so the layer-wise distillation of train_logic.py applies to it
 unchanged; the prototype layer(s) have no teacher counterpart.
 """
+import math
+
 import torch
 from torch import nn
 from torch_geometric.nn import GINConv, global_mean_pool, global_max_pool, global_add_pool
 
-from models_proto.tell import LogicalLayer, Phi, quant_noise, sharpen
+from models_proto.tell import BoundedPhi, LogicalLayer, Phi, quant_noise, sharpen
 from models_proto.proto import PrototypeLayer
 
 POOLS = {'mean': global_mean_pool, 'max': global_max_pool, 'sum': global_add_pool}
@@ -214,6 +216,15 @@ class GINTELLProtoBase(nn.Module):
         """True with sum pooling at node level: the head is then not [s, 1 - s]."""
         b = getattr(self, '_bounded', None)
         return b is not None and not bool(b.all())
+
+    def bound_head(self, max_slope=math.pi):
+        """--head_phi bounded: the head's literals become thresholds x >= t (tell.BoundedPhi).
+        Needs a head input in [0, 1]: not with a node-level sum readout (unbounded counts)."""
+        if self.task != 'classification':
+            raise ValueError('bounded head literals: classification heads only')
+        if self.has_unbounded_readout:
+            raise ValueError('bounded head literals need a readout in [0, 1] (no node-level sum pooling)')
+        self.fc.phi_in = BoundedPhi(self.fc.in_features, max_slope).to(self.fc.b.device)
 
     def head_columns(self):
         """Per head literal: (readout column, positive?), in head_input's order."""

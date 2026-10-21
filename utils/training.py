@@ -96,6 +96,22 @@ def center_head(teacher, fc, loader, device, head_input):
     return shift
 
 
+def center_head_thresholds(teacher, fc, loader, device, head_input):
+    """Data-dependent init of bounded head literals (train_proto.py --head_phi bounded
+    --head_threshold center): each literal's threshold t set to the median of its input
+    column over the graphs of ``loader`` (the training set), so every literal starts by
+    splitting the training graphs in two. One that turns out not to discriminate loses its
+    head weight to the weight penalty instead of staying true on every graph. Returns t.
+    RNG forked as in center_head."""
+    cols = []
+    with held_out():
+        for layers_x, layers_y, batch in teacher_states(teacher, loader, device):
+            cols.append(head_input(layers_x, layers_y, batch))
+        t = torch.cat(cols).median(0).values
+        fc.phi_in.set_thresholds(t)
+    return fc.phi_in.t.detach()
+
+
 def teacher_states(teacher, loader, device):
     """(layers_x, layers_y, batch) of the frozen teacher's forward_e on every batch of
     loader. The teacher samples Gumbel states: call it inside utils.evaluation.held_out when

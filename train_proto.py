@@ -41,6 +41,14 @@ Extra knobs over train_logic.py:
                                       equally far from every node (no readout contrast at init).
                                       A searched hyper-parameter (configs/search_spaces.yaml);
                                       default random, upstream, out of the results path.
+    --head_phi bounded                head literals are thresholds x >= t (models_proto/tell.py
+                                      BoundedPhi: slope w <= pi, threshold t in (0, 1)) instead
+                                      of Phi's periodic step, which reads as bands or unions on
+                                      [0, 1] when w > pi and is true on every input at init.
+                                      --head_threshold center (default) starts each t at the
+                                      median of its column on the training set, mid at 0.5.
+                                      The trunk keeps Phi. Off by default (upstream), out of
+                                      the results path.
     --head_init center, --logit_loss  fixes of the head saturation (sigmoid(10 z) = exactly 1 at
                                       init, zero task gradient, constant output on small datasets
                                       such as MUTAG): centre the head bias on the training set
@@ -68,7 +76,7 @@ from utils import tracking
 from utils.evaluation import held_out
 from utils.optim import build_optimizer
 from utils.runs import EVAL_BATCH_SIZE, PROTO_ROOT, best_teacher_dir, get_device, student_dir
-from utils.training import (center_head, class_loss, distill_trunk, teacher_states, eval_student, fresh_dir, log_summary, register_final,
+from utils.training import (center_head, center_head_thresholds, class_loss, distill_trunk, teacher_states, eval_student, fresh_dir, log_summary, register_final,
                             run_seeds, student_data, test_epoch, tracked_student_seed)
 from utils.utils import set_seed, zero_nan_gradients
 
@@ -289,6 +297,8 @@ def _train_seed(dataset_name, baseline_path, args, seed, device, root=PROTO_ROOT
     # returned row indices to identify the graphs the prototypes snapped to.
     push_loader = DataLoader(d.datasets['train'], batch_size=EVAL_BATCH_SIZE, shuffle=False)
     model_proto = build_proto_model(args, baseline_args, d.num_features, d.num_classes, device)
+    if args.get('head_phi') == 'bounded':
+        model_proto.bound_head()
     if args.get('mask_layer_cost'):
         model_proto.set_mask_layer_cost([float(c) for c in args['mask_layer_cost'].split(',')])
 
@@ -302,6 +312,11 @@ def _train_seed(dataset_name, baseline_path, args, seed, device, root=PROTO_ROOT
     if args.get('proto_init') == 'data':          # before centring: the head reads the prototype similarities
         idxs = init_prototypes(model, model_proto, push_loader, device, seed)
         push_log.append({'epoch': -1, 'init': 'data', 'indices': [i.cpu().tolist() for i in idxs]})
+    if args.get('head_phi') == 'bounded' and args.get('head_threshold', 'center') == 'center':
+        set_mask_temperature(model_proto, args, 0)     # before the bias: it reads the literals
+        t = center_head_thresholds(model, model_proto.fc, push_loader, device,
+                                   lambda layers_x, layers_y, batch: model_proto.head_input(model_proto.readout(layers_y[:-1], batch)))
+        print('head thresholds centred, median t', float(t.median()))
     if args.get('head_init') == 'center':
         set_mask_temperature(model_proto, args, 0)
         print('head bias centred, shift', center_head_bias(model, model_proto, push_loader, device).tolist())
@@ -432,6 +447,8 @@ def get_parser():
     parser.add_argument('--harden_end_frac', default=None,      type=float, help='Fraction of the epochs where the final sharpness is reached (default 0.9, with --harden_to)')
     parser.add_argument('--proto_init',     default='random',   choices=['random', 'data'], help='random (upstream uniform logits) or data: prototypes set to training nodes / graphs of the teacher, farthest-point sampled')
     parser.add_argument('--head_init',      default=None,       choices=['center'], help='center: head bias set so each class\'s mean pre-activation on the training set is 0 (default: random, upstream)')
+    parser.add_argument('--head_phi',       default=None,       choices=['bounded'], help='bounded: head literals are thresholds x >= t (slope <= pi, t in (0, 1)); default: the periodic Phi of upstream')
+    parser.add_argument('--head_threshold', default=None,       choices=['center', 'mid'], help='Init of the bounded head thresholds: center (default, median of each column on the training set) or mid (0.5); with --head_phi bounded')
     parser.add_argument('--logit_loss',     action='store_true',             help='BCE of the task loss on the head logits, so a saturated head keeps its gradient (default: on the sigmoid output, upstream)')
     parser.add_argument('--optimizer',      default=None,       choices=['adamw', 'muon'], help='Default adamw (upstream); muon: Muon on the conv weights (utils/optim.py)')
     parser.add_argument('--muon_lr',        default=None,       type=float, help='Muon learning rate (default 0.02, with --optimizer muon)')
@@ -459,6 +476,11 @@ def parse_cli(argv=None):
     for k in ('head_init', 'logit_loss'):                            # off: results paths unchanged
         if not args[k]:
             args.pop(k)
+    if args['head_phi'] is None:                                     # off: results paths unchanged
+        args.pop('head_phi')
+        args.pop('head_threshold')
+    elif args['head_threshold'] is None:
+        args['head_threshold'] = 'center'
     if args['proto_init'] == 'random':
         args.pop('proto_init')
     if args['optimizer'] in (None, 'adamw'):                         # default: results paths unchanged

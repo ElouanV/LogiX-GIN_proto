@@ -1,3 +1,5 @@
+import math
+
 from torch import nn
 import torch
 import torch.nn.functional as F
@@ -95,6 +97,53 @@ class Phi(nn.Module):
             self.entropy = -(output*torch.log(output+1e-8) + (1-output)*torch.log(1-output + 1e-8)).mean()
         return output
     
+class BoundedPhi(Phi):
+    """Head literals as thresholds (train_proto.py --head_phi bounded): step(w (x - t)) with
+    a bounded slope w = max_slope * sigmoid(w_) and a threshold t = sigmoid(t_) in (0, 1).
+
+    Phi reads a literal as true where (w x + b) mod 2 pi is in [0, pi]
+    (min_covers.literal_true_intervals): with w > pi a literal on [0, 1] can be a band or a
+    union of intervals, and at Phi's init (w = 1, b = 0) it is true on all of [0, 1], a
+    hidden bias. Here w <= pi and 0 < t < 1, so z = w (x - t) stays in [-pi, pi]: the
+    literal is exactly x >= t (its negation, read on 1 - x, x <= 1 - t), never a band, and
+    never true on every input. The trunk keeps Phi, whose interval unions are wanted.
+    w, b and t keep Phi's meaning, so every reader of phi_in.w / .b works unchanged."""
+
+    def __init__(self, features, max_slope=math.pi, slope=1.0, threshold=0.5, calculate_entropy=True):
+        nn.Module.__init__(self)
+        if not 0 < slope < max_slope:
+            raise ValueError(f'slope {slope} not in (0, max_slope={max_slope})')
+        self.calculate_entropy = calculate_entropy
+        self.max_slope, self.slope_init, self.threshold_init = float(max_slope), float(slope), float(threshold)
+        self.w_ = nn.Parameter(torch.empty(features))
+        self.t_ = nn.Parameter(torch.empty(features))
+        self.reset_parameters()
+        self.tau = None
+        self.entropy = None
+
+    @property
+    def w(self):
+        return self.max_slope * torch.sigmoid(self.w_)
+
+    @property
+    def t(self):
+        return torch.sigmoid(self.t_)
+
+    @property
+    def b(self):
+        return -self.w * self.t
+
+    def reset_parameters(self):
+        with torch.no_grad():
+            self.w_.fill_(math.log(self.slope_init / (self.max_slope - self.slope_init)))
+            self.t_.fill_(math.log(self.threshold_init / (1 - self.threshold_init)))
+
+    @torch.no_grad()
+    def set_thresholds(self, t, eps=0.02):
+        """Thresholds set to t (clamped to [eps, 1 - eps], so t_ stays finite)."""
+        self.t_.copy_(torch.logit(torch.as_tensor(t, dtype=self.t_.dtype, device=self.t_.device).clamp(eps, 1 - eps)))
+
+
 class DummyPhi(nn.Module):
     def __init__(self, features):
         super().__init__()
