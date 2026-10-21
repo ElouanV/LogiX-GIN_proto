@@ -94,9 +94,10 @@ def summarize(scores, y, split):
     return m, per
 
 
-def plot_agreement(a, y, class_names=None, title=None, bins=30, n_care=None):
+def plot_agreement(a, y, class_names=None, title=None, bins=30, n_care=None, ids=None):
     """One panel per prototype: agreement histogram of each class (one colour per class).
-    ``n_care``: bits each prototype cares about, shown in its title (0 = always true)."""
+    ``n_care``: bits each prototype cares about, shown in its title (0 = always true).
+    ``ids``: prototype index of each column of ``a`` when it holds a subset (default 0..K-1)."""
     import matplotlib
     matplotlib.use('Agg')
     import matplotlib.pyplot as plt
@@ -123,7 +124,7 @@ def plot_agreement(a, y, class_names=None, title=None, bins=30, n_care=None):
             ax.hist(v, bins=edges, density=True, histtype='stepfilled', alpha=0.35, color=palette[ci % len(palette)])
             ax.hist(v, bins=edges, density=True, histtype='step', lw=1.0, color=palette[ci % len(palette)])
         bits = '' if n_care is None else f'  {int(n_care[j])} bits'
-        ax.set_title(f'P{j}  sep {sep[j]:.2f}{bits}', fontsize=7, color=INK2)
+        ax.set_title(f'P{j if ids is None else ids[j]}  sep {sep[j]:.2f}{bits}', fontsize=7, color=INK2)
         ax.set_yticks([])
         ax.tick_params(labelsize=6)
     names = class_names or {}
