@@ -10,6 +10,9 @@ preliminary: true
 root: results_final
 split: test
 
+# The cards, the agreement selection and the worked example cite the *evidence* (constant
+# head literals left out, interp_metrics.evidence_explanation).
+#
 # Representative fold of a model, for the figures that show one trained model (agreement,
 # prototypes, explanation): the fold whose test balanced accuracy is the median of the
 # model's folds (lower median for an even count), so the choice is fixed in advance.
@@ -30,6 +33,7 @@ models:
 
 figures:
   pareto:            # rule-model accuracy vs explanation bits, one panel per dataset
+    size: evidence   # evidence: input-dependent literals only (interp *_evidence); all: every literal
     datasets: [Mutagenicity, PROTEINS, BaMultiShapes]
     models: [classic, classic_nosum, graph, nmp, nmp_qat, nmp_qat_k8]
   binarisation:      # QAT fine-tune curves (qat.json history) + network vs rule accuracy

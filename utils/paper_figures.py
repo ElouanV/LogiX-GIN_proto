@@ -134,7 +134,7 @@ class Figures:
             teacher = None
             for key in spec['models']:
                 df = self.folds(key, ds)
-                col = f'{s}_interp_expl_bits_mean'
+                col = f'{s}_interp_expl_bits{"_evidence" if spec.get("size", "evidence") == "evidence" else ""}_mean'
                 if df.empty or col not in df:
                     continue
                 df = df.dropna(subset=[col, f'{s}_interp_logic_acc'])
@@ -145,7 +145,8 @@ class Figures:
                 ax.axhline(100 * teacher, color=INK2, lw=1, ls='--')
             ax.set_xscale('log')
             ax.set_title(ds, fontsize=9, loc='left')
-            ax.set_xlabel('explanation size (trunk bits per prediction)')
+            ax.set_xlabel('explanation size (trunk bits per prediction'
+                          + (', evidence)' if spec.get('size', 'evidence') == 'evidence' else ')'))
         axes[0][0].set_ylabel(f'rule-model accuracy, {s} (%)')
         from matplotlib.lines import Line2D
         fig.tight_layout()
@@ -269,7 +270,7 @@ class Figures:
         return [('fig_rule_complexity', self.finish(fig))]
 
     def agreement(self, spec):
-        """Agreement histograms of the prototypes the explanations cite (with >= 1 cared bit),
+        """Agreement histograms of the prototypes the evidence cites (with >= 1 cared bit),
         by decreasing class separation, on the training graphs of the representative fold."""
         from torch_geometric.loader import DataLoader
         from utils.agreement import agreement_scores, plot_agreement, separation
@@ -283,7 +284,7 @@ class Figures:
             scores, y = agreement_scores(model, DataLoader(data['train_dataset'], batch_size=EVAL_BATCH_SIZE), 'cpu')
             a = scores[0]
             n_care = model.proto_layers[0].care.sum(1).detach().cpu().numpy()
-            cited = citations(model, explain_graphs(model, data[f'{self.split}_dataset']))[0]
+            cited = citations(model, explain_graphs(model, data[f'{self.split}_dataset'], evidence=True))[0]
             keep = [k for k in cited if n_care[k] > 0]
             sep = separation(a, y)
             keep = sorted(keep, key=lambda k: -sep[k])[:spec.get('top', 8)]
@@ -300,7 +301,7 @@ class Figures:
         for ds in spec['datasets']:
             r, run, model = self.run(spec['model'], ds)
             data = run.data
-            recs = explain_graphs(model, data[f'{self.split}_dataset'])
+            recs = explain_graphs(model, data[f'{self.split}_dataset'], evidence=True)
             fig = plot_prototypes(model, recs, data['train_dataset'], ds, top=spec.get('top', 6))
             out.append((f'fig_prototypes_{ds}', self.finish(fig)))
         return out
@@ -311,7 +312,7 @@ class Figures:
         from utils.viz_proto import explain_graphs, head_literal_map, literal_kind, pick_examples, plot_unfolding
         ds = spec['dataset']
         r, run, model = self.run(spec['model'], ds)
-        recs = explain_graphs(model, run.data[f'{self.split}_dataset'])
+        recs = explain_graphs(model, run.data[f'{self.split}_dataset'], evidence=True)
         lit_map = head_literal_map(model)
         for _, rec in pick_examples(recs, ds):
             ks = [lit_map[c][1] for c in rec['expl'] or [] if literal_kind(model, c) == 'present']

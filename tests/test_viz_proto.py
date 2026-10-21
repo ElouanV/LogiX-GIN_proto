@@ -36,6 +36,17 @@ class TestVizProto(unittest.TestCase):
         for r in recs:
             self.assertEqual(r['backed'], r['expl'] is not None)
 
+    def test_evidence_records(self):
+        from interp_metrics import head_literal_constants
+        const = head_literal_constants(self.model)
+        full = explain_graphs(self.model, self.data)
+        ev = explain_graphs(self.model, self.data, evidence=True)
+        for a, b in zip(full, ev):
+            self.assertEqual(a['backed'], b['backed'])
+            if b['expl'] is not None:
+                self.assertLessEqual(len(b['expl']), len(a['expl']))
+                self.assertTrue(all(const[i] is None for i in b['expl']))
+
     def test_names(self):
         self.assertIn('L', prototype_rule(self.model, 0))
         for i in range(self.model.fc.in_features):

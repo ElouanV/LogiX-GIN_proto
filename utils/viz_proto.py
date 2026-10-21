@@ -30,8 +30,8 @@ import numpy as np
 import torch
 from torch_geometric.loader import DataLoader
 
-from interp_metrics import (_subgraph_edges, aggregate, head_literal_map, level_of, shortest_explanation,
-                            symbolic_head, trunk_states)
+from interp_metrics import (_subgraph_edges, aggregate, evidence_explanation, head_literal_constants, head_literal_map,
+                            level_of, shortest_explanation, symbolic_head, trunk_states)
 from latent_logic import collect_activations, explain_component, literal_name
 from min_covers import literal_true_intervals
 from utils.datasets import spec
@@ -56,12 +56,14 @@ def class_name(c, ds):
 # ---------------------------------------------------------------------------
 
 @torch.no_grad()
-def explain_graphs(model, dataset, device='cpu'):
+def explain_graphs(model, dataset, device='cpu', evidence=False):
     """One record per graph of `dataset` (node-level prototype models).
 
     Keys: i, y, net, rule, backed, expl (head literal indices of the shortest sufficient
     explanation, or None), x (atom one-hot), edge_index (local), s_node [n x K]
     (similarity of each node to each prototype, on the binary trunk states).
+    evidence: expl in input-dependent literals only (interp_metrics.evidence_explanation:
+    the constant-true head literals are a bias), so citations count real evidence.
     """
     if level_of(model) != 'node':
         raise ValueError('worked examples need node-level prototypes')
@@ -70,6 +72,7 @@ def explain_graphs(model, dataset, device='cpu'):
     net = out.argmax(1)
     W = model.fc.weight.detach().cpu().numpy()
     S = (-model.fc.b).detach().cpu().numpy()
+    constants = head_literal_constants(model) if evidence else None
     recs, g0 = [], 0
     for data in loader:
         data = data.to(device)
@@ -80,7 +83,8 @@ def explain_graphs(model, dataset, device='cpu'):
         for g in range(data.num_graphs):
             nodes = torch.nonzero(data.batch == g).flatten()
             c = int(margin[g].argmax())
-            e = shortest_explanation(W[c], S[c], head_lit[g])
+            e = (evidence_explanation(W[c], S[c], head_lit[g], constants) if evidence
+                 else shortest_explanation(W[c], S[c], head_lit[g]))
             recs.append({'i': g0 + g, 'y': int(y[g0 + g]), 'net': int(net[g0 + g]), 'rule': c,
                          'backed': e is not None, 'expl': None if e is None else [int(i) for i in e],
                          'x': xf[nodes].cpu(), 'edge_index': _subgraph_edges(data.edge_index, nodes).cpu(),
