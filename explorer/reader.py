@@ -30,8 +30,8 @@ from torch_geometric.data import Batch
 from torch_geometric.loader import DataLoader
 
 from explain_proto import proto_dim_map, readout_columns
-from interp_metrics import (base_literal_map, head_literal_map, level_of, readout_values, shortest_explanation,
-                            symbolic_head, trunk_shape, trunk_states)
+from interp_metrics import (base_literal_map, evidence_explanation, head_literal_constants, head_literal_map, level_of,
+                            readout_values, shortest_explanation, symbolic_head, trunk_shape, trunk_states)
 from min_covers import count_min_covers, literal_true_intervals, supported_min_covers, unique_rows
 from unpack_rules import ConvLiterals, fmt_counts, unit_rules
 from utils.datasets import spec
@@ -138,7 +138,7 @@ class SymbolicReader:
         self.classes = [self.spec.class_name(c) for c in range(self.n_classes)]
         self.W_head = model.fc.weight.detach().cpu().numpy()
         self.S_head = (-model.fc.b).detach().cpu().numpy()
-        self.head_const = [self.literal_constant(i) for i in range(len(self.head_literals()))]
+        self.head_const = head_literal_constants(model)
 
     # ------------------------------------------------------------------ structure
 
@@ -219,14 +219,11 @@ class SymbolicReader:
         return None if e is None else [int(i) for i in e]
 
     def evidence(self, c, head_lit_row):
-        """The same explanation in input-dependent literals only: the always-true literals
-        hold on every graph, so they are counted in (a bias) and the fewest true non-constant
-        literals reaching what remains of S are returned (greedy by weight: exact). None if
-        the rule does not fire."""
-        const_true = np.array([v is True for v in self.head_const])
-        varying = np.array([v is None for v in self.head_const])
-        need = self.S_head[c] - self.W_head[c][const_true].sum()
-        e = shortest_explanation(self.W_head[c], need, np.asarray(head_lit_row, dtype=bool) & varying)
+        """The same explanation in input-dependent literals only (interp_metrics.
+        evidence_explanation): the always-true literals hold on every graph, so they are
+        counted in as a bias and the fewest true non-constant literals reaching what
+        remains of S are returned. None if the rule does not fire."""
+        e = evidence_explanation(self.W_head[c], self.S_head[c], head_lit_row, self.head_const)
         return None if e is None else [int(i) for i in e]
 
     # ------------------------------------------------------------------ the model card
@@ -379,33 +376,9 @@ class SymbolicReader:
                 and self.proto_layers[col['proto_layer']].masked)
 
     def literal_constant(self, i):
-        """True / False when head literal i has that value on every input, else None. Exact
-        for bounded columns (a sum-pooled count is never declared constant): the literal is
-        true on all of [0, 1] or nowhere, its prototype cares about no bit (similarity 1
-        everywhere), or it reads a masked prototype's max similarity and is true (or false)
-        for every possible mismatch count."""
-        c, pos = self.head_literals()[i]
-        if not self._bounded_col(c):
-            return None
-        ivs = self._head_intervals(i)
-        if not ivs:
-            return False
-        if len(ivs) == 1 and ivs[0][0] <= 1e-6 and ivs[0][1] >= 1 - 1e-6:
-            return True
-        col = self.readout_layout()[c]
-        if 'k' not in col:
-            return None
-        p = self.proto_layers[col['proto_layer']]
-        if not bool((p.care[col['k']] > 0.5).any()):
-            v = 1.0 if pos else 0.0
-            return any(a - 1e-9 <= v <= c2 + 1e-9 for a, c2 in ivs)
-        if self._discrete_max(col):
-            ms, d = self._mismatch_counts(col['proto_layer'], col['k'], self._s_intervals(ivs, pos))
-            if not ms:
-                return False
-            if len(ms) == d + 1:
-                return True
-        return None
+        """True / False when head literal i has that value on every input, else None
+        (interp_metrics.head_literal_constants, shared with the explanation metrics)."""
+        return self.head_const[i]
 
     def _agreement(self, kind, sim, mism, care, node_graph, graph_y, bins=20):
         """How the reference graphs agree with one prototype, per class (counts):

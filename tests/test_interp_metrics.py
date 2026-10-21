@@ -12,8 +12,9 @@ import torch
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from interp_metrics import (base_literal_map, head_literal_map, interp_metrics, readout_values,  # noqa: E402
-                            shortest_explanation, symbolic_head, trunk_states)
+from interp_metrics import (base_literal_map, evidence_explanation, head_literal_constants,  # noqa: E402
+                            head_literal_map, interp_metrics, readout_values, shortest_explanation, symbolic_head,
+                            trunk_states)
 from latent_logic import ATOMS  # noqa: E402
 from models.model import GINTELL  # noqa: E402
 from models_proto.model_proto import MODELS  # noqa: E402
@@ -52,6 +53,71 @@ class TestShortestExplanation(unittest.TestCase):
 
     def test_nonpositive_threshold_needs_nothing(self):
         self.assertEqual(len(shortest_explanation(np.ones(3), 0.0, np.ones(3, bool))), 0)
+
+
+class TestEvidenceExplanation(unittest.TestCase):
+    """Constant-true literals are a bias: the evidence is the fewest input-dependent ones."""
+
+    def test_constants_become_a_bias(self):
+        w = np.array([5.0, 3.0, 2.0, 1.0])
+        true = np.array([True, True, True, True])
+        const = [True, None, None, False]
+        self.assertEqual(list(shortest_explanation(w, 7.0, true)), [0, 1])
+        self.assertEqual(list(evidence_explanation(w, 7.0, true, const)), [1])     # 7 - 5 = 2: one literal
+        self.assertEqual(list(evidence_explanation(w, 4.0, true, const)), [])      # the bias alone fires it
+
+    def test_none_exactly_when_the_rule_does_not_fire(self):
+        rng = np.random.default_rng(0)
+        for _ in range(500):
+            n = int(rng.integers(1, 8))
+            w = rng.uniform(0, 5, n)
+            const = [rng.choice([True, None, False]) for _ in range(n)]
+            # a constant literal has its value on every input
+            true = np.array([c if c is not None else bool(rng.integers(2)) for c in const])
+            S = float(rng.uniform(0, w.sum() + 1))
+            full, ev = shortest_explanation(w, S, true), evidence_explanation(w, S, true, const)
+            self.assertEqual(full is None, ev is None)
+            if ev is not None:
+                self.assertTrue(all(const[i] is None and true[i] for i in ev))
+                self.assertLessEqual(len(ev), len(full))
+                self.assertGreaterEqual(w[ev].sum() + w[[c is True for c in const]].sum(), S - 1e-9)
+
+
+class TestHeadLiteralConstants(unittest.TestCase):
+    def setUp(self):
+        torch.manual_seed(0)
+        self.model = MODELS['node'](len(ATOMS), 2, num_layers=2, hidden_dim=8, num_prototypes=4, proto_mask=True).eval()
+
+    def test_prototype_without_cared_bit_is_constant(self):
+        with torch.no_grad():
+            self.model.proto_layers[0].mask_logits[1] = -20               # P1 cares about no bit
+        const = head_literal_constants(self.model)
+        lits = head_literal_map(self.model)
+        self.assertEqual(len(const), len(lits))
+        for (li, k, op, pos), c in zip(lits, const):
+            if k == 1:
+                self.assertIsNotNone(c)
+
+    def test_phi_true_everywhere_or_nowhere(self):
+        phi = self.model.fc.phi_in
+        with torch.no_grad():
+            phi.w_[0], phi.b[0] = np.log(0.5), 0.5               # w s + b in [0.5, 1] subset of [0, pi]
+            phi.w_[1], phi.b[1] = np.log(0.5), -2.0              # in [-2, -1.5]: never in [0, pi]
+        const = head_literal_constants(self.model)
+        self.assertIs(const[0], True)
+        self.assertIs(const[1], False)
+
+    def test_metrics_report_both_explanations(self):
+        from torch_geometric.data import Data
+        x = one_hot(['C', 'N', 'O', 'O', 'C', 'H'])
+        e = undirected([(0, 1), (1, 2), (1, 3), (0, 4), (4, 5)])
+        data = [Data(x=x, edge_index=e, y=torch.tensor([i % 2])) for i in range(8)]
+        res = interp_metrics(self.model, data, 'cpu', 'Mutagenicity')
+        for key in ('expl_literals', 'expl_bits'):
+            if res[f'{key}_mean'] is not None:
+                self.assertLessEqual(res[f'{key}_evidence_mean'], res[f'{key}_mean'] + 1e-9)
+        self.assertIn('gt_precision_evidence', res)
+        self.assertTrue(0 <= res['head_literals_constant'] <= 1)
 
 
 class TestToxicophore(unittest.TestCase):
