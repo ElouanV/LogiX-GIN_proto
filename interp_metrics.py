@@ -277,7 +277,10 @@ def evidence_explanation(w, threshold, true_lits, constants):
 
 
 @torch.no_grad()
-def interp_metrics(model, dataset, device, ds_name=None):
+def interp_metrics(model, dataset, device, ds_name=None, records=False):
+    """The metrics of the module docstring. records=True also returns, per graph, the
+    rule model's class, the evidence explanation (literal indices, None when the class
+    rule does not fire) and the nodes it cites (cited_nodes; None for graph prototypes)."""
     model.eval()
     loader = DataLoader(dataset, batch_size=EVAL_BATCH_SIZE, shuffle=False)
     net = evaluate(model, loader, device)
@@ -295,9 +298,31 @@ def interp_metrics(model, dataset, device, ds_name=None):
     constants = head_literal_constants(model)
     KINDS = ('', '_evidence')                         # every literal / input-dependent literals only
 
-    margins, lits, head_pred, bit_agree, n_nodes = [], [], [], [], []
+    node_level = base or level_of(model) in ('node', 'both')
+    margins, lits, head_pred, bit_agree, n_nodes, recs = [], [], [], [], [], []
     gt_hits, gt_chance = {k: [] for k in KINDS}, {k: [] for k in KINDS}
     expl = {k: [] for k in KINDS}                     # per graph: literal indices or None
+
+    def cited_nodes(e, nodes):
+        """Per positive node-level literal of explanation e, the nodes of the graph (mask over
+        `nodes`) it points at: the best-matching nodes of its prototype ("some node
+        matches"), or for classic models the nodes where its trunk unit holds."""
+        out = []
+        for i in e:
+            if base:
+                u, op, pos = lit_map[i]
+                best = (h[nodes, u] >= 0.5).cpu()
+                if not pos or not best.any():
+                    continue
+            else:
+                li, k, op, pos = lit_map[i]
+                if not pos or li != 0 or s_node is None:
+                    continue
+                sim = s_node[nodes, k].cpu()
+                best = sim >= sim.max() - 1e-6
+            out.append(best)
+        return out
+
     g0 = 0
     for data in loader:
         data = data.to(device)
@@ -309,31 +334,26 @@ def interp_metrics(model, dataset, device, ds_name=None):
         head_pred.append(symbolic_head(model, xs_net, data.batch)[0].argmax(1).cpu().numpy())
         margin, head_lit, s_node = symbolic_head(model, xs, data.batch)
         margin, head_lit = margin.cpu().numpy(), head_lit.cpu().numpy()
+        h = torch.hstack(xs)
         for g in range(data.num_graphs):
             c = int(margin[g].argmax())
             es = {'': shortest_explanation(W[c], S[c], head_lit[g]),
                   '_evidence': evidence_explanation(W[c], S[c], head_lit[g], constants)}
             for kind, e in es.items():
                 expl[kind].append(e)
+            nodes = torch.nonzero(data.batch == g).flatten()
+            if records:
+                e = es['_evidence']
+                cited = None if not node_level else (
+                    [] if e is None else sorted({int(n) for m in cited_nodes(e, nodes) for n in torch.nonzero(m).flatten()}))
+                recs.append({'pred': c, 'expl': None if e is None else [int(i) for i in e], 'nodes': cited})
             if not gt or es[''] is None or c not in gt_classes or int(y[g0 + g]) != c:
                 continue
-            nodes = torch.nonzero(data.batch == g).flatten()
             region = spec(ds_name).region(xf[nodes].cpu(), _subgraph_edges(data.edge_index, nodes).cpu())
             if not region.any():
                 continue
             for kind, e in es.items():
-                for i in e:
-                    if base:                          # evidence: the nodes where the unit holds
-                        u, op, pos = lit_map[i]
-                        best = (torch.hstack(xs)[nodes, u] >= 0.5).cpu()
-                        if not pos or not best.any():
-                            continue
-                    else:                             # node prototypes, "some node matches"
-                        li, k, op, pos = lit_map[i]
-                        if not pos or li != 0:
-                            continue
-                        sim = s_node[nodes, k].cpu()
-                        best = sim >= sim.max() - 1e-6
+                for best in cited_nodes(e, nodes):
                     gt_hits[kind].append(float(region[best].float().mean()))
                     gt_chance[kind].append(float(region.float().mean()))
         margins.append(margin)
@@ -392,7 +412,7 @@ def interp_metrics(model, dataset, device, ds_name=None):
             res.update({f'gt_precision{kind}': float(np.mean(gt_hits[kind])) if gt_hits[kind] else None,
                         f'gt_chance{kind}': float(np.mean(gt_chance[kind])) if gt_chance[kind] else None,
                         f'gt_n{kind}': len(gt_hits[kind])})
-    return res
+    return (res, recs) if records else res
 
 
 def _subgraph_edges(edge_index, nodes):
