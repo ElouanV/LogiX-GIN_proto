@@ -1,0 +1,53 @@
+# Sources of the paper's figures (plot_paper.py -> paper/figures/fig_<name>.pdf).
+# A source is a model's final folds: results_final/<experiment>/<dataset>/<model>/fold<k>/
+# (final.json + interp.json), so moving every figure to the final E1 runs means editing the
+# experiment names here, nothing else.
+#
+# preliminary: true stamps "PRELIMINARY" on every figure (the runs below predate the
+# head-saturation fix of 2026-10-19 or are not the final protocol). Set it to false only
+# when every source is a final run.
+preliminary: true
+root: results_final
+split: test
+
+# Representative fold of a model, for the figures that show one trained model (agreement,
+# prototypes, explanation): the fold whose test balanced accuracy is the median of the
+# model's folds (lower median for an even count), so the choice is fixed in advance.
+fold_rule: median_balanced_acc
+
+# The models compared. label: legend text (keep in sync with the \classic, \oursnmp, ...
+# commands of paper/0_main.tex); experiment: default experiment; by_dataset: exceptions.
+models:
+  classic:      {label: "LogiX-GIN (mean, max, sum)", model: classic, experiment: sum_ablation}
+  classic_nosum: {label: "LogiX-GIN (mean, max)", model: classic_nosum, experiment: sum_ablation}
+  graph:        {label: "Ours (graph)", model: graph, experiment: sum_ablation,
+                 by_dataset: {Mutagenicity: sum_ablation_ctrl}}
+  nmp:          {label: "Ours (NMP)", model: node_mask_push, experiment: sum_ablation,
+                 by_dataset: {Mutagenicity: sum_ablation_ctrl}}
+  nmp_qat:      {label: "Ours (NMP+QAT)", model: node_mask_push_qat, experiment: qat_nmp_3fold,
+                 by_dataset: {Mutagenicity: qat_nmp}}
+  nmp_qat_k8:   {label: "Ours (NMP+QAT, K ≤ 8)", model: node_mask_push_qat_p8, experiment: qat_nmp_p8_3fold}
+
+figures:
+  pareto:            # rule-model accuracy vs explanation bits, one panel per dataset
+    datasets: [Mutagenicity, PROTEINS, BaMultiShapes]
+    models: [classic, classic_nosum, graph, nmp, nmp_qat, nmp_qat_k8]
+  binarisation:      # QAT fine-tune curves (qat.json history) + network vs rule accuracy
+    dataset: Mutagenicity
+    start: nmp       # the untouched student (rules read off the trained network)
+    finetunes: [nmp_qat]   # models whose run_dir holds a qat.json or harden.json history
+  rule_complexity:   # shortest rule and minimal covers per conv unit, dense vs Hoyer
+    dataset: Mutagenicity
+    model: nmp
+    sparse: "layerwise=True|lw_max_epochs=1000|lw_tol=0.99|conv_lr=0.0005,0.0005,0.005"
+  agreement:         # agreement histograms of the cited prototypes, representative fold
+    datasets: [Mutagenicity, BaMultiShapes]
+    model: nmp_qat
+    top: 8
+  prototypes:        # prototype cards (utils/viz_proto.plot_prototypes)
+    datasets: [Mutagenicity, BaMultiShapes]
+    model: nmp_qat
+    top: 6
+  explanation:       # one prediction unfolded (utils/viz_proto.plot_unfolding)
+    dataset: Mutagenicity
+    model: nmp_qat
