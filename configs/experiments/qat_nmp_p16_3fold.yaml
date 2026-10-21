@@ -1,0 +1,36 @@
+# qat_nmp with 8 or 16 prototypes (node_mask_push_qat_p16: the nmp_qat space with
+# num_prototypes in {8, 16}, everything else unchanged), tuned as qat_nmp_p8_3fold. On
+# BaMultiShapes 8 prototypes cut explanations 5x for -5 pts test accuracy: does 16 recover it
+# on Mutagenicity? Reference: qat_nmp/node_mask_push_qat (K 32) on the same folds 0-2.
+#   python run_experiment.py configs/experiments/qat_nmp_p16_3fold.yaml run --datasets Mutagenicity
+# Extra workers on the study (distinct sampler seeds, see optimize_optuna.py):
+#   python optimize_optuna.py --dataset Mutagenicity --model node_mask_push_qat_p16 --fold 0 --n_trials 15 --sampler_seed 1
+name: qat_nmp_p16_3fold
+description: >
+  NMP prototype LogiX-GIN with a QAT fine-tune and 8 or 16 prototypes, tuned as
+  qat_nmp_3fold (15 trials on fold 0, objective = rule-model val balanced accuracy), then folds 0-2.
+datasets: [Mutagenicity]
+models: [node_mask_push_qat_p16]
+folds: [0, 1, 2]
+
+teacher:                                 # same k-fold teachers as sum_ablation
+  epochs: 500
+  hidden_dim: 64
+  num_layers: 3
+  batch_size: 128
+  lr: 0.001
+  l2: 1.0e-5
+  dropout: 0.15
+  split: kfold
+
+hps:
+  root: results_hps
+  tune_folds: [0]
+  n_trials: 15
+  sampler_seed: 0
+  report_every: 50
+
+final:
+  root: results_final
+
+jobs: 5

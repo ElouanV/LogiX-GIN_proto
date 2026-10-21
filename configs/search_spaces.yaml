@@ -31,3 +31,6 @@ nmp_qat:                            # NMP + QAT fine-tune: qat_<arg> are qat_pro
 nmp_qat_p8:                         # nmp_qat with at most 8 prototypes (node_mask_push_qat_p8)
   extends: nmp_qat
   num_prototypes:     {type: categorical, choices: [4, 8]}
+nmp_qat_p16:                        # nmp_qat with 8 or 16 prototypes (node_mask_push_qat_p16)
+  extends: nmp_qat
+  num_prototypes:     {type: categorical, choices: [8, 16]}

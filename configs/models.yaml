@@ -46,3 +46,8 @@ node_mask_push_qat_p8:              # the same with at most 8 prototypes: most o
   fixed: *nmp_qat_fixed
   space: nmp_qat_p8
   qat: *nmp_qat_qat
+node_mask_push_qat_p16:             # the same with 8 or 16 prototypes: on BaMultiShapes 8 cut explanations
+  script: proto                     # 5x for -5 pts accuracy; does 16 recover the accuracy?
+  fixed: *nmp_qat_fixed
+  space: nmp_qat_p16
+  qat: *nmp_qat_qat
