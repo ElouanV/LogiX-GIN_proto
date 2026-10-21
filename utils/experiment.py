@@ -50,6 +50,15 @@ optuna.logging.set_verbosity(optuna.logging.WARNING)
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 
+def final_record(fold_dir):
+    """One final fold as a flat dict: model, fold, run_dir, the network metrics of final.json
+    and the interpretability metrics of interp.json (absent until the interp stage ran)."""
+    r = json.load(open(os.path.join(fold_dir, 'final.json')))
+    fi = os.path.join(fold_dir, 'interp.json')
+    interp = json.load(open(fi))['metrics'] if os.path.exists(fi) else {}
+    return {'model': r['model'], 'fold': r['fold'], 'run_dir': r['run_dir'], **r['metrics'], **interp}
+
+
 class Unit:
     def __init__(self, stage, dataset, model=None, fold=None, deps=()):
         self.stage, self.dataset, self.model, self.fold, self.deps = stage, dataset, model, fold, tuple(deps)
@@ -291,12 +300,8 @@ class Experiment:
     def summary(self, dataset):
         import glob
         import pandas as pd
-        rows = []
-        for f in glob.glob(os.path.join(self.final_dir(dataset), '*', 'fold*', 'final.json')):
-            r = json.load(open(f))
-            fi = os.path.join(os.path.dirname(f), 'interp.json')
-            interp = json.load(open(fi))['metrics'] if os.path.exists(fi) else {}
-            rows.append({'model': r['model'], 'fold': r['fold'], **r['metrics'], **interp})
+        rows = [final_record(os.path.dirname(f))
+                for f in glob.glob(os.path.join(self.final_dir(dataset), '*', 'fold*', 'final.json'))]
         if not rows:
             return None
         df = pd.DataFrame(rows)
