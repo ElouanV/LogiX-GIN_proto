@@ -33,6 +33,7 @@ from torch_geometric.loader import DataLoader
 from interp_metrics import (_subgraph_edges, aggregate, head_literal_map, level_of, shortest_explanation,
                             symbolic_head, trunk_states)
 from latent_logic import collect_activations, explain_component, literal_name
+from min_covers import literal_true_intervals
 from utils.datasets import spec
 from utils.runs import EVAL_BATCH_SIZE
 from utils.evaluation import predict
@@ -131,22 +132,16 @@ def head_literal_intervals(model, i):
     """Intervals [(lo, hi), ...] of the readout value s on which head literal i is true,
     in increasing s; [] if it is never true.
 
-    The head literal reads phi([s, 1 - s])_i >= 0.5; phi is evaluated on a grid of its
-    input, then mapped back to s (literals of the 1 - s half flip the interval). A
-    periodic phi can be true on two bands, e.g. [0, .26] and [.75, 1].
+    The head literal reads phi([s, 1 - s])_i >= 0.5, true exactly on the intervals of
+    min_covers.literal_true_intervals, mapped back to s (literals of the 1 - s half flip
+    them). A periodic phi can be true on two bands, e.g. [0, .26] and [.75, 1].
     """
     if getattr(model, 'has_unbounded_readout', False):
-        raise NotImplementedError('sum-pooled readout: counts are not in the [0, 1] grid read here')
+        raise NotImplementedError('sum-pooled readout: counts are not in the [0, 1] range read here')
     _, _, _, pos = head_literal_map(model)[i]
     phi = model.fc.phi_in
-    grid = torch.linspace(0, 1, 1001)
-    with torch.no_grad():
-        true = (phi(grid[:, None].expand(-1, phi.w.shape[0]))[:, i] >= 0.5).numpy()
-    s = grid.numpy() if pos else 1 - grid.numpy()
-    order = np.argsort(s)
-    s, true = s[order], true[order]
-    edges = np.flatnonzero(np.diff(np.r_[0, true.astype(int), 0]))      # run starts, run ends + 1
-    return [(float(s[a]), float(s[b - 1])) for a, b in zip(edges[::2], edges[1::2])]
+    ivs = literal_true_intervals(float(phi.w[i]), float(phi.b[i]), 0.0, 1.0)
+    return ivs if pos else [(1 - c, 1 - a) for a, c in ivs][::-1]
 
 
 def head_literal_interval(model, i):

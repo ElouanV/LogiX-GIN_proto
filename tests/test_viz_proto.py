@@ -43,20 +43,15 @@ class TestVizProto(unittest.TestCase):
             self.assertIn(f'P{i % 4}', head_literal_text(self.model, i))
 
     def test_two_band_literal(self):
-        # A periodic phi true for s <= .25 or s >= .75 was labelled 'always' (hull [0, 1])
-        class TwoBand(torch.nn.Module):
-            def __init__(self, n):
-                super().__init__()
-                self.w = torch.zeros(n)
-
-            def forward(self, x):
-                return (torch.cos(2 * torch.pi * x) + 1) / 2         # >= .5 iff x <= .25 or x >= .75
-
-        self.model.fc.phi_in = TwoBand(self.model.fc.in_features)
+        # phi true where (w s + b) mod 2 pi is in [0, pi]: w = 2 pi, b = pi / 2 gives s <= .25 or
+        # s >= .75; the hull [0, 1] used to label it 'always true'
+        with torch.no_grad():
+            self.model.fc.phi_in.w_[0] = torch.log(torch.tensor(2 * torch.pi))   # w = exp(w_)
+            self.model.fc.phi_in.b[0] = torch.pi / 2
         runs = head_literal_intervals(self.model, 0)
         self.assertEqual(len(runs), 2)
-        self.assertAlmostEqual(runs[0][1], 0.25, places=2)
-        self.assertAlmostEqual(runs[1][0], 0.75, places=2)
+        self.assertAlmostEqual(runs[0][1], 0.25, places=6)
+        self.assertAlmostEqual(runs[1][0], 0.75, places=6)
         self.assertEqual(literal_kind(self.model, 0), 'outside')
         self.assertIn(' or ', head_literal_text(self.model, 0))
 
