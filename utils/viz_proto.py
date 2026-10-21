@@ -127,11 +127,13 @@ def prototype_rule(model, k):
     return ' ∧ '.join(terms) if terms else 'TRUE (cares about no bit)'
 
 
-def head_literal_interval(model, i):
-    """Interval (lo, hi) of the readout value s on which head literal i is true.
+def head_literal_intervals(model, i):
+    """Intervals [(lo, hi), ...] of the readout value s on which head literal i is true,
+    in increasing s; [] if it is never true.
 
     The head literal reads phi([s, 1 - s])_i >= 0.5; phi is evaluated on a grid of its
-    input, then mapped back to s (literals of the 1 - s half flip the interval).
+    input, then mapped back to s (literals of the 1 - s half flip the interval). A
+    periodic phi can be true on two bands, e.g. [0, .26] and [.75, 1].
     """
     if getattr(model, 'has_unbounded_readout', False):
         raise NotImplementedError('sum-pooled readout: counts are not in the [0, 1] grid read here')
@@ -141,20 +143,37 @@ def head_literal_interval(model, i):
     with torch.no_grad():
         true = (phi(grid[:, None].expand(-1, phi.w.shape[0]))[:, i] >= 0.5).numpy()
     s = grid.numpy() if pos else 1 - grid.numpy()
-    return (float(s[true].min()), float(s[true].max())) if true.any() else (np.nan, np.nan)
+    order = np.argsort(s)
+    s, true = s[order], true[order]
+    edges = np.flatnonzero(np.diff(np.r_[0, true.astype(int), 0]))      # run starts, run ends + 1
+    return [(float(s[a]), float(s[b - 1])) for a, b in zip(edges[::2], edges[1::2])]
+
+
+def head_literal_interval(model, i):
+    """Hull (lo, hi) of the intervals of head_literal_intervals; (nan, nan) if never true."""
+    runs = head_literal_intervals(model, i)
+    return (runs[0][0], runs[-1][1]) if runs else (np.nan, np.nan)
 
 
 def literal_kind(model, i):
-    """'always' (true for every s: a bias), 'present' (needs high similarity: some node /
-    the nodes on average match the prototype), 'absent' (needs low similarity), 'band'."""
-    lo, hi = head_literal_interval(model, i)
-    if lo <= 1e-3 and hi >= 0.999:
-        return 'always'
-    if hi >= 0.999:
-        return 'present'
-    if lo <= 1e-3:
-        return 'absent'
-    return 'band'
+    """'always' (true for every s: a bias), 'never', 'present' (needs high similarity: some
+    node / the nodes on average match the prototype), 'absent' (needs low similarity),
+    'band' (one interior interval), 'outside' (two bands: s low or s high), 'multi'."""
+    runs = head_literal_intervals(model, i)
+    if not runs:
+        return 'never'
+    if len(runs) == 1:
+        lo, hi = runs[0]
+        if lo <= 1e-3 and hi >= 0.999:
+            return 'always'
+        if hi >= 0.999:
+            return 'present'
+        if lo <= 1e-3:
+            return 'absent'
+        return 'band'
+    if len(runs) == 2 and runs[0][0] <= 1e-3 and runs[1][1] >= 0.999:
+        return 'outside'
+    return 'multi'
 
 
 def head_literal_text(model, i):
@@ -164,27 +183,35 @@ def head_literal_text(model, i):
     on max over nodes of s is a threshold on the closest node's mismatch count m*.
     """
     _, k, op, _ = head_literal_map(model)[i]
-    lo, hi = head_literal_interval(model, i)
+    runs = head_literal_intervals(model, i)
     kind = literal_kind(model, i)
     if kind == 'always':
         return f'{op} match(P{k}) ≥ 0: always true, acts as a bias'
-    if np.isnan(lo):
+    if kind == 'never':
         return f'{op} match(P{k}): never true'
     if op == 'max' and model.proto.masked:
         T = float(model.proto.mask_temp)
-        m_hi = int(np.floor(-T * np.log(lo) + 1e-6)) if lo > 0 else None  # s ≥ lo ⇔ m* ≤ m_hi
-        m_lo = int(np.ceil(-T * np.log(hi) - 1e-6))                        # s ≤ hi ⇔ m* ≥ m_lo
+        m_le = lambda lo: int(np.floor(-T * np.log(lo) + 1e-6)) if lo > 0 else None  # s ≥ lo ⇔ m* ≤ m_le
+        m_ge = lambda hi: int(np.ceil(-T * np.log(hi) - 1e-6))                       # s ≤ hi ⇔ m* ≥ m_ge
         if kind == 'present':
+            m_hi = m_le(runs[0][0])
             return f'some node matches P{k}' if m_hi == 0 else f'some node is within {m_hi} mismatch{"es" * (m_hi > 1)} of P{k}'
         if kind == 'absent':
+            m_lo = m_ge(runs[0][1])
             return f'no node matches P{k}' if m_lo <= 1 else f'every node has ≥ {m_lo} mismatches with P{k}'
-        return f'closest node to P{k} has {m_lo}-{m_hi} mismatches'
+        if kind == 'band':
+            return f'closest node to P{k} has {m_ge(runs[0][1])}-{m_le(runs[0][0])} mismatches'
+        if kind == 'outside':
+            return (f'closest node to P{k} has ≤ {m_le(runs[1][0])} or ≥ {m_ge(runs[0][1])} mismatches')
+        return f'closest node to P{k}: ' + ' or '.join(f'{m_ge(hi)}-{m_le(lo)} mismatches' for lo, hi in runs)
     what = f'{op} over nodes of match(P{k})'
     if kind == 'present':
-        return f'{what} ≥ {lo:.2f}'
+        return f'{what} ≥ {runs[0][0]:.2f}'
     if kind == 'absent':
-        return f'{what} ≤ {hi:.2f}'
-    return f'{what} in [{lo:.2f}, {hi:.2f}]'
+        return f'{what} ≤ {runs[0][1]:.2f}'
+    if kind == 'outside':
+        return f'{what} ≤ {runs[0][1]:.2f} or ≥ {runs[1][0]:.2f}'
+    return f'{what} in ' + ' ∪ '.join(f'[{lo:.2f}, {hi:.2f}]' for lo, hi in runs)
 
 
 def decode_units(model, units, train_dataset, device='cpu', max_graphs=1500, max_rules=2):

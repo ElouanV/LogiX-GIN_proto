@@ -5,7 +5,7 @@ from torch_geometric.data import Data
 
 from interp_metrics import trunk_states
 from models_proto.model_proto import get_model
-from utils.viz_proto import (citations, explain_graphs, head_literal_text, layer_literals, literal_kind,
+from utils.viz_proto import (citations, explain_graphs, head_literal_intervals, head_literal_text, layer_literals, literal_kind,
                              plot_examples, plot_prototypes, plot_trunk_match, plot_unfolding, plot_vocabulary,
                              prototype_rule)
 
@@ -39,8 +39,26 @@ class TestVizProto(unittest.TestCase):
     def test_names(self):
         self.assertIn('L', prototype_rule(self.model, 0))
         for i in range(self.model.fc.in_features):
-            self.assertIn(literal_kind(self.model, i), ('always', 'present', 'absent', 'band'))
+            self.assertIn(literal_kind(self.model, i), ('always', 'never', 'present', 'absent', 'band', 'outside', 'multi'))
             self.assertIn(f'P{i % 4}', head_literal_text(self.model, i))
+
+    def test_two_band_literal(self):
+        # A periodic phi true for s <= .25 or s >= .75 was labelled 'always' (hull [0, 1])
+        class TwoBand(torch.nn.Module):
+            def __init__(self, n):
+                super().__init__()
+                self.w = torch.zeros(n)
+
+            def forward(self, x):
+                return (torch.cos(2 * torch.pi * x) + 1) / 2         # >= .5 iff x <= .25 or x >= .75
+
+        self.model.fc.phi_in = TwoBand(self.model.fc.in_features)
+        runs = head_literal_intervals(self.model, 0)
+        self.assertEqual(len(runs), 2)
+        self.assertAlmostEqual(runs[0][1], 0.25, places=2)
+        self.assertAlmostEqual(runs[1][0], 0.75, places=2)
+        self.assertEqual(literal_kind(self.model, 0), 'outside')
+        self.assertIn(' or ', head_literal_text(self.model, 0))
 
     def test_figures(self):
         recs = explain_graphs(self.model, self.data)
