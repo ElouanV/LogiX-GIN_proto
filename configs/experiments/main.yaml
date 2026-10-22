@@ -1,0 +1,36 @@
+# E1, the main experiment (paper/table_main.tex, table_interp.tex; docs/EXPERIMENTS.md):
+# every student with the current configs/models.yaml (head-saturation fix of 2026-10-19 on
+# the prototype models), tuned per dataset, then the 10 folds + interp.
+#   python run_experiment.py configs/experiments/main.yaml run --datasets AIDS BBBP NCI1
+# The QAT NMP row is added to `models` once its K and readout are decided
+# (table_num_prototypes.tex, predicate_readout_3fold); units resume, nothing reruns.
+# One machine owns a dataset (docs/EXPERIMENT_PROTOCOL.md).
+name: main
+description: >
+  E1: classic LogiX-GIN (with / without sum), graph-level prototypes and NMP node
+  prototypes, each tuned with Optuna on fold 0, 10 folds, after the head-saturation fix.
+datasets: [MUTAG, PROTEINS, BaMultiShapes, BA2Motifs, AIDS, BBBP, NCI1, Mutagenicity]
+models: [classic, classic_nosum, graph, node_mask_push]
+folds: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]   # stratified 10-fold, fold = seed; indices in splits/<dataset>_kfold.json
+
+teacher:                                 # same k-fold teachers as sum_ablation
+  epochs: 500
+  hidden_dim: 64
+  num_layers: 3
+  batch_size: 128
+  lr: 0.001
+  l2: 1.0e-5
+  dropout: 0.15
+  split: kfold
+
+hps:                                     # utils/hps.py
+  root: results_hps_main                 # new root: the prototype models changed (head fix)
+  tune_folds: [0]
+  n_trials: 25
+  sampler_seed: 0
+  report_every: 50
+
+final:
+  root: results_final
+
+jobs: 6                                  # units run in parallel on this machine
