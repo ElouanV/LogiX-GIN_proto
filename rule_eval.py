@@ -44,6 +44,9 @@ def rule_stats(model, loader, device, max_nodes=3000):
         fired = fired[rng.choice(len(fired), min(len(fired), max_nodes), replace=False)]
         short = []
         for i, u in fired:
+            if S[u] <= 0:                           # always on: the empty set already fires
+                short.append(0)
+                continue
             c = np.cumsum(np.sort(W[u][X[i]])[::-1])
             short.append(int(np.searchsorted(c, S[u]) + 1))
         out.append({
