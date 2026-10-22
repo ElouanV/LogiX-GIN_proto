@@ -1,0 +1,56 @@
+# Issues 4 and 5 of docs/INTERPRETABILITY_ISSUES.md at equal hyper-parameters: the QAT NMP
+# student with K = 8 prototypes, its head literals made thresholds (node_mask_push_qat_bounded,
+# issue 4) and its readout made the count / share of the nodes satisfying each prototype rule
+# (node_mask_push_qat_predicate, issues 4 + 5). No study: every model takes the best set of
+# the K <= 8 / K <= 16 studies (qat_nmp_p8_3fold on BaMultiShapes, qat_nmp_p16_3fold on
+# Mutagenicity; both picked K = 8). Reference = those runs' final folds 0-2 (the periodic head
+# and mean / max similarities, same set).
+#   python run_experiment.py configs/experiments/predicate_readout_3fold.yaml run --datasets Mutagenicity BaMultiShapes
+name: predicate_readout_3fold
+description: >
+  QAT NMP (K = 8) with threshold head literals, and with the predicate count / share readout,
+  at the best set of the K-limited QAT NMP studies, folds 0-2.
+datasets: [Mutagenicity, BaMultiShapes]
+models: [node_mask_push_qat_bounded, node_mask_push_qat_predicate]
+folds: [0, 1, 2]
+
+params_from:
+  node_mask_push_qat_predicate: node_mask_push_qat_bounded
+
+best_sets:
+  Mutagenicity:                          # qat_nmp_p16_3fold, study trial 4
+    node_mask_push_qat_bounded: {lr: 0.008591315698733486, batch_size: 32, l2: 0.0001, conv_reg: 0.0001043976602988657,
+                                 fc_reg: 0.0005740465182204318, epochs: 1000, warmup_frac: 0.33, num_prototypes: 8,
+                                 proto_div_reg: 0.005931199953590064, proto_ent_reg: 0.0012255191892885735,
+                                 proto_init: random, mask_reg: 0.858258168764722, push_every: 100, vocab_reg: 0.1,
+                                 qat_epochs: 300, qat_lr: 0.00040116321870938145, qat_task_weight: 1.0116495161209673,
+                                 qat_distill_weight: 0.0}
+  BaMultiShapes:                         # qat_nmp_p8_3fold
+    node_mask_push_qat_bounded: {lr: 0.00925351835415776, batch_size: 32, l2: 0.0001, conv_reg: 0.016227109577899947,
+                                 fc_reg: 0.0013728772261412524, epochs: 1000, warmup_frac: 0.5, num_prototypes: 8,
+                                 proto_div_reg: 0.006757898657644784, proto_ent_reg: 0.0050320367316061924,
+                                 proto_init: data, mask_reg: 0.07009632398688365, push_every: 200, vocab_reg: 0.0,
+                                 qat_epochs: 300, qat_lr: 0.0009486109364606597, qat_task_weight: 0.4442202868338016,
+                                 qat_distill_weight: 0.0}
+
+teacher:                                 # same k-fold teachers as sum_ablation
+  epochs: 500
+  hidden_dim: 64
+  num_layers: 3
+  batch_size: 128
+  lr: 0.001
+  l2: 1.0e-5
+  dropout: 0.15
+  split: kfold
+
+hps:
+  root: results_hps
+  tune_folds: [0]
+  n_trials: 0
+  sampler_seed: 0
+  report_every: 50
+
+final:
+  root: results_final
+
+jobs: 6

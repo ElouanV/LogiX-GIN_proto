@@ -51,3 +51,15 @@ node_mask_push_qat_p16:             # the same with 8 or 16 prototypes: on BaMul
   fixed: *nmp_qat_fixed
   space: nmp_qat_p16
   qat: *nmp_qat_qat
+node_mask_push_qat_bounded:         # issue 4 (docs/INTERPRETABILITY_ISSUES.md): head literals are thresholds
+  script: proto                     # x >= t (tell.BoundedPhi), centred on the training set
+  fixed: {proto_level: node, proto_mask: true, mask_anneal_frac: 0.8, mask_ckpt_temp: 1.0,
+         head_init: center, logit_loss: true, head_phi: bounded}
+  space: nmp_qat_p16
+  qat: *nmp_qat_qat
+node_mask_push_qat_predicate:       # issues 4 + 5: the head reads the count / share of the nodes satisfying
+  script: proto                     # each prototype rule (models_proto/model_proto_count.py)
+  fixed: {proto_level: node, proto_mask: true, mask_anneal_frac: 0.8, mask_ckpt_temp: 1.0,
+         head_init: center, logit_loss: true, head_phi: bounded, node_readout: predicate}
+  space: nmp_qat_p16
+  qat: *nmp_qat_qat
