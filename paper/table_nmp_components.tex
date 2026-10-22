@@ -1,0 +1,54 @@
+% =====================================================================================
+% table_nmp_components.tex: what each component of the node prototypes brings (Q3;
+%   Notion E5, P0).
+%
+% Question: NMP = node-level binary prototypes + care mask + push onto real nodes
+%   (+ optional vocab_reg). Which component gives the accuracy, which gives the short /
+%   correct explanations?
+% Protocol (to write): ONE tuned NMP set per dataset (the E1 best set), then switch the
+%   components off one at a time, 10 folds each, same teachers and folds. Rows add the
+%   components cumulatively:
+%     node prototypes, dense  train_proto.py --proto_level node, --push_every 0, no mask
+%     + push                  --push_every <best>
+%     + care mask             --proto_mask (mask_reg, mask_anneal_frac 0.8)  [= NMP]
+%     + vocab_reg             --vocab_reg 0.1  (only if not already in the best set)
+%     + QAT                   qat_proto.py   [= NMP+QAT]
+%   plus the head-saturation fix on / off (--head_init center --logit_loss) as one row or
+%   an appendix line, since it changed MUTAG NMP from collapsed to working.
+% Metrics: test balanced acc., rule-model acc., fidelity, explanation bits, GT precision.
+% What it should show: push makes prototypes real nodes (readable cards); the mask makes
+%   explanations short (bits); QAT makes them faithful.
+% What it will not show: interactions beyond the cumulative order (no full factorial).
+%
+% STATUS: NOT RUN. Code needed: an experiment YAML (e.g.
+%   configs/experiments/nmp_components.yaml) with params_from: <every variant>:
+%   node_mask_push, and the variants as model entries in configs/models.yaml (fixed
+%   args only). Compute: 10 folds × 5 variants × 3 datasets = 150 runs (estimate
+%   before launching).
+% Datasets: MUTAG, PROTEINS, Mutagenicity (Notion E5); BAMultiShapes for GT precision.
+% TODO:
+%   [ ] model entries + YAML, smoke test (1 fold, few epochs), then estimate, then run.
+% =====================================================================================
+\begin{table}[t]
+  \centering
+  \caption{Components of the node prototypes, added one at a time with the tuned \nmp{}
+    set (test, 10 folds, \%). Bits: explanation size. GT prec.: on Mutagenicity.}
+  \label{tab:nmp_components}
+  \small
+  \setlength{\tabcolsep}{3pt}
+  \begin{tabular}{lcccccc}
+    \toprule
+    & \multicolumn{2}{c}{MUTAG} & \multicolumn{2}{c}{PROTEINS} & \multicolumn{2}{c}{Mutagenicity} \\
+    \cmidrule(lr){2-3}\cmidrule(lr){4-5}\cmidrule(lr){6-7}
+    Variant & Rule acc. & Bits & Rule acc. & Bits & Rule acc. & GT prec. \\
+    \midrule
+    node prototypes (dense)  & \tbd & \tbd & \tbd & \tbd & \tbd & \tbd \\
+    + push                   & \tbd & \tbd & \tbd & \tbd & \tbd & \tbd \\
+    + care mask (= \oursnmp{})   & \tbd & \tbd & \tbd & \tbd & \tbd & \tbd \\
+    + vocabulary penalty     & \tbd & \tbd & \tbd & \tbd & \tbd & \tbd \\
+    + QAT (= \oursqat{})     & \tbd & \tbd & \tbd & \tbd & \tbd & \tbd \\
+    \midrule
+    \nmp{} without head fix  & \tbd & \tbd & \tbd & \tbd & \tbd & \tbd \\
+    \bottomrule
+  \end{tabular}
+\end{table}

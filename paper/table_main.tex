@@ -1,0 +1,82 @@
+% =====================================================================================
+% table_main.tex: main accuracy table (Q1; Notion experiment plan E1 + E1b).
+%
+% Question: is a prototype student as accurate as the GIN teacher, classic LogiX-GIN and
+%   other self-explainable GNNs?
+% Metric: test accuracy (%), mean ± std over the 10 folds. Accuracy is what the
+%   LogiX-GIN paper and most baselines report; balanced accuracy, minority F1 and ROC-AUC
+%   are in table_main_full.tex (they matter on AIDS 80/20 and BBBP 76/24).
+% For NMP+QAT the network computes exactly its rules (fidelity 1), so its accuracy is also
+%   its rule-model accuracy. For the other students, the rule-model accuracy is in
+%   table_interp.tex.
+%
+% STATUS: teacher row final except BA2Motifs. Every student cell is \prelim or \tbd.
+%
+% Sources of the grey numbers (results_final/<exp>/<dataset>/summary.csv):
+%   MUTAG, PROTEINS, BAMultiShapes: sum_ablation (25-trial Optuna study per model on fold
+%     0, 10 folds). Trained BEFORE the head-saturation fix (2026-10-19: --head_init center
+%     --logit_loss, now fixed in configs/models.yaml for the prototype models), so the
+%     prototype rows will change. MUTAG NMP collapsed (constant head, bacc 0.50 on 10/10
+%     folds): that is the bug the fix targets.
+%   Mutagenicity graph / NMP: sum_ablation_ctrl with a HAND-TUNED set (config best_sets),
+%     not an Optuna study, also before the fix.
+%   NMP+QAT: qat_nmp (Mutagenicity, 10 folds); qat_nmp_3fold (PROTEINS, BAMultiShapes:
+%     folds 0-2 only, marked ^3).
+% Teacher: results/<dataset>/<teacher cfg>|split=kfold/total_results.csv (the k-fold
+%   teachers shared by every student; config `teacher:` in the experiment YAMLs).
+%
+% TODO (experiments to run):
+%   [ ] E1 final: one experiment YAML (e.g. configs/experiments/main.yaml) with the current
+%       configs/models.yaml (head fix): classic, classic_nosum, graph, node_mask_push,
+%       node_mask_push_qat, on all 8 datasets, 25 trials on fold 0, then 10 folds + interp.
+%       New hps root (models changed). Estimate compute before launching (CLAUDE.md).
+%   [ ] BA2Motifs teacher: 4/10 folds at chance (Gumbel init trap); decide the fix
+%       (restarts with --init_seed, or a per-dataset teacher config) and retrain only BA2Motifs.
+%   [ ] E1b competitors: pick 3-4 (ProtGNN, PIGNN, GIB, GELATO, ...), run them on
+%       splits/<dataset>_kfold.json with the same search budget.
+%   [ ] Decide whether the main row of "ours" is NMP or NMP+QAT (the self-explanation the
+%       paper claims is the rule model, i.e. NMP+QAT).
+%   [ ] Bold the best self-explainable model per column once the numbers are final.
+% =====================================================================================
+\begin{table*}[t]
+  \centering
+  \caption{Test accuracy (\%, mean $\pm$ std over 10 folds). The \teacher{} is a black box;
+    all other models are self-explainable. For \nmpqat{} the network is its own rule model.
+    \prelim{Grey}: preliminary runs (see source comments).
+    $^3$: folds 0--2 only.}
+  \label{tab:main}
+  \small
+  \setlength{\tabcolsep}{4pt}
+  \resizebox{\textwidth}{!}{%
+  \begin{tabular}{lcccccccc}
+    \toprule
+    Model & MUTAG & Mutagenicity & AIDS & BBBP & NCI1 & PROTEINS & BA2Motifs & BAMultiShapes \\
+    \midrule
+    \teacher{} (black box)
+      & \ms{85.6}{8.3} & \ms{79.8}{1.6} & \ms{99.7}{0.5} & \ms{86.5}{2.4}
+      & \ms{77.1}{1.6} & \ms{74.9}{5.1} & \prelim{\ms{81.7}{22.9}} & \ms{98.8}{1.2} \\
+    \midrule
+    \todo{competitor 1, e.g.\ ProtGNN} & \tbd & \tbd & \tbd & \tbd & \tbd & \tbd & \tbd & \tbd \\
+    \todo{competitor 2, e.g.\ PIGNN}   & \tbd & \tbd & \tbd & \tbd & \tbd & \tbd & \tbd & \tbd \\
+    \todo{competitor 3, e.g.\ GIB}     & \tbd & \tbd & \tbd & \tbd & \tbd & \tbd & \tbd & \tbd \\
+    \todo{competitor 4, e.g.\ GELATO}  & \tbd & \tbd & \tbd & \tbd & \tbd & \tbd & \tbd & \tbd \\
+    \midrule
+    \classic{}
+      & \prelim{\ms{63.9}{19.0}} & \tbd & \tbd & \tbd & \tbd
+      & \prelim{\ms{73.7}{4.4}} & \tbd & \prelim{\ms{99.1}{0.9}} \\
+    \classicnosum{}
+      & \prelim{\ms{81.0}{9.6}} & \tbd & \tbd & \tbd & \tbd
+      & \prelim{\ms{69.4}{8.6}} & \tbd & \prelim{\ms{95.9}{3.0}} \\
+    \midrule
+    \oursgraph{}
+      & \prelim{\ms{82.5}{13.0}} & \prelim{\ms{82.2}{1.4}} & \tbd & \tbd & \tbd
+      & \prelim{\ms{75.1}{4.9}} & \tbd & \prelim{\ms{99.3}{0.8}} \\
+    \oursnmp{}
+      & \prelim{\ms{39.8}{13.9}} & \prelim{\ms{80.4}{2.1}} & \tbd & \tbd & \tbd
+      & \prelim{\ms{74.2}{3.7}} & \tbd & \prelim{\ms{98.0}{2.4}} \\
+    \oursqat{}
+      & \tbd & \prelim{\ms{76.6}{1.7}} & \tbd & \tbd & \tbd
+      & \prelim{\ms{75.3}{4.0}$^3$} & \tbd & \prelim{\ms{98.7}{0.6}$^3$} \\
+    \bottomrule
+  \end{tabular}}
+\end{table*}

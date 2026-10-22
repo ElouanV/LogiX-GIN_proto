@@ -1,0 +1,48 @@
+% =====================================================================================
+% table_sensitivity.tex: appendix; sensitivity to trunk width and to the vocabulary
+%   penalty (Notion E9, E10; P2).
+%
+% Questions:
+%   E9  does a narrower trunk (width 32 instead of 64) trade accuracy for fidelity and
+%       shorter rules? (earlier random-split result: width 32 raised classic fidelity to
+%       0.84 but lowered NO2/NH2 precision)
+%   E10 effect of vocab_reg (penalty on the number of distinct trunk units the prototypes
+%       read) on explanation size and accuracy (0.1 was best on random splits).
+% Protocol (to write): best E1 NMP set, change one factor, 10 folds. Width 32 needs its
+%   own k-fold teachers (teacher hidden_dim 32: train_baseline.py, new teacher config;
+%   ~10 teachers per dataset). vocab_reg in {0, 0.01, 0.1, 0.3}.
+% Datasets: Mutagenicity (GT) + PROTEINS.
+% What it should show: whether the paper's defaults are a sweet spot or arbitrary.
+% What it will not show: joint effects (one factor at a time).
+%
+% STATUS: NOT RUN. Code: experiment YAML with params_from + per-row fixed overrides
+%   (check utils/experiment.py supports a fixed override per model entry, else add model
+%   entries). Teachers of width 32 = new teacher config.
+% TODO:
+%   [ ] E10 first (no new teachers), E9 if time.
+% =====================================================================================
+\begin{table}[t]
+  \centering
+  \caption{Sensitivity of \nmp{} to the trunk width and to the vocabulary penalty (test,
+    10 folds, \%). Bits: explanation size; GT prec.: Mutagenicity NO$_2$/NH$_2$.}
+  \label{tab:sensitivity}
+  \small
+  \setlength{\tabcolsep}{3.5pt}
+  \begin{tabular}{llccccc}
+    \toprule
+    & & \multicolumn{3}{c}{Mutagenicity} & \multicolumn{2}{c}{PROTEINS} \\
+    \cmidrule(lr){3-5}\cmidrule(lr){6-7}
+    Factor & Value & Rule acc. & Bits & GT prec. & Rule acc. & Bits \\
+    \midrule
+    \multirow{2}{*}{Trunk width}
+      & 32 & \tbd & \tbd & \tbd & \tbd & \tbd \\
+      & 64 & \tbd & \tbd & \tbd & \tbd & \tbd \\
+    \midrule
+    \multirow{4}{*}{Vocabulary penalty}
+      & 0    & \tbd & \tbd & \tbd & \tbd & \tbd \\
+      & 0.01 & \tbd & \tbd & \tbd & \tbd & \tbd \\
+      & 0.1  & \tbd & \tbd & \tbd & \tbd & \tbd \\
+      & 0.3  & \tbd & \tbd & \tbd & \tbd & \tbd \\
+    \bottomrule
+  \end{tabular}
+\end{table}

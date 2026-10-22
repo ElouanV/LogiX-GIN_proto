@@ -1,0 +1,35 @@
+% =====================================================================================
+% table_datasets.tex: dataset statistics.
+%
+% STATUS: filled (2026-10-21), final.
+% Source: splits/<dataset>_kfold.json (graph counts, label counts, fold sizes) and
+%   utils.datasets.get_dataset(<dataset>) (mean nodes, mean undirected edges, number of
+%   node features after configs/datasets.yaml preprocessing). Fold sizes are those of
+%   fold 0; the other folds differ by at most one graph.
+% Class balance = share of the larger class.
+% TODO: check that the BA2Motifs row matches the variant used in the final runs
+%   (configs/datasets.yaml: BA2Motifs = constant features, ba_2motifs_clean).
+% =====================================================================================
+\begin{table}[t]
+  \centering
+  \caption{Datasets. Mean number of nodes and (undirected) edges per graph, number of
+    binary node features, share of the larger class, and train / validation / test sizes
+    of one fold of the stratified 10-fold cross-validation. GT: node-level ground truth
+    of the explanations.}
+  \label{tab:datasets}
+  \small
+  \begin{tabular}{lrrrrrcc}
+    \toprule
+    Dataset & Graphs & Nodes & Edges & Features & Larger class & Train/val/test & GT \\
+    \midrule
+    MUTAG         &  188 & 17.9 & 19.8 &  7 & 66\% & 150/19/19    &            \\
+    Mutagenicity  & 4337 & 30.3 & 30.8 & 14 & 55\% & 3469/434/434 & NO$_2$/NH$_2$ \\
+    AIDS          & 2000 & 15.7 & 16.2 & 38 & 80\% & 1600/200/200 &            \\
+    BBBP          & 2039 & 24.1 & 26.0 & 15 & 77\% & 1631/204/204 &            \\
+    NCI1          & 4110 & 29.9 & 32.3 & 37 & 50\% & 3288/411/411 &            \\
+    PROTEINS      & 1113 & 39.1 & 72.8 &  3 & 60\% & 889/112/112  &            \\
+    BA2Motifs     & 1000 & 25.0 & 25.5 & 10 & 50\% & 800/100/100  & motif      \\
+    BAMultiShapes & 1000 & 40.0 & 43.7 & 10 & 50\% & 800/100/100  & motifs     \\
+    \bottomrule
+  \end{tabular}
+\end{table}

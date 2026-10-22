@@ -1,0 +1,129 @@
+% =====================================================================================
+% table_interp.tex: faithfulness, size and correctness of the explanations (Q2; Notion
+%   E3 interpretability metrics + E4 ground truth).
+%
+% Every metric is computed on the RULE MODEL (interp_metrics.py: the same weights with
+%   every literal and unit binarised at 0.5 as the rules read them), on the test split,
+%   mean ± std over 10 folds:
+%   Rule acc.   accuracy of the rule model                       (test_interp_logic_acc)
+%   Fid.        rule-model prediction = network prediction       (test_interp_logic_fidelity)
+%   Lit.        head literals in the evidence of a prediction (shortest sufficient set of
+%               input-dependent literals), mean over rule-backed test graphs
+%                                                                (test_interp_expl_literals_evidence_mean)
+%   Bits        trunk bits cared by the prototypes those literals cite, i.e. the
+%               explanation's length in trunk-unit literals      (test_interp_expl_bits_evidence_mean)
+%               (classic LogiX-GIN: = Lit., each literal reads one trunk unit)
+%   Protos      distinct prototypes cited over the test split    (test_interp_protos_cited_evidence)
+%   GT prec.    share of the best-matching nodes of the cited prototypes inside the ground
+%               truth, (chance level in brackets)                 (test_interp_gt_precision_evidence / _chance_evidence)
+%               A fold where no scored prediction cites a node (gt_n_evidence = 0) has no
+%               value and is left out of the mean: see COVERAGE below.
+%               Mutagenicity: within one hop of NO2/NH2, mutagens only; BA2Motifs: the
+%               planted motif; BAMultiShapes class 1: its planted motifs. Graph-level
+%               prototypes cite no node: n/a.
+%
+% What it shows: whether the explanation a reader gets is the model's actual decision
+%   (fidelity), how long it is, and whether it points at the known cause.
+% What it does not show: whether the trunk bits themselves are readable (a bit of conv
+%   layer 1-2 needs ~10-14 literals to decode, CLAUDE.md "rule-extraction limits", see
+%   table_hoyer.tex); usefulness to a human (no user study).
+%
+% STATUS: \prelim / \tbd; same sources and caveats as table_main.tex. Rows generated from
+%   the summary.csv files (evidence columns, interp stage rerun 2026-10-21 with
+%   feat/paper-figures 3c0a4f3, which also filled the BAMultiShapes GT precision).
+%
+% DECIDED 2026-10-21: explanation size and GT precision are on the EVIDENCE, the explanation
+%   in input-dependent literals only (interp_metrics.evidence_explanation, feat/paper-figures
+%   b6923ae): head literals that are constant on every input (SymbolicReader.literal_constant,
+%   now interp_metrics.head_literal_constants) are a bias, taken off the threshold. Columns:
+%   test_interp_{expl_literals,expl_bits,protos_cited,gt_precision,gt_chance}_evidence. The
+%   plain counts (constant literals included) stay in interp.json for the appendix.
+%   Effect, 10 folds (plain -> evidence, test):
+%     QAT NMP Mutagenicity   4.0 -> 2.5 literals, 61 -> 43 bits, GT prec. 48 -> 43 (+-41)
+%     NMP Mutagenicity       2.5 -> 2.2 literals, 24 -> 21 bits, GT prec. 53 -> 50
+%     QAT NMP BAMultiShapes  33.4 -> 11.0 literals, 339 -> 125 bits (3 folds), GT 78 -> 87
+%     NMP MUTAG              3.3 -> 0.1 literals: the collapsed (constant-output) model is
+%                            explained by its bias alone, as it should be.
+%   92% of the QAT NMP Mutagenicity head literals are constant (NMP: 84%).
+%   COVERAGE (scored predictions whose evidence still cites a node, plain -> evidence):
+%     QAT NMP Mutagenicity 1493 -> 523 (35%; folds 0 and 1: none, fold 3: GT prec. 0)
+%     NMP Mutagenicity     1382 -> 1137 (82%)
+%   So most of QAT's localised NO2/NH2 hits came from constant literals; the GT mean over
+%   the folds that keep evidence hides it. Report the coverage beside GT prec. (text or a
+%   column) before drawing conclusions.
+% TODO:
+%   [ ] fill from the final E1 experiment (interp stage runs automatically).
+%   [x] evidence-only explanation size (b6923ae); interp stage rerun on the finished
+%       experiments 2026-10-21 (old files kept as *_pre_b6923ae.*).
+%   [ ] competitors: fidelity is 1 by construction for most self-explainable models; the
+%       comparable columns are size and GT precision. Define their explanation size.
+%   [ ] post-hoc explainers on the teacher (GNNExplainer, PGExplainer) as a GT reference.
+% =====================================================================================
+\begin{table*}[t]
+  \centering
+  \caption{Explanations of the rule model on the test folds (mean $\pm$ std over 10 folds).
+    Rule acc.: accuracy of the rules. Fid.: agreement of the rules with the network.
+    Lit.\ and Bits: size of the shortest sufficient explanation of a prediction in
+    input-dependent head literals (literals constant on every input count as a bias) and in
+    trunk bits. Protos: distinct prototypes cited. GT prec.: share of the
+    cited nodes in the ground-truth region (chance level in brackets).
+    \prelim{Grey}: preliminary runs. $^3$: folds 0--2 only.}
+  \label{tab:interp}
+  \small
+  \setlength{\tabcolsep}{3.5pt}
+  \resizebox{\textwidth}{!}{%
+  \begin{tabular}{llcccccc}
+    \toprule
+    Dataset & Model & Rule acc.\ (\%) & Fid.\ (\%) & Lit. & Bits & Protos & GT prec.\ (\%) \\
+    \midrule
+    \multirow{5}{*}{MUTAG}   & \classic{} & \prelim{\ms{65.0}{15.8}} & \prelim{\ms{80.9}{15.1}} & \prelim{\ms{6.0}{11.2}} & \prelim{\ms{6}{11}} & \na & \na \\
+                             & \classicnosum{} & \prelim{\ms{58.0}{14.5}} & \prelim{\ms{67.4}{24.8}} & \prelim{\ms{2.1}{1.0}} & \prelim{\ms{2}{1}} & \na & \na \\
+                             & \oursgraph{} & \prelim{\ms{68.1}{4.7}} & \prelim{\ms{68.7}{15.3}} & \prelim{\ms{2.5}{0.8}} & \prelim{\ms{922}{324}} & \prelim{\ms{2.8}{1.1}} & \na \\
+                             & \oursnmp{} & \prelim{\ms{39.8}{13.9}} & \prelim{\ms{100.0}{0.0}} & \prelim{\ms{0.1}{0.3}} & \prelim{\ms{19}{61}} & \prelim{\ms{0.1}{0.3}} & \na \\
+                             & \oursqat{} & \tbd & \tbd & \tbd & \tbd & \tbd & \tbd \\
+    \midrule
+    \multirow{5}{*}{Mutagenicity} & \classic{} & \tbd & \tbd & \tbd & \tbd & \tbd & \tbd \\
+                             & \classicnosum{} & \tbd & \tbd & \tbd & \tbd & \tbd & \tbd \\
+                             & \oursgraph{} & \prelim{\ms{66.9}{5.3}} & \prelim{\ms{72.4}{7.0}} & \prelim{\ms{2.7}{0.4}} & \prelim{\ms{1041}{152}} & \prelim{\ms{6.0}{1.2}} & \na \\
+                             & \oursnmp{} & \prelim{\ms{66.8}{4.3}} & \prelim{\ms{73.6}{5.9}} & \prelim{\ms{2.2}{0.3}} & \prelim{\ms{21}{5}} & \prelim{\ms{5.1}{1.2}} & \prelim{\ms{50}{26} (23)} \\
+                             & \oursqat{} & \prelim{\ms{76.6}{1.7}} & \prelim{\ms{100.0}{0.0}} & \prelim{\ms{2.5}{0.6}} & \prelim{\ms{43}{13}} & \prelim{\ms{7.0}{1.8}} & \prelim{\ms{43}{41} (22)} \\
+    \midrule
+    \multirow{5}{*}{AIDS}    & \classic{} & \tbd & \tbd & \tbd & \tbd & \tbd & \tbd \\
+                             & \classicnosum{} & \tbd & \tbd & \tbd & \tbd & \tbd & \tbd \\
+                             & \oursgraph{} & \tbd & \tbd & \tbd & \tbd & \tbd & \tbd \\
+                             & \oursnmp{} & \tbd & \tbd & \tbd & \tbd & \tbd & \tbd \\
+                             & \oursqat{} & \tbd & \tbd & \tbd & \tbd & \tbd & \tbd \\
+    \midrule
+    \multirow{5}{*}{BBBP}    & \classic{} & \tbd & \tbd & \tbd & \tbd & \tbd & \tbd \\
+                             & \classicnosum{} & \tbd & \tbd & \tbd & \tbd & \tbd & \tbd \\
+                             & \oursgraph{} & \tbd & \tbd & \tbd & \tbd & \tbd & \tbd \\
+                             & \oursnmp{} & \tbd & \tbd & \tbd & \tbd & \tbd & \tbd \\
+                             & \oursqat{} & \tbd & \tbd & \tbd & \tbd & \tbd & \tbd \\
+    \midrule
+    \multirow{5}{*}{NCI1}    & \classic{} & \tbd & \tbd & \tbd & \tbd & \tbd & \tbd \\
+                             & \classicnosum{} & \tbd & \tbd & \tbd & \tbd & \tbd & \tbd \\
+                             & \oursgraph{} & \tbd & \tbd & \tbd & \tbd & \tbd & \tbd \\
+                             & \oursnmp{} & \tbd & \tbd & \tbd & \tbd & \tbd & \tbd \\
+                             & \oursqat{} & \tbd & \tbd & \tbd & \tbd & \tbd & \tbd \\
+    \midrule
+    \multirow{5}{*}{PROTEINS} & \classic{} & \prelim{\ms{60.9}{10.2}} & \prelim{\ms{67.8}{15.4}} & \prelim{\ms{24.4}{8.3}} & \prelim{\ms{24}{8}} & \na & \na \\
+                             & \classicnosum{} & \prelim{\ms{56.5}{13.3}} & \prelim{\ms{63.0}{30.5}} & \prelim{\ms{3.5}{4.1}} & \prelim{\ms{3}{4}} & \na & \na \\
+                             & \oursgraph{} & \prelim{\ms{70.0}{7.4}} & \prelim{\ms{88.0}{5.3}} & \prelim{\ms{3.9}{2.8}} & \prelim{\ms{1460}{993}} & \prelim{\ms{8.0}{5.5}} & \na \\
+                             & \oursnmp{} & \prelim{\ms{60.1}{10.8}} & \prelim{\ms{65.2}{14.8}} & \prelim{\ms{3.0}{1.4}} & \prelim{\ms{22}{8}} & \prelim{\ms{4.9}{2.4}} & \na \\
+                             & \oursqat{} & \prelim{\ms{75.3}{4.0}$^3$} & \prelim{\ms{100.0}{0.0}$^3$} & \prelim{\ms{4.4}{3.4}$^3$} & \prelim{\ms{96}{64}$^3$} & \prelim{\ms{10.7}{6.7}$^3$} & \na \\
+    \midrule
+    \multirow{5}{*}{BA2Motifs} & \classic{} & \tbd & \tbd & \tbd & \tbd & \tbd & \tbd \\
+                             & \classicnosum{} & \tbd & \tbd & \tbd & \tbd & \tbd & \tbd \\
+                             & \oursgraph{} & \tbd & \tbd & \tbd & \tbd & \tbd & \tbd \\
+                             & \oursnmp{} & \tbd & \tbd & \tbd & \tbd & \tbd & \tbd \\
+                             & \oursqat{} & \tbd & \tbd & \tbd & \tbd & \tbd & \tbd \\
+    \midrule
+    \multirow{5}{*}{BAMultiShapes} & \classic{} & \prelim{\ms{74.8}{14.5}} & \prelim{\ms{75.3}{14.5}} & \prelim{\ms{8.6}{3.4}} & \prelim{\ms{9}{3}} & \na & \prelim{\ms{59}{25} (34)} \\
+                             & \classicnosum{} & \prelim{\ms{76.9}{19.5}} & \prelim{\ms{78.6}{22.1}} & \prelim{\ms{1.2}{0.8}} & \prelim{\ms{1}{1}} & \na & \prelim{\ms{16}{32} (34)} \\
+                             & \oursgraph{} & \prelim{\ms{88.2}{10.5}} & \prelim{\ms{88.7}{10.6}} & \prelim{\ms{2.1}{0.6}} & \prelim{\ms{736}{145}} & \prelim{\ms{4.9}{1.0}} & \na \\
+                             & \oursnmp{} & \prelim{\ms{68.9}{17.4}} & \prelim{\ms{69.5}{17.7}} & \prelim{\ms{2.1}{0.7}} & \prelim{\ms{29}{13}} & \prelim{\ms{5.5}{2.1}} & \prelim{\ms{45}{45} (35)} \\
+                             & \oursqat{} & \prelim{\ms{98.7}{0.6}$^3$} & \prelim{\ms{100.0}{0.0}$^3$} & \prelim{\ms{11.0}{0.5}$^3$} & \prelim{\ms{125}{26}$^3$} & \prelim{\ms{26.0}{3.0}$^3$} & \prelim{\ms{87}{17} (33)} \\
+
+    \bottomrule
+  \end{tabular}}
+\end{table*}

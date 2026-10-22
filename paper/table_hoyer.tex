@@ -1,0 +1,56 @@
+% =====================================================================================
+% table_hoyer.tex: can the trunk be made readable? Layer-wise Hoyer sparsification
+%   (Q3; Notion E7).
+%
+% Question: only conv layer 0 decodes to short rules (~3 literals); a unit of layers 1-2
+%   has ~1e10 minimal covers (DNF terms) and needs 10-14 literals. Does the layer-wise
+%   Hoyer fine-tune of LogiX-GIN (sparsify_proto.py: head, then convs last to first, each
+%   step accepted only if validation accuracy holds), ported to prototype students, make
+%   the trunk readable without losing accuracy or fidelity?
+% Protocol: sparsify_proto.py with low learning rates for L0/L1 (--conv_lr 5e-4 5e-4
+%   5e-3, lw_max_epochs 1000) on the final NMP folds; dense = the same checkpoint.
+% Metrics (test): network acc., fidelity, rule acc., explanation bits; per conv layer:
+%   median nonzero weights per unit (nz), dead units (no nonzero weight), median number of
+%   minimal covers of a unit (min_covers.count_min_covers) and median shortest rule length
+%   (greedy minimum-cardinality bound, exact).
+% Sources: Mutagenicity = results_final/sum_ablation_ctrl/Mutagenicity/node_mask_push
+%   (hand-tuned set), PROTEINS = results_final/sum_ablation/PROTEINS/node_mask_push
+%   (Optuna set); queue 2026-10-15/16, logs/hoyer_lowlr_kfold/; numbers from the
+%   scratchpad comparison script of session 72b5e02d (hoyer_kfold_compare.json), memory
+%   paper-todo 2026-10-16. Rerun with a committed script before the final version.
+% What it shows: accuracy unchanged, fidelity -3.6 points (2/10 folds better, p 0.09);
+%   L1 goes from ~5e10 covers per unit to ~6, but much of the "sparsity" is dead units
+%   (L1 28%, L2 72%); explanation size barely moves (24 -> 22 bits). PROTEINS: nothing
+%   moves. So Hoyer makes the trunk readable, not the explanations shorter.
+% What it does not show: whether a reader can use the L1/L2 rules; QAT students (not run).
+%
+% STATUS: \prelim (pre head-fix students, scratchpad script); PROTEINS layer columns partial.
+% TODO:
+%   [ ] post-hoc stage in the experiment YAML (sparsify + rule counts), on the final E1
+%       NMP and NMP+QAT folds; guard unpack_rules with the min-cover bound first (63 GB
+%       blow-up on Mutagenicity fold 5).
+%   [ ] decide main text vs appendix (negative-ish result).
+% =====================================================================================
+\begin{table}[t]
+  \centering
+  \caption{Layer-wise Hoyer sparsification of the \nmp{} trunk (test, 10 folds, medians
+    over units). nz: nonzero weights per unit (L0/L1/L2). Covers: minimal covers (DNF terms) of
+    an L1 unit. Dead: L1/L2 units with no nonzero weight.
+    \prelim{Grey}: preliminary runs.}
+  \label{tab:hoyer}
+  \small
+  \setlength{\tabcolsep}{3pt}
+  \begin{tabular}{llcccccc}
+    \toprule
+    Dataset & Trunk & Acc. & Fid. & Bits & nz L0/L1/L2 & Covers L1 & Dead L1/L2 \\
+    \midrule
+    \multirow{2}{*}{Mutagenicity}
+      & dense & \prelim{80.4} & \prelim{73.6} & \prelim{24} & \prelim{15/48/45} & \prelim{$5{\times}10^{10}$} & \prelim{--} \\
+      & Hoyer & \prelim{81.1} & \prelim{70.0} & \prelim{22} & \prelim{10/20/4}  & \prelim{6}  & \prelim{28\%/72\%} \\
+    \midrule
+    \multirow{2}{*}{PROTEINS}
+      & dense & \prelim{74.2} & \prelim{65.2} & \tbd & \tbd/\tbd/\prelim{45} & \tbd & \tbd \\
+      & Hoyer & \prelim{73.4} & \prelim{66.7} & \tbd & \tbd/\tbd/\prelim{32} & \tbd & \tbd \\
+    \bottomrule
+  \end{tabular}
+\end{table}

@@ -1,0 +1,199 @@
+% =====================================================================================
+% 4_experiments.tex: Experiments section.
+%
+% Tables live next to this file (table_<name>.tex), figures in figures/ (fig_<name>.tex,
+% which \includegraphics figures/fig_<name>.pdf). Every table / figure file starts with a
+% comment block: question, protocol, source runs, STATUS and TODO. Together those blocks
+% are the to-do list of the experiments; grep "STATUS:" to see where each one stands.
+%
+% Packages and every command (model names, cell macros) are defined in 0_main.tex.
+% Numbers: test split, mean ± std (sample std, pandas) over the 10 folds of the stratified
+% 10-fold cross-validation (splits/<dataset>_kfold.json), unless a cell says otherwise.
+%
+% Cell conventions (commands of 0_main.tex):
+%   \ms{m}{s}   mean ± std
+%   \prelim{x}  grey: a number from an earlier protocol, kept as a placeholder until the
+%               final run exists (the table's comment block gives its source and why it is
+%               preliminary). No grey number may remain in the submitted version.
+%   \tbd        red dash: not run yet
+%   \na         does not apply (e.g. prototypes cited by a model without prototypes)
+% =====================================================================================
+
+\section{Experiments}
+\label{sec:experiments}
+
+We evaluate \ours{} on four questions.
+\textbf{(Q1)} Is a prototype student as accurate as the \teacher{}, as \classic{} and
+as other self-explainable GNNs (\cref{sec:exp:accuracy})?
+\textbf{(Q2)} Are its explanations faithful, short and correct where a ground truth is
+known (\cref{sec:exp:interp})?
+\textbf{(Q3)} What does each component bring: the node prototypes with care mask and push,
+the quantisation-aware fine-tuning, the number of prototypes, the readout
+(\cref{sec:exp:ablation})?
+\textbf{(Q4)} What do the prototypes and explanations look like (\cref{sec:exp:qualitative})?
+
+% -------------------------------------------------------------------------------------
+\subsection{Experimental setup}
+\label{sec:exp:setup}
+
+\paragraph{Datasets.}
+We use eight graph classification benchmarks (\cref{tab:datasets}). Five are molecular:
+MUTAG, Mutagenicity and AIDS~\todo{cite TUDataset}, NCI1, and BBBP from
+MoleculeNet~\todo{cite}. PROTEINS is a protein graph dataset. BA2Motifs~\todo{cite PGExplainer} and
+BAMultiShapes~\todo{cite GLGExplainer} are synthetic: the class is decided by planted motifs, which
+gives a node-level ground truth for the explanations. Mutagenicity also has a commonly used
+ground truth: the NO$_2$ and NH$_2$ groups of mutagenic molecules~\todo{cite}.
+The logical layers read literals in $[0,1]$, so node features are one-hot: atom types for the
+molecules (BBBP also has two binary flags, aromatic and in-ring), secondary-structure types
+for PROTEINS, and the constant features of the synthetic graphs. The continuous
+attributes of AIDS and PROTEINS are not used.
+
+\input{table_datasets}
+
+\paragraph{Splits.}
+Every model is evaluated by stratified 10-fold cross-validation. For each fold, one tenth of
+the graphs is the test set, one tenth the validation set and the rest the training set. The
+fold indices are fixed and shared by all models, teachers and baselines, and fold $k$ also
+gives the random seed. Unless stated otherwise, we report the mean and standard deviation
+over the 10 test folds.
+
+\paragraph{Teacher.}
+On each fold, a \teacher{} with 3 layers of 64 units~\todo{cite GIN, LogiX-GIN} is trained for 500 epochs with
+Adam (learning rate $10^{-3}$, batch size 128, weight decay $10^{-5}$, dropout 0.15).
+Its node states are binarised by a Gumbel-sigmoid, as in \logix{}, so that they can be distilled into
+logical layers. We keep the checkpoint with the best validation accuracy. All students of
+a fold are distilled from the same teacher.
+
+\paragraph{Students.}
+Every student has the trunk of \logix{}: three logical layers distilled layer by layer
+from the teacher's binary node states, followed by a mean and max readout. Upstream classic
+\logix{} also has a sum readout. The models differ only in their head.
+\begin{itemize}
+  \item \textbf{\classic{}} and \textbf{\classicnosum{}} feed the pooled trunk units to a logical layer, as in~\todo{cite LogiX-GIN},
+    with the upstream readout (mean, max, sum) and without the sum.
+  \item \textbf{\oursgraph{}}: binary graph-level prototypes, compared to the pooled
+    embedding by Hamming similarity.
+  \item \textbf{\oursnmp{}}: binary node-level prototypes with a learned care
+    mask and periodic projection onto real training nodes (push). The head reads, for each
+    prototype, how well the best node of the graph matches it.
+  \item \textbf{\oursqat{}}: the \nmp{} student fine-tuned by quantisation-aware
+    training. A growing random share of the bits is binarised at each forward pass
+    (Quant-Noise~\todo{cite Fan et al.\ 2021}, straight-through gradients~\todo{cite
+    Bengio et al.\ 2013}), until the network computes exactly its rules. The fine-tune keeps
+    the epoch whose rule model has the best validation accuracy.
+\end{itemize}
+The prototype heads are initialised with their bias centred on the training set and trained
+with a cross-entropy on the logits. This avoids the saturated constant head of a randomly
+initialised logical layer.\todo{one sentence in Sec.~3; ablate in appendix?}
+
+\paragraph{Hyper-parameter search.}
+Each student is tuned with Optuna~\todo{cite}: a multivariate TPE sampler (seeded, 10 random
+start-up trials), a median pruner, and 25 trials on fold~0. Trials that predict a single
+class on the validation set are pruned. The objective is the validation balanced
+accuracy. For \nmpqat{}, it is the validation balanced accuracy of the rule model, after
+the student and its fine-tune have been tuned together. The test sets are never used in
+the search. The best configuration is then retrained on all 10 folds. Fold~0's validation
+graphs are test graphs of other folds, which gives a small optimistic bias, the same for
+every model. The search spaces (learning rate, batch size, regularisation weights,
+epochs, warm-up, number of prototypes, mask and push settings, QAT epochs, learning rate and
+loss weights) are given in \cref{app:hps}.\todo{appendix table of the spaces, from configs/search\_spaces.yaml}
+
+\paragraph{Metrics.}
+We report test accuracy, balanced accuracy, F1 on the minority class and ROC-AUC. Balanced
+accuracy matters on AIDS (80/20) and BBBP (76/24). The explanation metrics are computed on the
+\emph{rule model}, the same weights with every truth value binarised the way the rules are
+read:
+\begin{itemize}
+  \item \textbf{rule-model accuracy}, the accuracy of the rules;
+  \item \textbf{fidelity}, the share of test graphs on which the rule model and the network
+    predict the same class;
+  \item \textbf{explanation size}: per prediction, the head literals of the shortest
+    sufficient explanation, and the trunk bits that the prototypes it cites care about;
+  \item \textbf{ground-truth precision}: where a node-level ground truth exists, the share of
+    the nodes matched by the cited prototypes that lie in the ground-truth region, next to
+    the same share for a random node (chance level).
+\end{itemize}
+Paired comparisons over the folds use a two-sided Wilcoxon signed-rank test.
+\todo{say whether constant literals are left out of the explanation size (evidence-only
+count), see table\_interp.tex}
+
+\paragraph{Competitors.}
+\todo{choose and describe the self-explainable baselines: e.g.\ ProtGNN, PIGNN, GIB,
+GELATO, and post-hoc explainers on the teacher (GNNExplainer, PGExplainer) for the
+ground-truth comparison. Each must run on our fold indices (splits/\allowbreak <dataset>\_kfold.json)
+with a search budget equal to ours (25 trials on fold 0, then 10 folds). State the code
+version of each one.}
+
+\paragraph{Implementation.}
+PyTorch~2.5 and PyTorch Geometric~2.6. One NVIDIA RTX 2060 SUPER (8~GB) is shared by up to 6 runs.
+Energy and emissions are measured by CodeCarbon~\todo{cite}. All the experiments of this
+paper took \todo{N} GPU-hours and emitted about \todo{X}~kgCO$_2$e (French grid). A single
+student trains in \todo{min--max} minutes per fold, and the search with its 10 folds takes
+\todo{range} per dataset. Code, configurations, fold indices and teachers will be
+released.\todo{repository URL}
+% Cost: one general figure, no table (decided 2026-10-21). Source: MLflow co2/* metrics of
+% every run (utils/tracking.py); the GPU energy of parallel runs is counted once per run,
+% so the sum is an upper bound: say so, or divide the GPU part by the concurrent jobs.
+
+% -------------------------------------------------------------------------------------
+\subsection{Accuracy (Q1)}
+\label{sec:exp:accuracy}
+
+\input{table_main}
+
+\todo{results paragraph: student vs teacher gap per dataset; classic vs prototype heads;
+cost of QAT in network accuracy (QAT network = its rule model); competitors.}
+
+% -------------------------------------------------------------------------------------
+\subsection{Faithfulness and size of the explanations (Q2)}
+\label{sec:exp:interp}
+
+\input{table_interp}
+
+\input{figures/fig_pareto}
+
+\input{table_sanity}
+
+\todo{results paragraph: fidelity of the rule model; QAT closes the gap to 100\%; size of
+explanations vs classic \logix{}; ground-truth precision vs chance and vs competitors; randomisation check
+(\cref{tab:sanity}).}
+
+% -------------------------------------------------------------------------------------
+\subsection{Ablations (Q3)}
+\label{sec:exp:ablation}
+
+\paragraph{Components of the node prototypes.}
+\input{table_nmp_components}
+\todo{paragraph}
+
+\paragraph{Binarisation: from a soft network to its rules.}
+\input{table_binarisation}
+\input{figures/fig_binarisation}
+\todo{paragraph}
+
+\paragraph{Number of prototypes.}
+\input{table_num_prototypes}
+\todo{paragraph}
+
+\paragraph{Sum pooling.}
+\input{table_sum_ablation}
+\todo{paragraph}
+
+\paragraph{Readable trunk: layer-wise sparsification.}
+\input{table_hoyer}
+\input{figures/fig_rule_complexity}
+\todo{paragraph; or move to the appendix if the trunk result stays negative}
+
+% -------------------------------------------------------------------------------------
+\subsection{Qualitative results (Q4)}
+\label{sec:exp:qualitative}
+
+\input{figures/fig_agreement}
+\input{figures/fig_prototypes}
+\input{figures/fig_explanation}
+\todo{paragraph}
+
+% -------------------------------------------------------------------------------------
+% Appendix material (move to the appendix file when it exists).
+\input{table_main_full}
+\input{table_sensitivity}

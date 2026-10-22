@@ -1,0 +1,11 @@
+# LaTeX build outputs (the figures/*.pdf are sources and stay tracked)
+/0_main.pdf
+*.aux
+*.log
+*.out
+*.toc
+*.bbl
+*.blg
+*.fls
+*.fdb_latexmk
+*.synctex.gz

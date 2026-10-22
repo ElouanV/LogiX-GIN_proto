@@ -1,0 +1,73 @@
+% =====================================================================================
+% table_binarisation.tex: closing the gap between the soft network and its rules (Q3;
+%   Notion E6 fidelity hardening + the QAT study, docs/QAT.md).
+%
+% Question: the network computes with soft truth values; a reader gets the rules
+%   (every bit binarised at 0.5). Fidelity of a trained NMP student is ~74-80%. Which
+%   fine-tune makes the network equal to its rules at the smallest accuracy cost?
+% Arms (all start from the same trained NMP student):
+%   none            the trained student, read as rules
+%   sharpen (train) train_proto.py --harden_to 30: sigmoids sharpened during training
+%   sharpen FT      harden_proto.py: gradual sharpening fine-tune, beta 1 -> 20, 300 or
+%                   1000 epochs
+%   hard FT         every bit binarised at once, straight-through, then fine-tuned
+%   QAT             qat_proto.py: Quant-Noise, binarised share ramps 0 -> 1 over 2/3 of
+%                   the epochs, STE on binarised bits, keeps the epoch with the best
+%                   validation rule-model accuracy; "tuned" = student and QAT tuned jointly
+%                   by Optuna on the rule-model val balanced accuracy (node_mask_push_qat)
+% Metrics: test; network accuracy, fidelity, rule-model accuracy (%), explanation bits.
+%
+% Sources:
+%   rows "seeds 0-2": Mutagenicity NMP, results_proto/Mutagenicity/node-facbe6d14f72,
+%     RANDOM split (not the k-fold), seeds 0-2, 2026-10-12/13 (docs/QAT.md table; memory
+%     paper-todo). Preliminary protocol: the final table must use the k-fold folds.
+%   rows "10 folds": results_final/sum_ablation_ctrl/Mutagenicity/node_mask_push (none)
+%     and results_final/qat_nmp/Mutagenicity/node_mask_push_qat (QAT tuned).
+% What it shows: sharpening and hard fine-tunes reach fidelity ~0.9-1 but lose 5-11 points
+%   of network accuracy and do not improve the rules; progressive QAT gives the best rule
+%   model (+10 points over the rules of the untouched student on 10 folds, 10/10 folds) at
+%   fidelity 1; the price is 4 points of network accuracy and 2x longer explanations (evidence bits
+%   43 vs 21; plain counts 61 vs 24).
+% What it does not show: whether the rule-model gain holds on the other datasets (PROTEINS
+%   folds 0-2: rules 75.3 vs 67.9; BAMultiShapes: see table_num_prototypes.tex). Bits are
+%   evidence bits (table_interp.tex): QAT makes 92% of the head literals constant, and with
+%   them left out its explanations still cite a node in only 35% of the Mutagenicity GT
+%   predictions (NMP 82%).
+%
+% STATUS: \prelim. Mixed protocols (random-split seeds vs k-fold folds).
+% TODO:
+%   [ ] rerun every arm on the 10 k-fold folds of the FINAL E1 NMP students (post-hoc
+%       fine-tunes from the final checkpoints, no retraining): harden_proto.py (1000 ep),
+%       hard FT, qat_proto.py with a fixed set, + the jointly tuned QAT of E1.
+%   [ ] at least Mutagenicity + PROTEINS + BAMultiShapes; same columns + GT precision.
+%   [ ] fig_binarisation.tex plots the same runs (val curves).
+% =====================================================================================
+\begin{table}[t]
+  \centering
+  \caption{Binarisation of a trained \nmp{} student on Mutagenicity (test, \%): network
+    accuracy, fidelity of its rules, accuracy of the rule model, explanation size.
+    \prelim{Grey}: preliminary runs (rows ``seeds 0--2'' on a random split).}
+  \label{tab:binarisation}
+  \small
+  \setlength{\tabcolsep}{3.5pt}
+  \begin{tabular}{llcccc}
+    \toprule
+    Runs & Fine-tune & Network acc. & Fid. & Rule acc. & Bits \\
+    \midrule
+    \multirow{6}{*}{seeds 0--2}
+      & none                          & \prelim{81.2} & \prelim{80} & \prelim{72.7} & \tbd \\
+      & sharpen during training ($\beta$ 30) & \prelim{76.9} & \prelim{88} & \prelim{71.6} & \tbd \\
+      & sharpen FT, 300 ep            & \prelim{70.1} & \prelim{88} & \prelim{67.2} & \tbd \\
+      & sharpen FT, 1000 ep           & \prelim{76.3} & \prelim{90} & \prelim{74.1} & \tbd \\
+      & hard FT (all bits at once)    & \prelim{69.7} & \prelim{100} & \prelim{69.7} & \tbd \\
+      & QAT, 300 ep                   & \prelim{74.2} & \prelim{100} & \prelim{\ms{74.2}{5.7}} & \tbd \\
+    \midrule
+    \multirow{5}{*}{10 folds}
+      & none                          & \prelim{\ms{80.4}{2.1}} & \prelim{\ms{73.6}{5.9}} & \prelim{\ms{66.8}{4.3}} & \prelim{\ms{21}{5}} \\
+      & sharpen FT, 1000 ep           & \tbd & \tbd & \tbd & \tbd \\
+      & hard FT                       & \tbd & \tbd & \tbd & \tbd \\
+      & QAT, fixed set                & \tbd & \tbd & \tbd & \tbd \\
+      & QAT, tuned with the student   & \prelim{\ms{76.6}{1.7}} & \prelim{\ms{100}{0}} & \prelim{\ms{76.6}{1.7}} & \prelim{\ms{43}{13}} \\
+    \bottomrule
+  \end{tabular}
+\end{table}

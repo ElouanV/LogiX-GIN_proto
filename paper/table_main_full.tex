@@ -1,0 +1,82 @@
+% =====================================================================================
+% table_main_full.tex: appendix; every classification metric of the students (Q1, E1).
+%
+% Metrics: test accuracy, balanced accuracy, F1 of the minority class, ROC-AUC (%),
+%   mean ± std over 10 folds (utils/evaluation.py). Of the network, not the rule model.
+%
+% STATUS: \prelim / \tbd everywhere; same sources and caveats as table_main.tex
+%   (sum_ablation and sum_ablation_ctrl trained before the head-saturation fix of
+%   2026-10-19; Mutagenicity graph / NMP from a hand-tuned set; ^3 = folds 0-2 only).
+%   Rows were generated from results_final/<exp>/<dataset>/summary.csv (columns
+%   test_{acc,balanced_acc,f1,auc}_{mean,std}).
+%
+% TODO:
+%   [ ] fill from the final E1 experiment (table_main.tex TODO).
+%   [ ] teacher rows: total_results.csv only has accuracy. Get the other metrics without
+%       retraining, e.g. a CPU evaluation of the 10 best.pt per dataset written to a NEW
+%       file (train_baseline.py --only_eval rewrites results.json / total_results.csv:
+%       don't overwrite them).
+%   [ ] competitors, same columns.
+% =====================================================================================
+\begin{table*}[p]
+  \centering
+  \caption{All test metrics of the self-explainable students (\%, mean $\pm$ std over 10
+    folds): accuracy, balanced accuracy, F1 of the minority class and ROC-AUC.
+    \prelim{Grey}: preliminary runs. $^3$: folds 0--2 only.}
+  \label{tab:main_full}
+  \small
+  \begin{tabular}{llcccc}
+    \toprule
+    Dataset & Model & Acc. & Bal.\ acc. & F1 (minority) & ROC-AUC \\
+    \midrule
+    \multirow{5}{*}{MUTAG}   & \classic{} & \prelim{\ms{63.9}{19.0}} & \prelim{\ms{58.1}{16.4}} & \prelim{\ms{41.6}{25.8}} & \prelim{\ms{63.3}{25.9}} \\
+                             & \classicnosum{} & \prelim{\ms{81.0}{9.6}} & \prelim{\ms{75.4}{15.1}} & \prelim{\ms{61.8}{29.6}} & \prelim{\ms{90.3}{8.6}} \\
+                             & \oursgraph{} & \prelim{\ms{82.5}{13.0}} & \prelim{\ms{81.0}{13.3}} & \prelim{\ms{74.5}{18.6}} & \prelim{\ms{87.2}{9.7}} \\
+                             & \oursnmp{} & \prelim{\ms{39.8}{13.9}} & \prelim{\ms{50.0}{0.0}} & \prelim{\ms{40.0}{21.2}} & \prelim{\ms{46.9}{9.7}} \\
+                             & \oursqat{} & \tbd & \tbd & \tbd & \tbd \\
+    \midrule
+    \multirow{5}{*}{Mutagenicity} & \classic{} & \tbd & \tbd & \tbd & \tbd \\
+                             & \classicnosum{} & \tbd & \tbd & \tbd & \tbd \\
+                             & \oursgraph{} & \prelim{\ms{82.2}{1.4}} & \prelim{\ms{82.1}{1.5}} & \prelim{\ms{80.2}{1.8}} & \prelim{\ms{88.7}{1.5}} \\
+                             & \oursnmp{} & \prelim{\ms{80.4}{2.1}} & \prelim{\ms{80.1}{2.1}} & \prelim{\ms{77.9}{2.5}} & \prelim{\ms{86.8}{1.6}} \\
+                             & \oursqat{} & \prelim{\ms{76.6}{1.7}} & \prelim{\ms{76.2}{1.9}} & \prelim{\ms{73.4}{2.7}} & \prelim{\ms{82.4}{1.8}} \\
+    \midrule
+    \multirow{5}{*}{AIDS}    & \classic{} & \tbd & \tbd & \tbd & \tbd \\
+                             & \classicnosum{} & \tbd & \tbd & \tbd & \tbd \\
+                             & \oursgraph{} & \tbd & \tbd & \tbd & \tbd \\
+                             & \oursnmp{} & \tbd & \tbd & \tbd & \tbd \\
+                             & \oursqat{} & \tbd & \tbd & \tbd & \tbd \\
+    \midrule
+    \multirow{5}{*}{BBBP}    & \classic{} & \tbd & \tbd & \tbd & \tbd \\
+                             & \classicnosum{} & \tbd & \tbd & \tbd & \tbd \\
+                             & \oursgraph{} & \tbd & \tbd & \tbd & \tbd \\
+                             & \oursnmp{} & \tbd & \tbd & \tbd & \tbd \\
+                             & \oursqat{} & \tbd & \tbd & \tbd & \tbd \\
+    \midrule
+    \multirow{5}{*}{NCI1}    & \classic{} & \tbd & \tbd & \tbd & \tbd \\
+                             & \classicnosum{} & \tbd & \tbd & \tbd & \tbd \\
+                             & \oursgraph{} & \tbd & \tbd & \tbd & \tbd \\
+                             & \oursnmp{} & \tbd & \tbd & \tbd & \tbd \\
+                             & \oursqat{} & \tbd & \tbd & \tbd & \tbd \\
+    \midrule
+    \multirow{5}{*}{PROTEINS} & \classic{} & \prelim{\ms{73.7}{4.4}} & \prelim{\ms{72.0}{4.1}} & \prelim{\ms{66.1}{5.1}} & \prelim{\ms{79.9}{5.2}} \\
+                             & \classicnosum{} & \prelim{\ms{69.4}{8.6}} & \prelim{\ms{65.1}{10.8}} & \prelim{\ms{47.9}{28.1}} & \prelim{\ms{76.4}{7.8}} \\
+                             & \oursgraph{} & \prelim{\ms{75.1}{4.9}} & \prelim{\ms{73.4}{5.4}} & \prelim{\ms{67.4}{7.6}} & \prelim{\ms{79.5}{5.5}} \\
+                             & \oursnmp{} & \prelim{\ms{74.2}{3.7}} & \prelim{\ms{72.7}{3.7}} & \prelim{\ms{67.0}{4.7}} & \prelim{\ms{77.3}{3.8}} \\
+                             & \oursqat{} & \prelim{\ms{75.3}{4.0}$^3$} & \prelim{\ms{72.7}{4.9}$^3$} & \prelim{\ms{65.5}{7.8}$^3$} & \prelim{\ms{76.8}{7.4}$^3$} \\
+    \midrule
+    \multirow{5}{*}{BA2Motifs} & \classic{} & \tbd & \tbd & \tbd & \tbd \\
+                             & \classicnosum{} & \tbd & \tbd & \tbd & \tbd \\
+                             & \oursgraph{} & \tbd & \tbd & \tbd & \tbd \\
+                             & \oursnmp{} & \tbd & \tbd & \tbd & \tbd \\
+                             & \oursqat{} & \tbd & \tbd & \tbd & \tbd \\
+    \midrule
+    \multirow{5}{*}{BAMultiShapes} & \classic{} & \prelim{\ms{99.1}{0.9}} & \prelim{\ms{99.1}{0.9}} & \prelim{\ms{99.1}{0.9}} & \prelim{\ms{99.9}{0.2}} \\
+                             & \classicnosum{} & \prelim{\ms{95.9}{3.0}} & \prelim{\ms{95.9}{3.0}} & \prelim{\ms{95.7}{3.2}} & \prelim{\ms{98.2}{2.1}} \\
+                             & \oursgraph{} & \prelim{\ms{99.3}{0.8}} & \prelim{\ms{99.3}{0.8}} & \prelim{\ms{99.3}{0.8}} & \prelim{\ms{100.0}{0.0}} \\
+                             & \oursnmp{} & \prelim{\ms{98.0}{2.4}} & \prelim{\ms{98.0}{2.4}} & \prelim{\ms{97.9}{2.5}} & \prelim{\ms{99.6}{0.9}} \\
+                             & \oursqat{} & \prelim{\ms{98.7}{0.6}$^3$} & \prelim{\ms{98.7}{0.6}$^3$} & \prelim{\ms{98.6}{0.6}$^3$} & \prelim{\ms{99.3}{1.2}$^3$} \\
+
+    \bottomrule
+  \end{tabular}
+\end{table*}

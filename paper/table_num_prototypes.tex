@@ -1,0 +1,59 @@
+% =====================================================================================
+% table_num_prototypes.tex: how many prototypes does the QAT NMP student need? (Q3)
+%
+% Question: with 32-64 prototypes most of them end up with no cared bit (constant
+%   similarity 1; Mutagenicity qat_nmp fold 1: 25/32 prototypes, all head weights 0),
+%   and explanations cite many prototypes. Does a small K keep the accuracy and shorten
+%   the explanations?
+% Protocol: node_mask_push_qat with num_prototypes restricted (search space nmp_qat_p8 =
+%   {4, 8}, nmp_qat_p16 = {8, 16}; nmp_qat = {16, 32, 64}), 15 Optuna trials on fold 0
+%   (25 for qat_nmp), then folds 0-2. The K column is the value the search picked.
+%   Test, mean ± std over folds 0-2.
+% Sources (results_final/<exp>/<dataset>/node_mask_push_qat*/fold{0,1,2}):
+%   BAMultiShapes K=8: qat_nmp_p8_3fold;  K=64: qat_nmp_3fold.
+%   Mutagenicity  K=32: qat_nmp folds 0-2;  K in {8,16}: qat_nmp_p16_3fold (RUNNING since
+%     2026-10-21 10:25, expected done ~18:00).
+%   PROTEINS K=32: qat_nmp_3fold.
+% What it shows (BAMultiShapes, evidence sizes): K=8 cuts explanations ~3x (bits 46 vs
+%   125, 4 vs 26 prototypes cited) and raises GT precision (99 vs 87) for -5 points of
+%   accuracy. (Plain counts, constant literals included: 71 vs 339 bits, 88 vs 78 GT.)
+% What it does not show: 3 folds only (std is large: K=8 folds are 99/88/94); the search
+%   ran on fold 0 only; K and the other hyper-parameters change together (each K row is
+%   its own study), so this is "best model with at most K", not a pure K effect.
+%
+% STATUS: partially filled, \prelim (3 folds).
+% TODO:
+%   [ ] Mutagenicity K in {8,16} when qat_nmp_p16_3fold finishes.
+%   [ ] decide the paper's K policy (fixed small K, or K in the search) and, if kept,
+%       run 10 folds for the chosen rows; else move to the appendix.
+%   [x] evidence-only explanation size (interp rerun 2026-10-21, *_evidence columns,
+%       folds 0-2 of each source). Mutagenicity K=32 GT prec.: only 5 of 295 scored
+%       predictions keep a node in their evidence (folds 0, 1: none), one fold -> 2%.
+% =====================================================================================
+\begin{table}[t]
+  \centering
+  \caption{\nmpqat{} with a bounded number of prototypes $K$ (test, folds 0--2, mean
+    $\pm$ std). Bal.\ acc.\ of the network (= rule model). Lit./Bits: explanation size.
+    Protos: prototypes cited. GT prec.: cited nodes in the ground truth (\%). Sizes count input-dependent literals only. $^\ast$: 5 of 295 scored predictions cite a node (one fold).
+    \prelim{Grey}: preliminary runs.}
+  \label{tab:num_prototypes}
+  \small
+  \setlength{\tabcolsep}{3.5pt}
+  \begin{tabular}{lccccccc}
+    \toprule
+    Dataset & $K$ space & $K$ & Bal.\ acc. & Lit. & Bits & Protos & GT prec. \\
+    \midrule
+    \multirow{2}{*}{BAMultiShapes}
+      & \{4, 8\}       & 8  & \prelim{\ms{93.7}{5.5}} & \prelim{\ms{3.1}{1.3}}  & \prelim{\ms{46}{7}}   & \prelim{\ms{4.0}{1.0}}  & \prelim{\ms{99}{1}} \\
+      & \{16, 32, 64\} & 64 & \prelim{\ms{98.7}{0.6}} & \prelim{\ms{11.0}{0.5}} & \prelim{\ms{125}{26}} & \prelim{\ms{26.0}{3.0}} & \prelim{\ms{87}{17}} \\
+    \midrule
+    \multirow{2}{*}{Mutagenicity}
+      & \{8, 16\}      & \tbd & \tbd & \tbd & \tbd & \tbd & \tbd \\
+      & \{16, 32, 64\} & 32 & \prelim{\ms{76.0}{2.7}} & \prelim{\ms{2.6}{0.6}} & \prelim{\ms{42}{16}} & \prelim{\ms{7.0}{2.0}} & \prelim{2}$^\ast$ \\
+    \midrule
+    \multirow{2}{*}{PROTEINS}
+      & \{8, 16\}      & \tbd & \tbd & \tbd & \tbd & \tbd & \na \\
+      & \{16, 32, 64\} & 32 & \prelim{\ms{72.7}{4.9}} & \prelim{\ms{4.4}{3.4}} & \prelim{\ms{96}{64}} & \prelim{\ms{10.7}{6.7}} & \na \\
+    \bottomrule
+  \end{tabular}
+\end{table}

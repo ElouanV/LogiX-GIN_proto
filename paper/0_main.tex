@@ -1,0 +1,83 @@
+% =====================================================================================
+% 0_main.tex: the paper's root document: packages, commands, sections.
+%
+% Build (from paper/):
+%   tectonic -X compile 0_main.tex          # or: latexmk -pdf 0_main.tex
+% Sections are numbered files (0_abstract.tex, 1_introduction.tex, ..., 4_experiments.tex); a
+% missing one is skipped, so the document builds while the paper is being written.
+% Tables are table_<name>.tex next to this file, figures figures/fig_<name>.tex.
+%
+% TODO(venue): replace the document class / style file by the venue's template; the
+%   commands below are independent of it.
+% =====================================================================================
+\documentclass[10pt]{article}
+
+% ---- packages ------------------------------------------------------------------------
+\usepackage[utf8]{inputenc}
+\usepackage[T1]{fontenc}
+\usepackage{lmodern}
+\usepackage[margin=2.2cm]{geometry}
+\usepackage{amsmath,amssymb}
+\usepackage{graphicx}
+\usepackage{booktabs}
+\usepackage{multirow}
+\usepackage[table]{xcolor}
+\usepackage{microtype}
+\usepackage[hidelinks]{hyperref}
+\usepackage[capitalise,noabbrev]{cleveref}   % after hyperref
+
+% ---- names -----------------------------------------------------------------------------
+% Every model / method name of the paper goes through one of these commands: change a
+% name here and it changes in the text, the tables and the figure captions. Use them with
+% {} (\ours{}) so the following space is kept.
+\newcommand{\logix}{LogiX-GIN}                  % upstream method (NeurIPS 2025)
+\newcommand{\ours}{Proto-LogiX-GIN}             % TODO(name): our method, name not decided
+\newcommand{\nmp}{NMP}                          % node prototypes with care mask and push
+\newcommand{\qat}{QAT}                          % quantisation-aware fine-tune
+\newcommand{\nmpqat}{\nmp{}+\qat{}}
+\newcommand{\teacher}{GIN teacher}
+
+% Rows of the tables (one command per model)
+\newcommand{\classic}{\logix{} (mean, max, sum)}  % upstream readout
+\newcommand{\classicnosum}{\logix{} (mean, max)}  % without sum pooling
+\newcommand{\oursgraph}{\ours{} (graph)}          % graph-level prototypes
+\newcommand{\oursnmp}{\ours{} (\nmp{})}           % node prototypes
+\newcommand{\oursqat}{\ours{} (\nmpqat{})}        % node prototypes + QAT (rule model)
+
+% ---- table cells -------------------------------------------------------------------------
+\newcommand{\ms}[2]{$#1{\scriptstyle\,\pm\,#2}$}  % mean ± std
+\newcommand{\prelim}[1]{\textcolor{gray}{#1}}     % preliminary number (earlier protocol)
+\newcommand{\tbd}{\textcolor{red}{--}}            % not run yet
+\newcommand{\na}{n/a}                             % does not apply
+
+% ---- writing aids (must be empty in the submitted version) -------------------------------
+\newcommand{\todo}[1]{\textcolor{red}{[TODO: #1]}}
+% Final version: \renewcommand{\todo}[1]{} and check that no \prelim / \tbd is left
+% (grep -rn '\\prelim\|\\tbd' paper/).
+
+% ---- document ----------------------------------------------------------------------------
+\title{\ours{}: \todo{title}}
+\author{\todo{authors}}
+\date{}
+
+\begin{document}
+\maketitle
+
+\InputIfFileExists{0_abstract.tex}{}{}
+\InputIfFileExists{1_introduction.tex}{}{}
+\InputIfFileExists{2_related_work.tex}{}{}
+\InputIfFileExists{3_method.tex}{}{}
+\input{4_experiments}
+\InputIfFileExists{5_conclusion.tex}{}{}
+
+\IfFileExists{references.bib}{%
+  \bibliographystyle{plain}
+  \bibliography{references}
+}{}
+
+\appendix
+\section{Hyper-parameter search spaces}
+\label{app:hps}
+\todo{table of configs/search\_spaces.yaml and the fixed arguments of configs/models.yaml}
+
+\end{document}

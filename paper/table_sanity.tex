@@ -1,0 +1,76 @@
+% =====================================================================================
+% table_sanity.tex: model-randomisation sanity check of the explanations (Q2; Adebayo et
+%   al., "Sanity checks for saliency maps", NeurIPS 2018).
+%
+% Question: do the explanations, and above all their ground-truth precision, depend on
+%   what the model learned? A GT precision that a model with scrambled weights also
+%   reaches measures the dataset (how many nodes lie near an NO2 group), not the model.
+% Protocol (utils/sanity.py, sanity_randomisation.py, feat/paper-figures 82edfda):
+%   independent randomisation, one stage at a time with every other stage trained: head,
+%   prototypes, conv layer 2, 1, 0. Randomise = permute the entries of every trained
+%   parameter tensor of the stage (same values, scale and sparsity; learned assignment
+%   destroyed). 3 draws per stage and fold, test split, evidence explanations.
+%   Not the cascade (cumulative) order: a permuted head alone already predicts one class
+%   on every graph (NMP and QAT NMP Mutagenicity), so the lower stages say nothing more.
+%   Not re-initialisation: Phi initialises to w=1, b=0, i.e. every literal constant true,
+%   so a re-initialised head cites nothing (an artefact of the init).
+%   Columns: rule-model accuracy; Agree.: same predicted class as the trained model;
+%   Jacc.: Jaccard of the cited node sets, over graphs where both cite a node; GT prec.
+%   of the randomised model (chance in brackets).
+%   Command: python sanity_randomisation.py --run_path results_final/<exp>/<ds>/<model>/fold*
+%   (CPU, ~5 s per fold and draw; 10 folds x 3 draws x 2 models ~ 10 min).
+%
+% Smoke run (fold 3, 3 draws, 2026-10-21; preliminary pre-head-fix runs):
+%   NMP Mutagenicity (sum_ablation_ctrl), trained: rule acc 63.1, GT prec. 78 (chance 24)
+%     randomised    rule acc   agree   Jacc.   GT prec.
+%     head            47.3     0.39    0.54     20
+%     prototypes      55.3     0.36    0.19     37
+%     conv2           45.7     0.65    0.15     13 (n=3)
+%     conv1           55.4     0.36    0.19     22
+%     conv0           57.1     0.43    0.16     22
+%   -> passes: explanations change with every stage, GT precision falls to chance.
+%   QAT NMP Mutagenicity (qat_nmp) fold 3: inconclusive, the trained model's evidence
+%     cites a node in only 10% of test graphs (19 GT-scored), the randomised ones in ~0%.
+%
+% What it shows: that the explanations and their GT precision come from the learned
+%   weights of every stage, not from the data alone.
+% What it does not show: that the explanations are correct or useful (a pass is
+%   necessary, not sufficient); the data-randomisation test (retrain on permuted labels,
+%   GPU) is not run.
+%
+% STATUS: code ready, smoke run only. \tbd.
+% TODO:
+%   [ ] run on the final E1 folds of every node-prototype and classic model with a GT
+%       region (Mutagenicity, BA2Motifs, BAMultiShapes); fill from sanity_*.json.
+%   [ ] decide: data-randomisation test (permuted labels, one retraining per fold).
+% =====================================================================================
+\begin{table}[t]
+  \centering
+  \caption{Model-randomisation sanity check on Mutagenicity (test, mean over folds and 3
+    draws). One stage at a time has its trained parameters permuted. Agree.: same class as
+    the trained model. Jacc.: overlap of the cited nodes with the trained model's. GT
+    prec.: cited nodes in the ground truth (\%, chance in brackets).}
+  \label{tab:sanity}
+  \small
+  \begin{tabular}{llcccc}
+    \toprule
+    Model & Randomised & Rule acc.\ (\%) & Agree.\ (\%) & Jacc. & GT prec.\ (\%) \\
+    \midrule
+    \multirow{6}{*}{\oursnmp{}}
+      & none (trained) & \tbd & 100 & 1 & \tbd \\
+      & head           & \tbd & \tbd & \tbd & \tbd \\
+      & prototypes     & \tbd & \tbd & \tbd & \tbd \\
+      & conv layer 2   & \tbd & \tbd & \tbd & \tbd \\
+      & conv layer 1   & \tbd & \tbd & \tbd & \tbd \\
+      & conv layer 0   & \tbd & \tbd & \tbd & \tbd \\
+    \midrule
+    \multirow{6}{*}{\oursqat{}}
+      & none (trained) & \tbd & 100 & 1 & \tbd \\
+      & head           & \tbd & \tbd & \tbd & \tbd \\
+      & prototypes     & \tbd & \tbd & \tbd & \tbd \\
+      & conv layer 2   & \tbd & \tbd & \tbd & \tbd \\
+      & conv layer 1   & \tbd & \tbd & \tbd & \tbd \\
+      & conv layer 0   & \tbd & \tbd & \tbd & \tbd \\
+    \bottomrule
+  \end{tabular}
+\end{table}

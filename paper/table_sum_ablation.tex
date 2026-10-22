@@ -1,0 +1,59 @@
+% =====================================================================================
+% table_sum_ablation.tex: does a sum readout help the prototype students? (Q3; Notion E2)
+%
+% Question: classic LogiX-GIN reads mean | max | sum pooled units. Sum-pooled values are
+%   unbounded counts (no 1 - s negation; at graph level they are thresholded by phi_sum
+%   before the prototypes). Does adding sum change accuracy or the explanations?
+% Protocol (controlled, configs/experiments/sum_ablation_ctrl.yaml): each *_sum model is
+%   trained with the best set of its no-sum twin (params_from), so a pair differs ONLY by
+%   --pool_ops; same teachers and folds. Paired over the 10 folds: mean difference
+%   (with sum - without), folds where sum is better, two-sided Wilcoxon signed-rank p.
+%   PROTEINS / BAMultiShapes: Optuna set of the no-sum model (sum_ablation study, fold 0);
+%   Mutagenicity: hand-tuned set (best_sets), no study.
+% Source: results_final/sum_ablation_ctrl/<dataset>/<model>/fold<k>/{final,interp}.json;
+%   computed 2026-10-21 by a scratchpad script (paired Wilcoxon, scipy). The no-sum folds
+%   of PROTEINS / BAMultiShapes are the sum_ablation runs (symlinks).
+% What it shows: at equal hyper-parameters sum does not change accuracy (|Δ| ≤ 1.4
+%   points), the drop seen in sum_ablation came from the different Optuna sets. Sum
+%   always makes explanations longer (bits). It lowers graph-level fidelity on PROTEINS
+%   (-23 points, 0/10 folds better) but not on Mutagenicity; NMP is neutral.
+% What it does not show: why graph-level fidelity drops on PROTEINS (the phi_sum
+%   thresholds of counts are the lead; trunk and head fidelity are unchanged); whether
+%   sum would help with a set tuned for it; MUTAG (left out, unstable).
+%
+% STATUS: filled (2026-10-21) but trained BEFORE the head-saturation fix (2026-10-19).
+%   Both arms of each pair lack it, so the comparison is internally fair; mark \prelim
+%   until decided whether to rerun.
+% TODO:
+%   [ ] decide: keep as is (fair pairs) or rerun with the fixed models (≈80 runs,
+%       ≤1.0 kgCO2e last time).
+%   [ ] add the diagnosis row if found (phi_sum thresholds at graph level).
+%   [ ] maybe move to the appendix: the paper's models all drop sum.
+% =====================================================================================
+\begin{table}[t]
+  \centering
+  \caption{Effect of adding a sum readout at equal hyper-parameters (with sum $-$
+    without, test, paired over 10 folds; in brackets: folds where sum is better, Wilcoxon
+    $p$). Accuracy is balanced accuracy; Fid.\ and Rule acc.\ are in points; Bits is the
+    explanation size.}
+  \label{tab:sum_ablation}
+  \small
+  \setlength{\tabcolsep}{3pt}
+  \begin{tabular}{llcccc}
+    \toprule
+    Dataset & Model & $\Delta$ Bal.\ acc. & $\Delta$ Fid. & $\Delta$ Rule acc. & $\Delta$ Bits \\
+    \midrule
+    \multirow{2}{*}{PROTEINS}
+      & graph & \prelim{$-1.4$ (3, .38)} & \prelim{$\mathbf{-23.0}$ (0, .002)} & \prelim{$\mathbf{-11.6}$ (1, .004)} & \prelim{$+463$ (7, .06)} \\
+      & \nmp{} & \prelim{$-0.2$ (5, .85)} & \prelim{$+8.4$ (7, .19)} & \prelim{$+4.1$ (7, .27)} & \prelim{$\mathbf{+30}$ (10, .002)} \\
+    \midrule
+    \multirow{2}{*}{BAMultiShapes}
+      & graph & \prelim{$+0.4$ (5, .34)} & \prelim{$-10.0$ (2, .16)} & \prelim{$-9.8$ (2, .10)} & \prelim{$\mathbf{+684}$ (10, .002)} \\
+      & \nmp{} & \prelim{$+0.7$ (4, .34)} & \prelim{$+3.6$ (6, .70)} & \prelim{$+3.7$ (6, .63)} & \prelim{$\mathbf{+42}$ (9, .006)} \\
+    \midrule
+    \multirow{2}{*}{Mutagenicity}
+      & graph & \prelim{$\mathbf{-1.2}$ (1, .004)} & \prelim{$-0.8$ (3, .28)} & \prelim{$-0.2$ (4, .83)} & \prelim{$\mathbf{+502}$ (9, .004)} \\
+      & \nmp{} & \prelim{$+1.0$ (8, .13)} & \prelim{$-1.7$ (3, .50)} & \prelim{$+0.3$ (6, .90)} & \prelim{$+4$ (7, .13)} \\
+    \bottomrule
+  \end{tabular}
+\end{table}
