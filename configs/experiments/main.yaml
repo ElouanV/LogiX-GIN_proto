@@ -4,7 +4,8 @@
 #   python run_experiment.py configs/experiments/main.yaml run --datasets AIDS BBBP NCI1
 # The QAT NMP row is added to `models` once its K and readout are decided
 # (table_num_prototypes.tex, predicate_readout_3fold); units resume, nothing reruns.
-# One machine owns a dataset (docs/EXPERIMENT_PROTOCOL.md).
+# One machine owns a dataset (docs/EXPERIMENT_PROTOCOL.md). Needs the models of 2026-10-22
+# (--teacher_eval, --select balanced_acc): runs started at fd4a093 are not part of it.
 name: main
 description: >
   E1: classic LogiX-GIN (with / without sum), graph-level prototypes and NMP node
@@ -24,7 +25,8 @@ teacher:                                 # same k-fold teachers as sum_ablation
   split: kfold
 
 hps:                                     # utils/hps.py
-  root: results_hps_main                 # new root: the prototype models changed (head fix)
+  root: results_hps_e1                   # new root: the models changed (head fix, teacher in eval mode,
+                                         # balanced-accuracy selection); results_hps_main = fd4a093
   tune_folds: [0]
   n_trials: 25
   sampler_seed: 0
