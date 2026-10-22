@@ -144,6 +144,64 @@ class BoundedPhi(Phi):
         self.t_.copy_(torch.logit(torch.as_tensor(t, dtype=self.t_.dtype, device=self.t_.device).clamp(eps, 1 - eps)))
 
 
+class RampPhi(nn.Module):
+    """Monotone threshold literals (models_proto/model_proto_count.py):
+    (1 + sin(clamp(w (x - t), -pi/2, pi/2))) / 2 with a slope w = exp(w_) > 0.
+
+    Binarised at 0.5 a literal is exactly x >= t, for any slope and on any domain, so it
+    also reads unbounded counts. Its graded value is monotone in x, unlike Phi and
+    BoundedPhi (sin over [-pi, pi]: a value far below t climbs back towards 0.5), so the
+    gradient never pushes an input away from the side it is on; it is 0 outside the ramp
+    |x - t| < pi / (2 w), as for a hard sigmoid.
+
+    bounded[i]: input i lies in [0, 1] and t = sigmoid(t_) in (0, 1); otherwise t = t_ is
+    free (counts). offset[i] is added by set_thresholds to the unbounded columns, e.g. +-0.5
+    so an integer count's threshold sits between two counts. w, b = -w t and t keep Phi's
+    meaning; tau is accepted and ignored (the training loop sets it on every head)."""
+    monotone = True                 # min_covers.phi_true_intervals: true exactly on [t, hi]
+
+    def __init__(self, features, bounded=True, offset=0.0, slope=1.0, calculate_entropy=True):
+        super().__init__()
+        self.calculate_entropy = calculate_entropy
+        self.register_buffer('bounded', torch.as_tensor(bounded, dtype=torch.bool).expand(features).clone())
+        self.register_buffer('offset', torch.as_tensor(offset, dtype=torch.float).expand(features).clone())
+        self.register_buffer('slope_init', torch.as_tensor(slope, dtype=torch.float).expand(features).clone())
+        self.w_ = nn.Parameter(torch.empty(features))
+        self.t_ = nn.Parameter(torch.empty(features))
+        self.reset_parameters()
+        self.tau = None
+        self.entropy = None
+
+    @property
+    def w(self):
+        return torch.exp(self.w_)
+
+    @property
+    def t(self):
+        return torch.where(self.bounded, torch.sigmoid(self.t_), self.t_)
+
+    @property
+    def b(self):
+        return -self.w * self.t
+
+    def reset_parameters(self):
+        with torch.no_grad():
+            self.w_.copy_(torch.log(self.slope_init))
+            self.t_.copy_(torch.where(self.bounded, 0.0, 0.5))      # t = 0.5 either way
+
+    @torch.no_grad()
+    def set_thresholds(self, t, eps=0.02):
+        """Thresholds set to t: clamped to [eps, 1 - eps] on bounded columns, t + offset on the others."""
+        t = torch.as_tensor(t, dtype=self.t_.dtype, device=self.t_.device)
+        self.t_.copy_(torch.where(self.bounded, torch.logit(t.clamp(eps, 1 - eps)), t + self.offset))
+
+    def forward(self, x):
+        output = (1 + torch.sin((self.w * (x - self.t)).clamp(-math.pi / 2, math.pi / 2))) / 2
+        if self.calculate_entropy:
+            self.entropy = -(output*torch.log(output+1e-8) + (1-output)*torch.log(1-output + 1e-8)).mean()
+        return output
+
+
 class DummyPhi(nn.Module):
     def __init__(self, features):
         super().__init__()

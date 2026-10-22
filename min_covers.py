@@ -248,6 +248,15 @@ def extract_layer(W, S, max_len=None, eps=0.0, budget=None, n_jobs=1):
         return list(ex.map(_unit_job, jobs, chunksize=1))
 
 
+def phi_true_intervals(phi, i, lo, hi):
+    """Where literal i of ``phi`` (a Phi, BoundedPhi or RampPhi) reads as true on [lo, hi]:
+    literal_true_intervals for the periodic step, [t, hi] for a monotone RampPhi."""
+    if getattr(phi, 'monotone', False):
+        t = float(phi.t[i])
+        return [(max(float(lo), t), float(hi))] if t <= hi else []
+    return literal_true_intervals(float(phi.w[i]), float(phi.b[i]), lo, hi)
+
+
 def literal_true_intervals(w, b, lo, hi):
     """Where ``phi_in`` reads a literal as true: ``step(w*u + b) >= 0.5`` on [lo, hi].
 

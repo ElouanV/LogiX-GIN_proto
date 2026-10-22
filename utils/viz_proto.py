@@ -33,7 +33,7 @@ from torch_geometric.loader import DataLoader
 from interp_metrics import (_subgraph_edges, aggregate, evidence_explanation, head_literal_constants, head_literal_map,
                             level_of, shortest_explanation, symbolic_head, trunk_states)
 from latent_logic import collect_activations, explain_component, literal_name
-from min_covers import literal_true_intervals
+from min_covers import phi_true_intervals
 from utils.datasets import spec
 from utils.runs import EVAL_BATCH_SIZE
 from utils.evaluation import predict
@@ -144,7 +144,7 @@ def head_literal_intervals(model, i):
         raise NotImplementedError('sum-pooled readout: counts are not in the [0, 1] range read here')
     _, _, _, pos = head_literal_map(model)[i]
     phi = model.fc.phi_in
-    ivs = literal_true_intervals(float(phi.w[i]), float(phi.b[i]), 0.0, 1.0)
+    ivs = phi_true_intervals(phi, i, 0.0, 1.0)
     return ivs if pos else [(1 - c, 1 - a) for a, c in ivs][::-1]
 
 

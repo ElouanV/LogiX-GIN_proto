@@ -32,7 +32,7 @@ from torch_geometric.loader import DataLoader
 from explain_proto import proto_dim_map, readout_columns
 from interp_metrics import (base_literal_map, evidence_explanation, head_literal_constants, head_literal_map, level_of,
                             readout_values, shortest_explanation, symbolic_head, trunk_shape, trunk_states)
-from min_covers import count_min_covers, literal_true_intervals, supported_min_covers, unique_rows
+from min_covers import count_min_covers, phi_true_intervals, supported_min_covers, unique_rows
 from unpack_rules import ConvLiterals, fmt_counts, unit_rules
 from utils.datasets import spec
 from utils.runs import EVAL_BATCH_SIZE
@@ -356,7 +356,7 @@ class SymbolicReader:
 
     def _head_intervals(self, i, dlo=0.0, dhi=1.0):
         phi = self.model.fc.phi_in
-        return literal_true_intervals(float(phi.w[i]), float(phi.b[i]), dlo, dhi)
+        return phi_true_intervals(phi, i, dlo, dhi)
 
     @staticmethod
     def _s_intervals(ivs, pos):
@@ -420,7 +420,7 @@ class SymbolicReader:
             col = cols[c]
             bounded = self._bounded_col(c)
             dlo, dhi = (0.0, 1.0) if bounded else (float(lo[i]), float(hi[i]))
-            ivs = literal_true_intervals(w[i], b[i], dlo, dhi)
+            ivs = phi_true_intervals(phi, i, dlo, dhi)
             s_ivs = self._s_intervals(ivs, pos) if bounded else ivs
             what = (f"{col['op']}(L{col['unit'] // self.h}u{col['unit'] % self.h})" if self.level == 'base'
                     else f"{col['op']} sim(P{col['k']})" if col.get('proto_layer', 0) == 0 or self.level == 'graph'

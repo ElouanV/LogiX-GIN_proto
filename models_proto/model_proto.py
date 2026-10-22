@@ -70,7 +70,7 @@ class GINTELLProtoBase(nn.Module):
             bounded = torch.tensor(self.bounded_mask, dtype=torch.bool)
             assert len(bounded) == self.readout_dim, (len(bounded), self.readout_dim)
             self.register_buffer('_bounded', bounded, persistent=False)
-            self.fc = LogicalLayer(self.readout_dim + int(bounded.sum()), num_classes, dummy_phi_in=False)
+            self.fc = LogicalLayer(len(self.head_columns()), num_classes, dummy_phi_in=False)
         elif task == 'regression':
             self.fc = nn.Linear(self.readout_dim, num_classes)
         else:
@@ -130,14 +130,19 @@ class GINTELLProtoBase(nn.Module):
         for op in ops:
             z = POOLS[op](h, batch)
             if op == 'sum':
-                z = phi_sum(z)
-                if getattr(self, 'sharpness', 1.0) != 1.0:
-                    z = sharpen(z, self.sharpness)
-                if symbolic or getattr(self, 'hard', False):
-                    z = z + ((z >= 0.5).float() - z).detach()
-                z = quant_noise(z, getattr(self, 'quant_rate', 0.0), self.training)    # QAT
+                z = self._as_bits(phi_sum(z), symbolic)
             blocks.append(z)
         return torch.hstack(blocks)
+
+    def _as_bits(self, z, symbolic=False):
+        """Literals in [0, 1] computed inside the readout (phi_sum, model_proto_count's node
+        predicate) as the rest of the model treats its literals: sharpened (set_sharpness),
+        binarised straight-through in hard mode or for the symbolic reading, Quant-Noise (QAT)."""
+        if getattr(self, 'sharpness', 1.0) != 1.0:
+            z = sharpen(z, self.sharpness)
+        if symbolic or getattr(self, 'hard', False):
+            z = z + ((z >= 0.5).float() - z).detach()
+        return quant_noise(z, getattr(self, 'quant_rate', 0.0), self.training)
 
     def _bit_layers(self, n_ops=None):
         """Conv layer of each bit of hstack(xs) (n_ops=None) or of its n_ops pooled copies."""

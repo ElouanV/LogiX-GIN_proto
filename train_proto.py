@@ -49,6 +49,13 @@ Extra knobs over train_logic.py:
                                       median of its column on the training set, mid at 0.5.
                                       The trunk keeps Phi. Off by default (upstream), out of
                                       the results path.
+    --node_readout predicate          node level, masked: the head reads, per prototype k, the
+                                      count and the share of the nodes satisfying its rule up to
+                                      a learned tolerance (models_proto/model_proto_count.py)
+                                      instead of mean / max similarities; the tolerances start
+                                      at the median similarity of the training nodes. Its head
+                                      literals are monotone thresholds (tell.RampPhi), centred
+                                      with --head_phi bounded. Off by default.
     --head_init center, --logit_loss  fixes of the head saturation (sigmoid(10 z) = exactly 1 at
                                       init, zero task gradient, constant output on small datasets
                                       such as MUTAG): centre the head bias on the training set
@@ -72,11 +79,12 @@ from torch.optim.lr_scheduler import ReduceLROnPlateau
 from torch_geometric.loader import DataLoader
 
 from models_proto.model_proto import get_model
+from models_proto.model_proto_count import GINTELLProtoCount
 from utils import tracking
 from utils.evaluation import held_out
 from utils.optim import build_optimizer
 from utils.runs import EVAL_BATCH_SIZE, PROTO_ROOT, best_teacher_dir, get_device, student_dir
-from utils.training import (center_head, center_head_thresholds, class_loss, distill_trunk, teacher_states, eval_student, fresh_dir, log_summary, register_final,
+from utils.training import (center_head, center_thresholds, class_loss, distill_trunk, teacher_states, eval_student, fresh_dir, log_summary, register_final,
                             run_seeds, student_data, test_epoch, tracked_student_seed)
 from utils.utils import set_seed, zero_nan_gradients
 
@@ -207,6 +215,10 @@ def loss_weights(args):
 def build_proto_model(args, baseline_args, num_features, num_classes, device):
     """The student. num_layers/hidden_dim must match the teacher: the trunk is
     distilled layer by layer, so the shapes have to line up."""
+    if args.get('node_readout') == 'predicate':
+        return GINTELLProtoCount(num_features=num_features, num_classes=num_classes, hidden_dim=baseline_args['hidden_dim'],
+                                 num_layers=baseline_args['num_layers'], num_prototypes=args['num_prototypes'],
+                                 proto_mask=args.get('proto_mask', False)).to(device)
     kwargs = {}
     if args.get('pool_ops'):                       # default: each class's mean / max
         ops = tuple(args['pool_ops'].split(','))
@@ -312,9 +324,14 @@ def _train_seed(dataset_name, baseline_path, args, seed, device, root=PROTO_ROOT
     if args.get('proto_init') == 'data':          # before centring: the head reads the prototype similarities
         idxs = init_prototypes(model, model_proto, push_loader, device, seed)
         push_log.append({'epoch': -1, 'init': 'data', 'indices': [i.cpu().tolist() for i in idxs]})
+    if args.get('node_readout') == 'predicate':    # before the head: it reads the node predicates
+        set_mask_temperature(model_proto, args, 0)
+        t = center_thresholds(model, model_proto.predicate_phi, push_loader, device,
+                              lambda layers_x, layers_y, batch: model_proto.proto.similarity(torch.hstack(layers_y[:-1])))
+        print('node predicate thresholds centred, median tolerance', float(model_proto.tolerance().median()))
     if args.get('head_phi') == 'bounded' and args.get('head_threshold', 'center') == 'center':
         set_mask_temperature(model_proto, args, 0)     # before the bias: it reads the literals
-        t = center_head_thresholds(model, model_proto.fc, push_loader, device,
+        t = center_thresholds(model, model_proto.fc.phi_in, push_loader, device,
                                    lambda layers_x, layers_y, batch: model_proto.head_input(model_proto.readout(layers_y[:-1], batch)))
         print('head thresholds centred, median t', float(t.median()))
     if args.get('head_init') == 'center':
@@ -452,6 +469,7 @@ def get_parser():
     parser.add_argument('--logit_loss',     action='store_true',             help='BCE of the task loss on the head logits, so a saturated head keeps its gradient (default: on the sigmoid output, upstream)')
     parser.add_argument('--optimizer',      default=None,       choices=['adamw', 'muon'], help='Default adamw (upstream); muon: Muon on the conv weights (utils/optim.py)')
     parser.add_argument('--muon_lr',        default=None,       type=float, help='Muon learning rate (default 0.02, with --optimizer muon)')
+    parser.add_argument('--node_readout',   default=None,       choices=['predicate'], help='predicate (with --proto_level node --proto_mask): the head reads, per prototype, how many / which share of the nodes satisfy its rule (models_proto/model_proto_count.py); default: pooled similarities')
     parser.add_argument('--pool_ops',       default=None,       type=str,   help='Comma-separated readout pooling, e.g. mean,max,sum (default mean,max; sum: see models_proto/model_proto.py)')
     parser.add_argument('--only_eval',     action='store_true',             help='Only evaluate')
     parser.add_argument('--seed',           default=None,       type=int,   help='Single seed to run')
@@ -481,6 +499,10 @@ def parse_cli(argv=None):
         args.pop('head_threshold')
     elif args['head_threshold'] is None:
         args['head_threshold'] = 'center'
+    if args['node_readout'] is None:                                 # off: results paths unchanged
+        args.pop('node_readout')
+    elif args['proto_level'] != 'node' or not args.get('proto_mask') or args.get('pool_ops'):
+        parser.error('--node_readout predicate needs --proto_level node --proto_mask and no --pool_ops')
     if args['proto_init'] == 'random':
         args.pop('proto_init')
     if args['optimizer'] in (None, 'adamw'):                         # default: results paths unchanged

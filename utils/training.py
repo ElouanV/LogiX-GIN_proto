@@ -96,20 +96,22 @@ def center_head(teacher, fc, loader, device, head_input):
     return shift
 
 
-def center_head_thresholds(teacher, fc, loader, device, head_input):
-    """Data-dependent init of bounded head literals (train_proto.py --head_phi bounded
-    --head_threshold center): each literal's threshold t set to the median of its input
-    column over the graphs of ``loader`` (the training set), so every literal starts by
-    splitting the training graphs in two. One that turns out not to discriminate loses its
-    head weight to the weight penalty instead of staying true on every graph. Returns t.
-    RNG forked as in center_head."""
+def center_thresholds(teacher, phi, loader, device, columns):
+    """Data-dependent init of threshold literals (tell.BoundedPhi / RampPhi: set_thresholds):
+    each literal's threshold t set to the median of its input column, ``columns(layers_x,
+    layers_y, batch)`` on the frozen teacher's states of ``loader`` (the training set), so every
+    literal starts by splitting the training rows in two. For the head (train_proto.py
+    --head_phi bounded --head_threshold center) a literal that turns out not to discriminate
+    then loses its head weight to the weight penalty instead of staying true on every graph;
+    model_proto_count's node predicate is centred the same way over the training nodes.
+    Returns t. RNG forked as in center_head."""
     cols = []
     with held_out():
         for layers_x, layers_y, batch in teacher_states(teacher, loader, device):
-            cols.append(head_input(layers_x, layers_y, batch))
+            cols.append(columns(layers_x, layers_y, batch))
         t = torch.cat(cols).median(0).values
-        fc.phi_in.set_thresholds(t)
-    return fc.phi_in.t.detach()
+        phi.set_thresholds(t)
+    return phi.t.detach()
 
 
 def teacher_states(teacher, loader, device):

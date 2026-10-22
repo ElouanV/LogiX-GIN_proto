@@ -75,13 +75,14 @@ from torch_geometric.loader import DataLoader
 from torch_geometric.nn import global_add_pool, global_max_pool, global_mean_pool
 
 from explain_proto import proto_dim_map, readout_columns
-from min_covers import literal_true_intervals
+from min_covers import phi_true_intervals
 from models_proto.model_proto import MODELS
+from models_proto.model_proto_count import GINTELLProtoCount
 from utils.datasets import spec
 from utils.evaluation import evaluate, predict
 from utils.runs import EVAL_BATCH_SIZE, RunDir, get_device
 
-LEVELS = {cls.__name__: level for level, cls in MODELS.items()}
+LEVELS = {cls.__name__: level for level, cls in MODELS.items()} | {GINTELLProtoCount.__name__: 'node'}
 
 
 def level_of(model):
@@ -145,6 +146,10 @@ def readout_values(model, xs, batch):
             s = model.readout(xs, batch)
         else:
             s = torch.hstack([global_mean_pool(h, batch), global_max_pool(h, batch), global_add_pool(h, batch)])
+    elif level == 'node' and hasattr(model, 'predicate'):
+        # model_proto_count: the binarised node predicates q [N × K], pooled as counts / shares
+        s_node = model.predicate(h, symbolic=True)
+        s = model.pool_predicate(s_node, batch)
     elif level == 'node':
         s_node = model.proto.similarity(h)
         s = model._pool(s_node, batch, model.pool_ops)
@@ -234,7 +239,7 @@ def head_literal_constants(model):
         if not bounded[c]:
             out.append(None)
             continue
-        ivs = literal_true_intervals(float(phi.w[i]), float(phi.b[i]), 0.0, 1.0)
+        ivs = phi_true_intervals(phi, i, 0.0, 1.0)
         if not ivs:
             out.append(False)
             continue
@@ -299,6 +304,7 @@ def interp_metrics(model, dataset, device, ds_name=None, records=False):
     KINDS = ('', '_evidence')                         # every literal / input-dependent literals only
 
     node_level = base or level_of(model) in ('node', 'both')
+    predicate = hasattr(model, 'predicate')
     margins, lits, head_pred, bit_agree, n_nodes, recs = [], [], [], [], [], []
     gt_hits, gt_chance = {k: [] for k in KINDS}, {k: [] for k in KINDS}
     expl = {k: [] for k in KINDS}                     # per graph: literal indices or None
@@ -319,7 +325,12 @@ def interp_metrics(model, dataset, device, ds_name=None, records=False):
                 if not pos or li != 0 or s_node is None:
                     continue
                 sim = s_node[nodes, k].cpu()
-                best = sim >= sim.max() - 1e-6
+                if predicate:               # model_proto_count: the nodes satisfying P_k
+                    best = sim >= 0.5
+                    if not best.any():
+                        continue
+                else:
+                    best = sim >= sim.max() - 1e-6
             out.append(best)
         return out
 
