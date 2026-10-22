@@ -602,11 +602,16 @@ function netColumns() {
     const hidden = c.protos.reduce((a, p) => a + p.K, 0) - items.length;
     cols.push({ key: 'P', title: 'prototypes', sub: kinds + (hidden ? ` (${hidden} empty hidden)` : ''), n: items.length, items });
   }
-  cols.push({ key: 'R', title: 'readout', sub: `${c.readout.length} pooled`, n: c.readout.length });
+  const ritems = c.readout.map((_, j) => j).filter(j => !S.hideTrivial || !emptyProtoCol(j));
+  const rhidden = c.readout.length - ritems.length;
+  cols.push({ key: 'R', title: 'readout', sub: `${ritems.length} pooled` + (rhidden ? ` (${rhidden} of empty prototypes hidden)` : ''), n: ritems.length, items: ritems });
   cols.push({ key: 'C', title: 'classes', sub: 'margin Σ − S', n: c.classes.length });
   return cols;
 }
 const colIndex = (cols, key, l) => cols.findIndex(c => c.key === key && (l === undefined || c.l === l));
+/* a readout column pooling a prototype with no cared bit: constant 1, hidden with the prototype */
+function emptyProtoCol(j) { const r = card().readout[j]; return r.k !== undefined && !hasCare(r.proto_layer, r.k); }
+const rIndex = (cols, j) => cols[colIndex(cols, 'R')].items.indexOf(j);
 function pIndex(cols, li, k) { const P = cols[colIndex(cols, 'P')]; return P.items.findIndex(it => it.li === li && it.k === k); }
 
 /* edges [{from: [col, idx], to: [col, idx], w, kind, neg}] */
@@ -642,7 +647,7 @@ function unitFwdFlows(cols, l, u, v) {
   c.readout.forEach((col, j) => {
     if (col.k !== undefined || col.unit !== unit) return;
     const cited = litsOfCol(j).some(i => (t.evidence || []).includes(i));
-    out.push({ from: [L, u], to: [colIndex(cols, 'R'), j], w: 0.8, kind: cited ? 'expl' : 'true' });
+    out.push({ from: [L, u], to: [colIndex(cols, 'R'), rIndex(cols, j)], w: 0.8, kind: cited ? 'expl' : 'true' });
   });
   return out.map(f => ({ ...f, fwd: true }));
 }
@@ -659,7 +664,7 @@ function headFlows(cols, lits, classes) {
       const w = c.head.W[k][i];
       if (w < 0.03 * mx) continue;
       const inExpl = k === t.rule && (t.evidence || []).includes(i);
-      out.push({ from: [colIndex(cols, 'R'), c.head.literals[i].col], to: [colIndex(cols, 'C'), k], w: w / mx,
+      out.push({ from: [colIndex(cols, 'R'), rIndex(cols, c.head.literals[i].col)], to: [colIndex(cols, 'C'), k], w: w / mx,
         kind: inExpl ? 'expl' : c.head.literals[i].constant !== null ? 'const' : t.head_lit[i] === '1' ? 'true' : 'false', neg: !c.head.literals[i].pos });
     }
   }
@@ -674,8 +679,8 @@ function flowsForSel(cols) {
   switch (s.type) {
     case 'unit': return [...unitFlows(cols, s.l, s.u, v), ...unitFwdFlows(cols, s.l, s.u, v)];
     case 'proto': return protoFlows(cols, s.li, s.k, v);
-    case 'readout': return [{ from: readoutSource(cols, s.j), to: [colIndex(cols, 'R'), s.j], w: 0.8, kind: 'expl' }, ...headFlows(cols, litsOfCol(s.j), allClasses())];
-    case 'headlit': return [{ from: readoutSource(cols, card().head.literals[s.i].col), to: [colIndex(cols, 'R'), card().head.literals[s.i].col], w: 0.8, kind: 'expl' }, ...headFlows(cols, [s.i], allClasses())];
+    case 'readout': return [{ from: readoutSource(cols, s.j), to: [colIndex(cols, 'R'), rIndex(cols, s.j)], w: 0.8, kind: 'expl' }, ...headFlows(cols, litsOfCol(s.j), allClasses())];
+    case 'headlit': return [{ from: readoutSource(cols, card().head.literals[s.i].col), to: [colIndex(cols, 'R'), rIndex(cols, card().head.literals[s.i].col)], w: 0.8, kind: 'expl' }, ...headFlows(cols, [s.i], allClasses())];
     case 'class': return headFlows(cols, allLits(), [s.c]);
     default: return [];
   }
@@ -692,7 +697,7 @@ function flowsForStep(cols, s) {
     c.protos.forEach((p, li) => { for (let k = 0; k < p.K; k++) if (cited.has(`${li}:${k}`) && hasCare(li, k)) out.push(...protoFlows(cols, li, k, v)); });
   } else if (key === 'R') {
     const used = new Set((t.evidence || []).map(i => c.head.literals[i].col));
-    for (const j of used) out.push({ from: readoutSource(cols, j), to: [colIndex(cols, 'R'), j], w: 0.8, kind: 'expl' });
+    for (const j of used) out.push({ from: readoutSource(cols, j), to: [colIndex(cols, 'R'), rIndex(cols, j)], w: 0.8, kind: 'expl' });
   } else if (key === 'C') {
     out.push(...headFlows(cols, t.evidence || [], [t.rule]));
   }
@@ -710,7 +715,7 @@ function renderNetwork() {
     el('button', { title: 'previous step (←)', onclick: () => stepBy(-1) }, '‹'),
     el('button', { title: 'next step (→)', onclick: () => stepBy(1) }, '›'),
     S.step !== null ? el('button', { onclick: () => { stopPlay(); refresh(); } }, 'show all') : null,
-    c.protos.length ? el('label', { class: 'small', title: 'a prototype with no cared bit has similarity 1 on every node: its head literals are constants' },
+    c.protos.length ? el('label', { class: 'small', title: 'a prototype with no cared bit has similarity 1 on every node: its readout columns and head literals are constants, hidden with it' },
       el('input', { type: 'checkbox', checked: S.hideTrivial, onchange: ev => { S.hideTrivial = ev.target.checked; refresh(); } }), ' hide empty prototypes') : null));
   const W = Math.max(box.clientWidth - 24, 640), H = 600, top = 42, bottom = 16;
   const plotH = H - top - bottom;
@@ -792,8 +797,8 @@ function selCell(cols) {
   const s = S.sel;
   if (s.type === 'unit') return `${colIndex(cols, 'L', s.l)}:${s.u}`;
   if (s.type === 'proto') return `${colIndex(cols, 'P')}:${pIndex(cols, s.li, s.k)}`;
-  if (s.type === 'readout') return `${colIndex(cols, 'R')}:${s.j}`;
-  if (s.type === 'headlit') return `${colIndex(cols, 'R')}:${card().head.literals[s.i].col}`;
+  if (s.type === 'readout') return `${colIndex(cols, 'R')}:${rIndex(cols, s.j)}`;
+  if (s.type === 'headlit') return `${colIndex(cols, 'R')}:${rIndex(cols, card().head.literals[s.i].col)}`;
   if (s.type === 'class') return `${colIndex(cols, 'C')}:${s.c}`;
   return '';
 }
@@ -815,9 +820,9 @@ function cellInfo(col, idx) {
     return { val: sim, tip: `${protoName(li, k)} (${p.kind} prototype, ${cared} cared bit${cared === 1 ? '' : 's'})\nsimilarity ${f2(sim, 3)}${p.masked ? ` · ${f2(protoMism(li, k), 1)} mismatches` : ''}${p.kind === 'node' ? ` at ${nodeName(v)}` : ' (graph)'}\n${cared ? p.rule[k] : 'cares about no bit: always similarity 1'}` };
   }
   if (col.key === 'R') {
-    const r = c.readout[idx], s = t.s[idx];
+    const j = col.items[idx], r = c.readout[j], s = t.s[j];
     const name = r.k === undefined ? `${r.op}(${unitName(Math.floor(r.unit / c.hidden), r.unit % c.hidden)})` : `${r.op} sim(${protoName(r.proto_layer, r.k)})`;
-    const lits = litsOfCol(idx).map(i => `${c.head.literals[i].pos ? '' : '¬'}lit ${i}: ${t.head_lit[i] === '1' ? 'true' : 'false'}`).join(' · ');
+    const lits = litsOfCol(j).map(i => `${c.head.literals[i].pos ? '' : '¬'}lit ${i}: ${t.head_lit[i] === '1' ? 'true' : 'false'}`).join(' · ');
     return { val: r.op === 'sum' ? Math.min(1, s / Math.max(...t.s.filter((_, j) => c.readout[j].op === 'sum'), 1)) : s,
       tip: `${name} over the graph = ${f2(s, 3)}\nhead literals: ${lits}` };
   }
@@ -828,7 +833,7 @@ function clickCell(col, idx) {
   stopPlay();
   if (col.key === 'L') select({ type: 'unit', l: col.l, u: idx });
   else if (col.key === 'P') { const it = col.items[idx]; select({ type: 'proto', li: it.li, k: it.k }); }
-  else if (col.key === 'R') select({ type: 'readout', j: idx });
+  else if (col.key === 'R') select({ type: 'readout', j: col.items[idx] });
   else if (col.key === 'C') select({ type: 'class', c: idx });
 }
 
