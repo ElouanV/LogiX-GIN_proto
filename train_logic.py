@@ -8,6 +8,8 @@ is centred on the training set before the first step (utils.training.center_head
 task BCE is computed from the logits (utils.training.class_loss). Off by default
 (upstream); they only enter the results path when set. --teacher_eval runs the frozen teacher
 in eval mode while distilling (train_proto.py --teacher_eval), off by default (upstream).
+--select balanced_acc keeps the checkpoint with the best validation balanced accuracy (the
+hyper-parameter search objective) instead of accuracy (default, upstream).
 
     python train_logic.py --dataset MUTAG --baseline_path "results/MUTAG/<teacher cfg>" [--seed 0]
 
@@ -26,8 +28,8 @@ from models_proto.gintell import GINTELLPool
 from utils import tracking
 from utils.evaluation import held_out
 from utils.runs import EVAL_BATCH_SIZE, LOGIC_ROOT, best_teacher_dir, get_device, student_dir
-from utils.training import (center_head, class_loss, distill_trunk, eval_student, fresh_dir, log_summary, register_final,
-                            run_seeds, student_data, test_epoch, tracked_student_seed)
+from utils.training import (SELECT, center_head, class_loss, distill_trunk, eval_student, fresh_dir, log_summary,
+                            register_final, run_seeds, student_data, test_epoch, tracked_student_seed, val_score)
 from utils.utils import set_seed, zero_nan_gradients
 
 
@@ -152,7 +154,7 @@ def _train_seed(dataset_name, baseline_path, args, seed, device, root=LOGIC_ROOT
         print('head bias centred, shift', center_head_bias(model, model_tell, push, device).tolist())
     loss_args = dict(conv_reg=args['conv_reg'], fc_reg=args['fc_reg'], logit_loss=args.get('logit_loss', False),
                      teacher_eval=args.get('teacher_eval', False))
-    best_val_acc = 0
+    best_val_acc = best_val_score = 0
     best_test_acc = 0
     for epoch in range(args['epochs']):
         full = epoch > args['warmup_epochs']
@@ -160,18 +162,20 @@ def _train_seed(dataset_name, baseline_path, args, seed, device, root=LOGIC_ROOT
                                             train_full=full, **loss_args)
         val_loss, _ = train_epoch(model, model_tell, val_loader, device, None, d.num_classes, train_full=full, **loss_args)
         val_acc = test_epoch(model_tell, val_loader, device)
+        score = val_acc if args.get('select') is None else val_score(model_tell, val_loader, device, args['select'])
         test_acc = test_epoch(model_tell, test_loader, device)
 
         if full:
             scheduler.step(val_acc)
-        if full and val_acc >= best_val_acc:
+        if full and score >= best_val_score:
             torch.save(model_tell, os.path.join(path, 'best.pt'))
-            best_val_acc = val_acc
+            best_val_acc, best_val_score = val_acc, score
             best_test_acc = test_acc
 
         # train_loss / train_acc: one entry per conv layer (distillation), then the head
         tracking.log_metrics({'val_acc': val_acc, 'test_acc': test_acc, 'best_val_acc': best_val_acc,
-                              'best_test_acc': best_test_acc, 'train_loss': train_loss[-1], 'val_loss': val_loss[-1],
+                              'val_score': score, 'best_val_score': best_val_score, 'best_test_acc': best_test_acc,
+                              'train_loss': train_loss[-1], 'val_loss': val_loss[-1],
                               'train_acc': train_acc[-1], 'lr': optimizer.param_groups[0]['lr'],
                               'phase_full': float(full),
                               **{f'distill/L{i}_loss': l for i, l in enumerate(train_loss[:-1])},
@@ -234,6 +238,7 @@ def get_parser():
     parser.add_argument('--pool_ops',      default=None,      type=str,     help='Comma-separated readout pooling, e.g. mean,max (default: upstream mean,max,sum; models_proto/gintell.py)')
     parser.add_argument('--head_init',     default=None,      choices=['center'], help='center: head bias set so each class\'s mean pre-activation on the training set is 0 (default: random, upstream)')
     parser.add_argument('--logit_loss',    action='store_true',              help='BCE of the task loss on the head logits, so a saturated head keeps its gradient (default: on the sigmoid output, upstream)')
+    parser.add_argument('--select',        default=None,      choices=SELECT, help='Validation score the checkpoint is kept on: acc (default, upstream) or balanced_acc (the hps objective)')
     parser.add_argument('--teacher_eval',  action='store_true',              help='Frozen teacher in eval mode while distilling, so its dropout does not reach the distilled states (default: train mode, upstream; train_proto.py --teacher_eval)')
     parser.add_argument('--only_eval',     action='store_true',              help='Only evaluate the kept checkpoints')
     parser.add_argument('--seed',          default=None,      type=int,    help='Single seed to run')
@@ -244,6 +249,8 @@ def parse_cli(argv=None):
     """(dataset, baseline_path or None, args) from a command line; optimize_optuna.py
     builds its trials through it too."""
     args = get_parser().parse_args(argv).__dict__
+    if args['select'] in (None, 'acc'):                              # default: results paths unchanged
+        args.pop('select')
     for k in ('head_init', 'logit_loss', 'teacher_eval'):            # off: results paths unchanged
         if not args[k]:
             args.pop(k)

@@ -45,6 +45,20 @@ def test_epoch(model, loader, device):
     return total_correct / len(loader.dataset)
 
 
+SELECT = ('acc', 'balanced_acc')
+
+
+def val_score(model, loader, device, select=None):
+    """The validation score a student's checkpoint is kept on (--select): accuracy (None or
+    'acc', upstream) or balanced accuracy ('balanced_acc', utils.evaluation), the objective of
+    the hyper-parameter search, which on AIDS (80/20) or BBBP (76/24) can disagree with it."""
+    if select in (None, 'acc'):
+        return test_epoch(model, loader, device)
+    if select == 'balanced_acc':
+        return evaluate(model, loader, device)['balanced_acc']
+    raise ValueError(f'select must be one of {SELECT}, got {select!r}')
+
+
 def distill_trunk(student, layers_x, layers_y, edge_index, train, train_full, conv_reg, total_loss, total_correct,
                   n_graphs, n_batches, quant=None):
     """Layer-wise distillation loss of the student's conv trunk on one batch (train_logic.py

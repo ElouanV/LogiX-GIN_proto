@@ -70,6 +70,9 @@ Extra knobs over train_logic.py:
                                       student reads at test time. Its Gumbel sampling is the same
                                       in both modes (docs/GUMBEL_TEACHER.md). Off by default
                                       (upstream); in the results path only when set.
+    --select balanced_acc             keep the checkpoint with the best validation balanced accuracy
+                                      (the hyper-parameter search objective) instead of accuracy.
+                                      Default acc (upstream), in the results path only when set.
     --optimizer muon [--muon_lr]      Muon on the conv weight matrices, AdamW on the rest
                                       (utils/optim.py). Default AdamW, upstream; the
                                       optimizer only enters the results path when set.
@@ -91,8 +94,8 @@ from utils import tracking
 from utils.evaluation import held_out
 from utils.optim import build_optimizer
 from utils.runs import EVAL_BATCH_SIZE, PROTO_ROOT, best_teacher_dir, get_device, student_dir
-from utils.training import (center_head, center_thresholds, class_loss, distill_trunk, teacher_states, eval_student, fresh_dir, log_summary, register_final,
-                            run_seeds, student_data, test_epoch, tracked_student_seed)
+from utils.training import (SELECT, center_head, center_thresholds, class_loss, distill_trunk, teacher_states, eval_student, fresh_dir,
+                            log_summary, register_final, run_seeds, student_data, test_epoch, tracked_student_seed, val_score)
 from utils.utils import set_seed, zero_nan_gradients
 
 
@@ -344,7 +347,7 @@ def _train_seed(dataset_name, baseline_path, args, seed, device, root=PROTO_ROOT
     if args.get('head_init') == 'center':
         set_mask_temperature(model_proto, args, 0)
         print('head bias centred, shift', center_head_bias(model, model_proto, push_loader, device).tolist())
-    best_val_acc = 0
+    best_val_acc = best_val_score = 0
     best_test_acc = 0
     for epoch in range(args['epochs']):
         set_mask_temperature(model_proto, args, epoch)
@@ -365,6 +368,7 @@ def _train_seed(dataset_name, baseline_path, args, seed, device, root=PROTO_ROOT
         val_loss, _ = train_epoch(model, model_proto, val_loader, device, None, d.num_classes,
                                   train_full=epoch > args['warmup_epochs'], **weights)
         val_acc = test_epoch(model_proto, val_loader, device)
+        score = val_acc if args.get('select') is None else val_score(model_proto, val_loader, device, args['select'])
         test_acc = test_epoch(model_proto, test_loader, device)
 
         if epoch > args['warmup_epochs']:
@@ -374,13 +378,14 @@ def _train_seed(dataset_name, baseline_path, args, seed, device, root=PROTO_ROOT
             all(p.mask_temp <= args['mask_ckpt_temp'] + 1e-9 for p in model_proto.proto_layers)
         # hardened models: only once fully sharpened
         ckpt_open = ckpt_open and (args.get('harden_to') is None or beta >= args['harden_to'] - 1e-9)
-        if epoch>args['warmup_epochs'] and ckpt_open and val_acc >= best_val_acc:
+        if epoch>args['warmup_epochs'] and ckpt_open and score >= best_val_score:
             torch.save(model_proto, os.path.join(path, 'best.pt'))
-            best_val_acc = val_acc
+            best_val_acc, best_val_score = val_acc, score
             best_test_acc = test_acc
 
         # train_loss / train_acc: one entry per conv layer (distillation), then the head
         tracking.log_metrics({'val_acc': val_acc, 'test_acc': test_acc, 'best_val_acc': best_val_acc,
+                              'val_score': score, 'best_val_score': best_val_score,
                               'best_test_acc': best_test_acc, 'train_loss': train_loss[-1], 'val_loss': val_loss[-1],
                               'train_acc': train_acc[-1], 'lr': optimizer.param_groups[0]['lr'],
                               'phase_full': float(epoch > args['warmup_epochs']), 'sharpness': beta,
@@ -473,6 +478,7 @@ def get_parser():
     parser.add_argument('--head_init',      default=None,       choices=['center'], help='center: head bias set so each class\'s mean pre-activation on the training set is 0 (default: random, upstream)')
     parser.add_argument('--head_phi',       default=None,       choices=['bounded'], help='bounded: head literals are thresholds x >= t (slope <= pi, t in (0, 1)); default: the periodic Phi of upstream')
     parser.add_argument('--head_threshold', default=None,       choices=['center', 'mid'], help='Init of the bounded head thresholds: center (default, median of each column on the training set) or mid (0.5); with --head_phi bounded')
+    parser.add_argument('--select',         default=None,       choices=SELECT, help='Validation score the checkpoint is kept on: acc (default, upstream) or balanced_acc (the hps objective)')
     parser.add_argument('--teacher_eval',   action='store_true',             help='Frozen teacher in eval mode while distilling, so its dropout does not reach the distilled states (default: train mode, upstream)')
     parser.add_argument('--logit_loss',     action='store_true',             help='BCE of the task loss on the head logits, so a saturated head keeps its gradient (default: on the sigmoid output, upstream)')
     parser.add_argument('--optimizer',      default=None,       choices=['adamw', 'muon'], help='Default adamw (upstream); muon: Muon on the conv weights (utils/optim.py)')
@@ -502,6 +508,8 @@ def parse_cli(argv=None):
     for k in ('head_init', 'logit_loss', 'teacher_eval'):            # off: results paths unchanged
         if not args[k]:
             args.pop(k)
+    if args['select'] in (None, 'acc'):                              # default: results paths unchanged
+        args.pop('select')
     if args['head_phi'] is None:                                     # off: results paths unchanged
         args.pop('head_phi')
         args.pop('head_threshold')
