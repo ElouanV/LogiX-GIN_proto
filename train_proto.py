@@ -63,6 +63,13 @@ Extra knobs over train_logic.py:
                                       and compute the task BCE from the logits
                                       (utils.training.class_loss). Off by default (upstream);
                                       they only enter the results path when set.
+    --teacher_eval                    the frozen teacher runs in eval mode while the student is
+                                      distilled on its states. Upstream keeps it in train mode, so
+                                      its dropout (0.15) is active: the inputs of conv layers 1-2
+                                      are 0 or 1/0.85 (negation -0.18), outside the [0, 1] the
+                                      student reads at test time. Its Gumbel sampling is the same
+                                      in both modes (docs/GUMBEL_TEACHER.md). Off by default
+                                      (upstream); in the results path only when set.
     --optimizer muon [--muon_lr]      Muon on the conv weight matrices, AdamW on the rest
                                       (utils/optim.py). Default AdamW, upstream; the
                                       optimizer only enters the results path when set.
@@ -97,18 +104,21 @@ def run_dir(dataset_name, args, baseline_args, seed=None, root=PROTO_ROOT):
 
 def train_epoch(model, model_proto, loader, device, optimizer, num_classes, train_full=True,
                 conv_reg=0.001, fc_reg=0.01, proto_div_reg=0.0, proto_ent_reg=0.0,
-                mask_reg=0.0, vocab_reg=0.0, logit_loss=False, quant=None, base_weight=1.0, extra_loss=None):
+                mask_reg=0.0, vocab_reg=0.0, logit_loss=False, quant=None, base_weight=1.0, extra_loss=None,
+                teacher_eval=False):
     """One epoch of distillation + task loss. QAT (qat_proto.py): ``quant`` is applied to a
     layer's output before the next layer reads it in the chained (train_full) term, the
     layer's own loss stays on its soft output; the loss is ``base_weight`` x this objective
-    + ``extra_loss(x, edge_index, batch, y)`` when given.
+    + ``extra_loss(x, edge_index, batch, y)`` when given. ``teacher_eval`` (--teacher_eval): the
+    frozen teacher runs in eval mode, so its dropout does not reach the states it is distilled
+    on (upstream runs it in train mode: layer inputs 0 or 1/(1 - 0.15), outside [0, 1]).
 
     optimizer=None: the same loss on loader without training (the val loss): student in
     eval mode and without input dropout, teacher sampled as in training, no gradient, RNG
     untouched (utils.evaluation.held_out)."""
     kw = dict(train_full=train_full, conv_reg=conv_reg, fc_reg=fc_reg, proto_div_reg=proto_div_reg,
               proto_ent_reg=proto_ent_reg, mask_reg=mask_reg, vocab_reg=vocab_reg, quant=quant,
-              logit_loss=logit_loss, base_weight=base_weight, extra_loss=extra_loss)
+              logit_loss=logit_loss, base_weight=base_weight, extra_loss=extra_loss, teacher_eval=teacher_eval)
     if optimizer is None:
         with held_out():
             return _epoch(model, model_proto, loader, device, None, num_classes, **kw)
@@ -116,9 +126,10 @@ def train_epoch(model, model_proto, loader, device, optimizer, num_classes, trai
 
 
 def _epoch(model, model_proto, loader, device, optimizer, num_classes, train_full, conv_reg, fc_reg,
-           proto_div_reg, proto_ent_reg, mask_reg, vocab_reg, logit_loss, quant, base_weight, extra_loss):
+           proto_div_reg, proto_ent_reg, mask_reg, vocab_reg, logit_loss, quant, base_weight, extra_loss,
+           teacher_eval):
     train = optimizer is not None
-    model.train()
+    model.train(not teacher_eval)
     model_proto.train(train)
 
     total_loss = [0]*(len(model_proto.convs)+1)
@@ -203,7 +214,8 @@ def loss_weights(args):
     fine-tunes harden_proto.py / qat_proto.py, which keep the objective that trained it)."""
     return dict(conv_reg=args['conv_reg'], fc_reg=args['fc_reg'], proto_div_reg=args['proto_div_reg'],
                 proto_ent_reg=args['proto_ent_reg'], mask_reg=args.get('mask_reg', 0.0),
-                vocab_reg=args.get('vocab_reg') or 0.0, logit_loss=args.get('logit_loss', False))
+                vocab_reg=args.get('vocab_reg') or 0.0, logit_loss=args.get('logit_loss', False),
+                teacher_eval=args.get('teacher_eval', False))
 
 
 @torch.no_grad()
@@ -461,6 +473,7 @@ def get_parser():
     parser.add_argument('--head_init',      default=None,       choices=['center'], help='center: head bias set so each class\'s mean pre-activation on the training set is 0 (default: random, upstream)')
     parser.add_argument('--head_phi',       default=None,       choices=['bounded'], help='bounded: head literals are thresholds x >= t (slope <= pi, t in (0, 1)); default: the periodic Phi of upstream')
     parser.add_argument('--head_threshold', default=None,       choices=['center', 'mid'], help='Init of the bounded head thresholds: center (default, median of each column on the training set) or mid (0.5); with --head_phi bounded')
+    parser.add_argument('--teacher_eval',   action='store_true',             help='Frozen teacher in eval mode while distilling, so its dropout does not reach the distilled states (default: train mode, upstream)')
     parser.add_argument('--logit_loss',     action='store_true',             help='BCE of the task loss on the head logits, so a saturated head keeps its gradient (default: on the sigmoid output, upstream)')
     parser.add_argument('--optimizer',      default=None,       choices=['adamw', 'muon'], help='Default adamw (upstream); muon: Muon on the conv weights (utils/optim.py)')
     parser.add_argument('--muon_lr',        default=None,       type=float, help='Muon learning rate (default 0.02, with --optimizer muon)')
@@ -486,7 +499,7 @@ def parse_cli(argv=None):
     for k in ('harden_to', 'harden_start_frac', 'harden_end_frac'):     # off: results paths unchanged
         if args[k] is None or not hardened:
             args.pop(k)
-    for k in ('head_init', 'logit_loss'):                            # off: results paths unchanged
+    for k in ('head_init', 'logit_loss', 'teacher_eval'):            # off: results paths unchanged
         if not args[k]:
             args.pop(k)
     if args['head_phi'] is None:                                     # off: results paths unchanged

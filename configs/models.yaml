@@ -8,37 +8,44 @@
 # trained without (their final.json / trials.csv argv say so). classic / classic_nosum stay
 # upstream: with the fix, 5/7 classic validation runs predicted one class (PROTEINS fold 0
 # included, 0.70 -> 0.50 test bacc).
+#
+# Every student, classic included, distills from the teacher in eval mode (--teacher_eval)
+# since 2026-10-22, so the students still differ only by their head: upstream ran the frozen
+# teacher in train mode, its dropout reaching the distilled states (inputs 0 or 1/0.85).
+# Studies and final runs from before were trained without; a study refuses to reopen with
+# these fixed arguments, so new runs need a new hps root.
 classic:
   script: logic                     # train_logic.py (upstream GINTELL, mean | max | sum readout)
+  fixed: {teacher_eval: true}
   space: common
 classic_nosum:
   script: logic
-  fixed: {pool_ops: "mean,max"}     # models_proto/gintell.py GINTELLPool
+  fixed: {pool_ops: "mean,max", teacher_eval: true}     # models_proto/gintell.py GINTELLPool
   space: common
 node_mask_push:                     # NMP: node prototypes + care mask + push
   script: proto                     # train_proto.py
   fixed: {proto_level: node, proto_mask: true, mask_anneal_frac: 0.8, mask_ckpt_temp: 1.0,
-         head_init: center, logit_loss: true}
+         head_init: center, logit_loss: true, teacher_eval: true}
   space: nmp
 node_mask_push_sum:
   script: proto
   fixed: {proto_level: node, proto_mask: true, mask_anneal_frac: 0.8, mask_ckpt_temp: 1.0, pool_ops: "mean,max,sum",
-         head_init: center, logit_loss: true}
+         head_init: center, logit_loss: true, teacher_eval: true}
   space: nmp
 graph:                              # dense graph-level prototypes
   script: proto
   fixed: {proto_level: graph, push_every: 0,
-         head_init: center, logit_loss: true}
+         head_init: center, logit_loss: true, teacher_eval: true}
   space: proto
 graph_sum:
   script: proto
   fixed: {proto_level: graph, push_every: 0, pool_ops: "mean,max,sum",
-         head_init: center, logit_loss: true}
+         head_init: center, logit_loss: true, teacher_eval: true}
   space: proto
 node_mask_push_qat:                 # NMP student, then the QAT fine-tune (qat_proto.run_qat, docs/QAT.md):
   script: proto                     # the run is scored and kept as its rule model (every bit binarised)
   fixed: &nmp_qat_fixed {proto_level: node, proto_mask: true, mask_anneal_frac: 0.8, mask_ckpt_temp: 1.0,
-         head_init: center, logit_loss: true}
+         head_init: center, logit_loss: true, teacher_eval: true}
   space: nmp_qat
   qat: &nmp_qat_qat {rate_to: 1.0, ramp_frac: 0.6667, base_weight: 1.0}   # fixed QAT arguments; qat_* in the space
 node_mask_push_qat_p8:              # the same with at most 8 prototypes: most of 32 end up with no
@@ -54,12 +61,12 @@ node_mask_push_qat_p16:             # the same with 8 or 16 prototypes: on BaMul
 node_mask_push_qat_bounded:         # issue 4 (docs/INTERPRETABILITY_ISSUES.md): head literals are thresholds
   script: proto                     # x >= t (tell.BoundedPhi), centred on the training set
   fixed: {proto_level: node, proto_mask: true, mask_anneal_frac: 0.8, mask_ckpt_temp: 1.0,
-         head_init: center, logit_loss: true, head_phi: bounded}
+         head_init: center, logit_loss: true, teacher_eval: true, head_phi: bounded}
   space: nmp_qat_p16
   qat: *nmp_qat_qat
 node_mask_push_qat_predicate:       # issues 4 + 5: the head reads the count / share of the nodes satisfying
   script: proto                     # each prototype rule (models_proto/model_proto_count.py)
   fixed: {proto_level: node, proto_mask: true, mask_anneal_frac: 0.8, mask_ckpt_temp: 1.0,
-         head_init: center, logit_loss: true, head_phi: bounded, node_readout: predicate}
+         head_init: center, logit_loss: true, teacher_eval: true, head_phi: bounded, node_readout: predicate}
   space: nmp_qat_p16
   qat: *nmp_qat_qat

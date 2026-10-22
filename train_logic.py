@@ -6,7 +6,8 @@ end-to-end training, ReduceLROnPlateau, one run per seed (upstream training, unc
 random init, so no task gradient and a constant output on small datasets): the head bias
 is centred on the training set before the first step (utils.training.center_head) and the
 task BCE is computed from the logits (utils.training.class_loss). Off by default
-(upstream); they only enter the results path when set.
+(upstream); they only enter the results path when set. --teacher_eval runs the frozen teacher
+in eval mode while distilling (train_proto.py --teacher_eval), off by default (upstream).
 
     python train_logic.py --dataset MUTAG --baseline_path "results/MUTAG/<teacher cfg>" [--seed 0]
 
@@ -44,14 +45,16 @@ def build_logic_model(args, baseline_args, num_features, num_classes, device):
 
 
 def train_epoch(model, model_tell, loader, device, optimizer, num_classes, train_full=True, conv_reg=0.001, fc_reg=0.01,
-                logit_loss=False):
+                logit_loss=False, teacher_eval=False):
     """One distillation epoch; optimizer=None: the same loss on loader without training (the
     val loss): student in eval mode and without input dropout, teacher sampled as in
-    training, no gradient, RNG untouched (utils.evaluation.held_out)."""
+    training, no gradient, RNG untouched (utils.evaluation.held_out). ``teacher_eval``: the
+    frozen teacher in eval mode (train_proto.py --teacher_eval)."""
+    args = (train_full, conv_reg, fc_reg, logit_loss, teacher_eval)
     if optimizer is None:
         with held_out():
-            return _epoch(model, model_tell, loader, device, None, num_classes, train_full, conv_reg, fc_reg, logit_loss)
-    return _epoch(model, model_tell, loader, device, optimizer, num_classes, train_full, conv_reg, fc_reg, logit_loss)
+            return _epoch(model, model_tell, loader, device, None, num_classes, *args)
+    return _epoch(model, model_tell, loader, device, optimizer, num_classes, *args)
 
 
 def head_input(model_tell, layers_x):
@@ -68,9 +71,10 @@ def center_head_bias(teacher, model_tell, loader, device):
     return center_head(teacher, model_tell.fc, loader, device, lambda layers_x, layers_y, batch: head_input(model_tell, layers_x))
 
 
-def _epoch(model, model_tell, loader, device, optimizer, num_classes, train_full, conv_reg, fc_reg, logit_loss):
+def _epoch(model, model_tell, loader, device, optimizer, num_classes, train_full, conv_reg, fc_reg, logit_loss,
+           teacher_eval):
     train = optimizer is not None
-    model.train()
+    model.train(not teacher_eval)
     model_tell.train(train)
 
     total_loss = [0]*(len(model_tell.convs)+1)
@@ -146,7 +150,8 @@ def _train_seed(dataset_name, baseline_path, args, seed, device, root=LOGIC_ROOT
     if args.get('head_init') == 'center':
         push = DataLoader(d.datasets['train'], batch_size=EVAL_BATCH_SIZE, shuffle=False)
         print('head bias centred, shift', center_head_bias(model, model_tell, push, device).tolist())
-    loss_args = dict(conv_reg=args['conv_reg'], fc_reg=args['fc_reg'], logit_loss=args.get('logit_loss', False))
+    loss_args = dict(conv_reg=args['conv_reg'], fc_reg=args['fc_reg'], logit_loss=args.get('logit_loss', False),
+                     teacher_eval=args.get('teacher_eval', False))
     best_val_acc = 0
     best_test_acc = 0
     for epoch in range(args['epochs']):
@@ -229,6 +234,7 @@ def get_parser():
     parser.add_argument('--pool_ops',      default=None,      type=str,     help='Comma-separated readout pooling, e.g. mean,max (default: upstream mean,max,sum; models_proto/gintell.py)')
     parser.add_argument('--head_init',     default=None,      choices=['center'], help='center: head bias set so each class\'s mean pre-activation on the training set is 0 (default: random, upstream)')
     parser.add_argument('--logit_loss',    action='store_true',              help='BCE of the task loss on the head logits, so a saturated head keeps its gradient (default: on the sigmoid output, upstream)')
+    parser.add_argument('--teacher_eval',  action='store_true',              help='Frozen teacher in eval mode while distilling, so its dropout does not reach the distilled states (default: train mode, upstream; train_proto.py --teacher_eval)')
     parser.add_argument('--only_eval',     action='store_true',              help='Only evaluate the kept checkpoints')
     parser.add_argument('--seed',          default=None,      type=int,    help='Single seed to run')
     return parser
@@ -238,7 +244,7 @@ def parse_cli(argv=None):
     """(dataset, baseline_path or None, args) from a command line; optimize_optuna.py
     builds its trials through it too."""
     args = get_parser().parse_args(argv).__dict__
-    for k in ('head_init', 'logit_loss'):                            # off: results paths unchanged
+    for k in ('head_init', 'logit_loss', 'teacher_eval'):            # off: results paths unchanged
         if not args[k]:
             args.pop(k)
     return args.pop('dataset'), args.pop('baseline_path'), args
