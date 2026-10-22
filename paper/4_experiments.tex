@@ -63,6 +63,10 @@ Adam (learning rate $10^{-3}$, batch size 128, weight decay $10^{-5}$, dropout 0
 Its node states are binarised by a Gumbel-sigmoid, as in \logix{}, so that they can be distilled into
 logical layers. We keep the checkpoint with the best validation accuracy. All students of
 a fold are distilled from the same teacher.
+% The teachers were trained before the switch to balanced-accuracy selection (2026-10-22)
+% and are shared by every model, so they keep the accuracy criterion. Their states are
+% sampled at evaluation too: see docs/GUMBEL_TEACHER.md and the TEACHER ROW note of
+% table_main.tex before reporting the teacher's accuracy.
 
 \paragraph{Students.}
 Every student has the trunk of \logix{}: three logical layers distilled layer by layer
@@ -80,7 +84,7 @@ from the teacher's binary node states, followed by a mean and max readout. Upstr
     training. A growing random share of the bits is binarised at each forward pass
     (Quant-Noise~\todo{cite Fan et al.\ 2021}, straight-through gradients~\todo{cite
     Bengio et al.\ 2013}), until the network computes exactly its rules. The fine-tune keeps
-    the epoch whose rule model has the best validation accuracy.
+    the epoch whose rule model has the best validation balanced accuracy.
 \end{itemize}
 The prototype heads are initialised with their bias centred on the training set and trained
 with a cross-entropy on the logits. This avoids the saturated constant head of a randomly
@@ -91,8 +95,10 @@ Each student is tuned with Optuna~\todo{cite}: a multivariate TPE sampler (seede
 start-up trials), a median pruner, and 25 trials on fold~0. Trials that predict a single
 class on the validation set are pruned. The objective is the validation balanced
 accuracy. For \nmpqat{}, it is the validation balanced accuracy of the rule model, after
-the student and its fine-tune have been tuned together. The test sets are never used in
-the search. The best configuration is then retrained on all 10 folds. Fold~0's validation
+the student and its fine-tune have been tuned together. Within every run, the checkpoint
+kept is the epoch with the best validation balanced accuracy, the criterion of the search,
+and every competitor is selected the same way. We report both accuracy and balanced
+accuracy. The test sets are never used in the search. The best configuration is then retrained on all 10 folds. Fold~0's validation
 graphs are test graphs of other folds, which gives a small optimistic bias, the same for
 every model. The search spaces (learning rate, batch size, regularisation weights,
 epochs, warm-up, number of prototypes, mask and push settings, QAT epochs, learning rate and

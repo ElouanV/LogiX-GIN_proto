@@ -30,6 +30,15 @@
 %       NMP and NMP+QAT folds; guard unpack_rules with the min-cover bound first (63 GB
 %       blow-up on Mutagenicity fold 5).
 %   [ ] decide main text vs appendix (negative-ish result).
+%   [ ] RULE COUNTS ARE UPPER BOUNDS (audit 2026-10-22, issue 7). covers/unit
+%       (min_covers.count_min_covers, rule_eval.rule_stats) counts the minimal covers of the
+%       threshold over free literals, but a literal and its negation read the same
+%       neighbourhood count and periodic literals are bands, so some covers can never be
+%       satisfied. Planned fix: one forward pass on the TRAINING set, record which literals
+%       are ever true (and which pairs co-occur), drop the literals never activated before
+%       counting, and report only the rules that can fire on data. (The authors' notebook
+%       already drops literals true on every graph and filters by min_support on the
+%       activations: nbs/LayerWiseRules.ipynb cells 9, 34.)
 % =====================================================================================
 \begin{table}[t]
   \centering

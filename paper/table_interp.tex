@@ -58,6 +58,25 @@
 %   [ ] competitors: fidelity is 1 by construction for most self-explainable models; the
 %       comparable columns are size and GT precision. Define their explanation size.
 %   [ ] post-hoc explainers on the teacher (GNNExplainer, PGExplainer) as a GT reference.
+%   [ ] SUFFICIENCY CAVEAT (audit 2026-10-22, issue 2). "Shortest sufficient explanation"
+%       (interp_metrics.shortest_explanation / evidence_explanation) is sufficient for the
+%       rule of the predicted class c to FIRE, not for the prediction: the rule model predicts
+%       argmax_c of the margins W_c.lit + b_c, so when the other class's rule fires too the
+%       explanation of c alone does not decide it (a contrastive explanation would add the
+%       literals that keep the other margin below c's). Measured on test, fold 0:
+%         both class rules fire   NMP Mutagenicity 25%, classic PROTEINS 54%,
+%                                 NMP+QAT Mutagenicity 4%, NMP+QAT BAMultiShapes K=8 0-10%
+%         no class rule fires     2-7% (graph PROTEINS 21%), already excluded (rule_backed)
+%       Decide: report the share of graphs where both rules fire next to Lit./Bits, or make
+%       the explanation contrastive (W_c - W_c' on the literals that differ) and say
+%       "sufficient for the decision". Until then, do not write "sufficient" without the
+%       qualifier "for the predicted class's rule".
+%   [ ] GT FRAMING (2026-10-22). BA2Motifs / BAMultiShapes: the planted motifs are exact,
+%       necessary and sufficient for the label, so a faithful model is expected to rely on
+%       them and GT precision is a correctness test. Mutagenicity: NO2 / NH2 is neither the
+%       only cause nor necessary (57% of the mutagens, 1378 / 2401, have neither group and are
+%       not scored); an accurate model may use other evidence, so GT precision there is a
+%       plausibility check, not a correctness test. Say so in the text and the caption.
 % =====================================================================================
 \begin{table*}[t]
   \centering

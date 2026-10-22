@@ -25,6 +25,11 @@
 % Teacher: results/<dataset>/<teacher cfg>|split=kfold/total_results.csv (the k-fold
 %   teachers shared by every student; config `teacher:` in the experiment YAMLs).
 %
+% TEACHER ROW (audit 2026-10-22, docs/GUMBEL_TEACHER.md): the teacher samples its binary
+%   states at evaluation too (Gumbel noise is not switched off by tau), so its test accuracy
+%   is one random draw (per-fold std over repeated evaluations 0.7-3.3 points). Decide which
+%   teacher accuracy to report: the mean over draws, or the teacher with its most likely bits.
+%
 % TODO (experiments to run):
 %   [ ] E1 final: one experiment YAML (e.g. configs/experiments/main.yaml) with the current
 %       configs/models.yaml (head fix): classic, classic_nosum, graph, node_mask_push,
