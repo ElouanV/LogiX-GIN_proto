@@ -55,19 +55,14 @@ class Phi(nn.Module):
 
     def reset_parameters(self):
         nn.init.constant_(self.w_, 1)
-        # nn.init.uniform_(self.w_, 0.1, 0.9)
         with torch.no_grad():
             self.w_.copy_(torch.log(self.w_+1e-8))
         
         nn.init.constant_(self.b, 0)
-        # nn.init.uniform_(self.b, 0.1, 0.9)
-        # nn.init.uniform_(self.b, -0.9, -0.1)
 
     def forward(self, x):
-        # output = sigmoid(self.w*x+self.b)
         output = step(self.w*x+self.b)
         if self.tau is not None:
-            # output = sigmoid(self.w*x+self.b, tau=self.tau)
             output = step(self.w*x+self.b, tau=self.tau)
         if self.calculate_entropy:
             self.entropy = -(output*torch.log(output+1e-8) + (1-output)*torch.log(1-output + 1e-8)).mean()
@@ -94,12 +89,10 @@ class LogicalLayer(nn.Module):
 
         self.use_weight_sigma = use_weight_sigma
         self.use_weight_exp = use_weight_exp
-        #print(dummy_phi_in)
         if dummy_phi_in:
             self.phi_in = DummyPhi(in_features)
         else:
             self.phi_in = Phi(in_features)
-        #print(self.phi_in)
         if use_weight_sigma:
             self.weight_sigma = nn.Parameter(torch.Tensor(out_features, in_features))
         else: 
@@ -118,8 +111,6 @@ class LogicalLayer(nn.Module):
         self.reset_parameters()
 
     def reset_parameters(self):
-        # nn.init.constant_(self.weight, 0)
-        # nn.init.uniform_(self.b, 0.1, 0.9)
         nn.init.uniform_(self.b, -0.9, -0.1)
         if self.use_weight_sigma:
             nn.init.uniform_(self.weight_sigma, 0.1, 0.9)
@@ -172,10 +163,8 @@ class LogicalLayer(nn.Module):
         t_out = t_out.clone()
         t_out = t_out.item()
         ordering_scores = w
-        # ordering_scores = x_train[(x_train>t_in).float()@w > t_out, :].sum(0)
         sorted_idxs = torch.argsort(ordering_scores, 0, descending=True)
         t_out -= w[t_in < 0].sum()
-        # mask = (t_in >= 0) & (t_in <= 1) & (w > 0)
         mask = (t_in >= 0) & (w > 0)
         
 
@@ -193,7 +182,6 @@ class LogicalLayer(nn.Module):
                 c = idxs_to_visit[current_combination].cpu().detach().tolist()
                 c = tuple(sorted(c))
                 result.add(c)
-                # print(current_combination, 'rules', len(result))
                 return
 
 
@@ -224,7 +212,6 @@ class LogicalLayer(nn.Module):
 
     
     def forward(self, x, discrete_output=False):
-        # x = self.phi_in(torch.hstack([x, 1-x]))
         x = self.phi_in(x)
         self.max_in, _ = x.max(0)
         reg_loss = 0
@@ -235,7 +222,6 @@ class LogicalLayer(nn.Module):
             reg_loss += torch.clamp(self.weight, min=1e-5).sum(-1).mean()
         if self.phi_in.entropy is not None:
             entropy_loss += self.phi_in.entropy
-        # print('b', reg_loss, entropy_loss)
         self.reg_loss = reg_loss
         
         w = self.weight

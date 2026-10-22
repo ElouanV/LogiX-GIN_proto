@@ -63,7 +63,7 @@ class GINTELLProtoBase(nn.Module):
                 ),
             )
             self.convs.append(conv)
-        self.dropout = nn.Dropout(dropout)
+        # dropout: accepted for GINTELL's signature, never applied (as upstream)
 
         self._build_readout()
         if task == 'classification':
@@ -248,7 +248,6 @@ class GINTELLProtoBase(nn.Module):
         at quant rate 1 are the rule margins interp_metrics.symbolic_head reads."""
         xs = []
         for i, conv in enumerate(self.convs):
-            if i != 0: self.dropout(x)
             x = self.quant_out(conv(torch.hstack([x, 1 - x]), edge_index))      # QAT: identity when off
             xs.append(x)
         s = self.readout(xs, batch)
@@ -260,7 +259,6 @@ class GINTELLProtoBase(nn.Module):
         xs = []
         for i, conv in enumerate(self.convs):
             ret_x.append(x)
-            if i != 0: self.dropout(x)
             x = conv(torch.hstack([x, 1 - x]), edge_index)
             xs.append(x)
             ret_y.append(x)

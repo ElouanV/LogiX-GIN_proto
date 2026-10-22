@@ -116,14 +116,13 @@ class GINTELL(torch.nn.Module):
             )
             self.convs.append(conv)
         self.fc = LogicalLayer(2*num_layers*hidden_dim, num_classes, dummy_phi_in=False)
-    
-        self.dropout = torch.nn.Dropout(dropout)
+        # dropout: accepted for the signature, never applied (upstream called self.dropout(x) and
+        # discarded the result)
 
 
     def forward(self, x, edge_index, discrete=False, *args, **kwargs):
         xs = []
         for i, conv in enumerate(self.convs):
-            if i!=0:self.dropout(x)
             x = conv(torch.hstack([x, 1-x]), edge_index)
             xs.append(x)
             if discrete:
@@ -147,7 +146,6 @@ class GINTELL(torch.nn.Module):
         for i, conv in enumerate(self.convs):
             ret_x.append(x)
             x = conv(torch.hstack([x, 1-x]), edge_index)
-            if i!=0:self.dropout(x)
             if discrete:
                 indices = (x > 0.5).nonzero(as_tuple=True)
                 x_hard = torch.zeros_like(x, memory_format=torch.legacy_contiguous_format)

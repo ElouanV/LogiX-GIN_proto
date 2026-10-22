@@ -182,11 +182,6 @@ def _epoch(model, model_proto, loader, device, optimizer, num_classes, train_ful
             if train:
                 loss.backward()
                 zero_nan_gradients(model_proto)
-                # NOTE kept verbatim from train_logic.py, including the fact that it clips
-                # `model` (the frozen teacher), not `model_proto`. As written this is a no-op
-                # and the student is effectively trained unclipped. Change to
-                # model_proto.parameters() if you want the clipping the line intends.
-                torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
                 optimizer.step()
             total_loss[-1] += loss.item() * data.num_graphs / len(loader.dataset)
             total_correct[-1] += pred.eq(y).sum().item() / len(loader.dataset)

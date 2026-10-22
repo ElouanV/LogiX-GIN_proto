@@ -43,7 +43,6 @@ class GINTELLPool(GINTELL):
     def forward(self, x, edge_index, batch, discrete=False, *args, **kwargs):
         xs = []
         for i, conv in enumerate(self.convs):
-            if i != 0: self.dropout(x)          # upstream no-op, kept for identical behaviour
             x = conv(torch.hstack([x, 1 - x]), edge_index)
             xs.append(x)
         s = self.readout(xs, batch)

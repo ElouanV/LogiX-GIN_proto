@@ -52,7 +52,6 @@ def _epoch(model, loader, device, optimizer, num_classes):
             if train:
                 loss.backward()
                 zero_nan_gradients(model)
-                # torch.nn.utils.clip_grad_norm(model.parameters(), 1)
                 torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
 
         except: continue

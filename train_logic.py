@@ -106,7 +106,6 @@ def _epoch(model, model_tell, loader, device, optimizer, num_classes, train_full
             if train:
                 loss.backward()
                 zero_nan_gradients(model_tell)
-                torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
                 optimizer.step()
             total_loss[-1] += loss.item() * data.num_graphs / len(loader.dataset)
             total_correct[-1] += pred.eq(y).sum().item() / len(loader.dataset)
