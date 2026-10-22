@@ -18,6 +18,9 @@ not the network.
     logic_fidelity           share of graphs where symbolic and network predictions agree
     head_fidelity            same, with the network's own trunk and only the head binarised,
                              so 1 - head_fidelity is the head's share of the infidelity
+    head_acc                 accuracy of that reading (network trunk, binarised head): the
+                             layer-local reading of the authors' notebook applied to the head
+                             (docs/SYMBOLIC_READINGS.md)
     trunk_bit_agreement      share of node bits (all conv layers) on which the symbolic trunk
                              agrees with the network's states >= 0.5
     rule_backed              share of graphs whose predicted class rule actually fires
@@ -412,6 +415,7 @@ def interp_metrics(model, dataset, device, ds_name=None, records=False):
            'logic_acc': float((logic_pred == y).mean()),
            'logic_fidelity': float((logic_pred == net_pred).mean()),
            'head_fidelity': float((np.concatenate(head_pred) == net_pred).mean()),
+           'head_acc': float((np.concatenate(head_pred) == y).mean()),
            'trunk_bit_agreement': float((torch.stack(bit_agree).mean(1).cpu().numpy() * n_nodes).sum() / sum(n_nodes)),
            'rule_backed': float(len(backed) / len(expl[''])),
            **explanation_metrics(expl[''], ''),

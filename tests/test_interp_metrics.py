@@ -118,6 +118,8 @@ class TestHeadLiteralConstants(unittest.TestCase):
                 self.assertLessEqual(res[f'{key}_evidence_mean'], res[f'{key}_mean'] + 1e-9)
         self.assertIn('gt_precision_evidence', res)
         self.assertTrue(0 <= res['head_literals_constant'] <= 1)
+        # head_acc and head_fidelity read the same predictions (network trunk, binarised head)
+        self.assertLessEqual(abs(res['head_acc'] - res['acc']), 1 - res['head_fidelity'] + 1e-9)
 
 
 class TestToxicophore(unittest.TestCase):
